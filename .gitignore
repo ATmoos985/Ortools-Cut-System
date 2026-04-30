@@ -1,5 +1,7 @@
 target/
 logs/
+/Solartron-Cut-Release-*/
+/Solartron-Cut-Release-*.zip
 
 logs/cutting-optimization.log
 logs/solver-detail.log
