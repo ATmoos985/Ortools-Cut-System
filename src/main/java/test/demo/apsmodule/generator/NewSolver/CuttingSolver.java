@@ -27,6 +27,7 @@ import java.util.stream.Collectors;
 public class CuttingSolver implements CuttingSolverAlgorithm {
 
     private static final Logger log = LoggerFactory.getLogger(CuttingSolver.class);
+    private static final double WASTE_GROUP_TOLERANCE_RATIO = 0.005;
     private static boolean orToolsLoaded = false;
 
     // Baseline defaults only; each solve call uses a per-request copy.
@@ -106,6 +107,7 @@ public class CuttingSolver implements CuttingSolverAlgorithm {
             }
 
             GroupSolvePlan bestPlan = null;
+            Map<String, GroupSolvePlan> plansByName = new LinkedHashMap<>();
             for (int candidateIndex = 0; candidateIndex < solveCandidates.size(); candidateIndex++) {
                 MultiStageMIPSolver.SolveCandidate solveCandidate = solveCandidates.get(candidateIndex);
                 SolverResult result = solveCandidate.result();
@@ -128,7 +130,8 @@ public class CuttingSolver implements CuttingSolverAlgorithm {
                         instructions,
                         sequenceGroups,
                         candidateIndex);
-                if (bestPlan == null || isBetterPlan(plan, bestPlan)) {
+                plansByName.putIfAbsent(plan.name(), plan);
+                if (bestPlan == null || isBetterPlan(plan, bestPlan, params)) {
                     bestPlan = plan;
                 }
             }
@@ -138,6 +141,7 @@ public class CuttingSolver implements CuttingSolverAlgorithm {
                 continue;
             }
 
+            logCandidateDiagnostics(groupKey, plansByName, groupItems, bestPlan, params);
             log.info("Selected pattern candidate for group {}: {} (groups={}, patterns={}, waste={}mm)",
                     groupKey,
                     bestPlan.name(),
@@ -197,23 +201,90 @@ public class CuttingSolver implements CuttingSolverAlgorithm {
         return baseParams.copy();
     }
 
-    private boolean isBetterPlan(GroupSolvePlan candidate, GroupSolvePlan currentBest) {
-        if (candidate.sequenceGroupCount() != currentBest.sequenceGroupCount()) {
+    private boolean isBetterPlan(GroupSolvePlan candidate, GroupSolvePlan currentBest, SolverParameters params) {
+        int wasteDifference = Math.abs(candidate.result().getTotalWaste() - currentBest.result().getTotalWaste());
+        int wasteTolerance = calculateWasteGroupTolerance(candidate.result(), currentBest.result(), params);
+        if (wasteDifference <= wasteTolerance
+                && candidate.sequenceGroupCount() != currentBest.sequenceGroupCount()) {
             return candidate.sequenceGroupCount() < currentBest.sequenceGroupCount();
-        }
-        if (candidate.result().getPatternCount() != currentBest.result().getPatternCount()) {
-            return candidate.result().getPatternCount() < currentBest.result().getPatternCount();
         }
         if (candidate.result().getTotalWaste() != currentBest.result().getTotalWaste()) {
             return candidate.result().getTotalWaste() < currentBest.result().getTotalWaste();
         }
+        if (candidate.sequenceGroupCount() != currentBest.sequenceGroupCount()) {
+            return candidate.sequenceGroupCount() < currentBest.sequenceGroupCount();
+        }
         if (candidate.result().getTotalOverProduction() != currentBest.result().getTotalOverProduction()) {
             return candidate.result().getTotalOverProduction() < currentBest.result().getTotalOverProduction();
+        }
+        if (candidate.result().getPatternCount() != currentBest.result().getPatternCount()) {
+            return candidate.result().getPatternCount() < currentBest.result().getPatternCount();
         }
         if (candidate.result().getTotalRolls() != currentBest.result().getTotalRolls()) {
             return candidate.result().getTotalRolls() < currentBest.result().getTotalRolls();
         }
         return candidate.order() < currentBest.order();
+    }
+
+    private int calculateWasteGroupTolerance(SolverResult left, SolverResult right, SolverParameters params) {
+        int referenceRolls = Math.max(left.getTotalRolls(), right.getTotalRolls());
+        return (int) Math.ceil(WASTE_GROUP_TOLERANCE_RATIO * params.getTotalWidth() * referenceRolls);
+    }
+
+    private void logCandidateDiagnostics(String groupKey,
+            Map<String, GroupSolvePlan> plansByName,
+            List<SolverOrderItem> groupItems,
+            GroupSolvePlan bestPlan,
+            SolverParameters params) {
+        GroupSolvePlan bestWaste = plansByName.get("legacy-best-waste");
+        GroupSolvePlan minPattern = plansByName.get("legacy-min-pattern");
+        if (bestWaste != null && minPattern != null) {
+            int tolerance = calculateWasteGroupTolerance(bestWaste.result(), minPattern.result(), params);
+            log.info("Legacy candidate diagnostic group={}: bestWaste groups={}, waste={}mm; minPattern groups={}, waste={}mm; deltaGroups={}, deltaWaste={}mm; tolerance={}mm",
+                    groupKey,
+                    bestWaste.sequenceGroupCount(),
+                    bestWaste.result().getTotalWaste(),
+                    minPattern.sequenceGroupCount(),
+                    minPattern.result().getTotalWaste(),
+                    minPattern.sequenceGroupCount() - bestWaste.sequenceGroupCount(),
+                    minPattern.result().getTotalWaste() - bestWaste.result().getTotalWaste(),
+                    tolerance);
+        }
+
+        int lowerBound = estimateSequenceGroupLowerBound(groupItems, bestPlan.result());
+        if (lowerBound > 0) {
+            double ratio = (double) bestPlan.sequenceGroupCount() / lowerBound;
+            log.info("Selected candidate diagnostic group={}: selected={}, groups={}, simpleLowerBound={}, groupRatio={}",
+                    groupKey,
+                    bestPlan.name(),
+                    bestPlan.sequenceGroupCount(),
+                    lowerBound,
+                    String.format("%.2f", ratio));
+        }
+    }
+
+    private int estimateSequenceGroupLowerBound(List<SolverOrderItem> groupItems, SolverResult result) {
+        Map<Integer, Set<String>> messagesByWidth = new HashMap<>();
+        for (SolverOrderItem item : groupItems) {
+            messagesByWidth
+                    .computeIfAbsent(item.getWidth(), ignored -> new HashSet<>())
+                    .add(item.getMessageText());
+        }
+
+        Map<Integer, Integer> maxSlotsByWidth = new HashMap<>();
+        for (PatternCandidate pattern : result.getSolution().keySet()) {
+            for (Map.Entry<Integer, Integer> entry : pattern.getPattern().entrySet()) {
+                maxSlotsByWidth.merge(entry.getKey(), entry.getValue(), Math::max);
+            }
+        }
+
+        int lowerBound = 1;
+        for (Map.Entry<Integer, Set<String>> entry : messagesByWidth.entrySet()) {
+            int maxSlots = Math.max(1, maxSlotsByWidth.getOrDefault(entry.getKey(), 1));
+            int widthLowerBound = (entry.getValue().size() + maxSlots - 1) / maxSlots;
+            lowerBound = Math.max(lowerBound, widthLowerBound);
+        }
+        return lowerBound;
     }
 
     private record GroupSolvePlan(

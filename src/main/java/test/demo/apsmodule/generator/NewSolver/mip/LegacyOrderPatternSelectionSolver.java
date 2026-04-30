@@ -47,13 +47,16 @@ class LegacyOrderPatternSelectionSolver {
             log.info("--- Legacy-order pattern selection attempt {}/{} ---",
                     attempt + 1, MAX_REPAIR_ATTEMPTS + 1);
 
-            Map<PatternCandidate, Integer> solution = solveFinalMIP(
+            List<Result> candidates = solveFinalMIP(
                     patterns,
                     demands,
                     workingAllowOverSet);
 
-            if (isFeasible(solution, demands)) {
-                return List.of(new Result("legacy-order", new LinkedHashMap<>(solution)));
+            List<Result> feasibleCandidates = candidates.stream()
+                    .filter(candidate -> isFeasible(candidate.solution(), demands))
+                    .toList();
+            if (!feasibleCandidates.isEmpty()) {
+                return feasibleCandidates;
             }
 
             if (attempt >= MAX_REPAIR_ATTEMPTS) {
@@ -80,19 +83,19 @@ class LegacyOrderPatternSelectionSolver {
         return Collections.emptyList();
     }
 
-    private Map<PatternCandidate, Integer> solveFinalMIP(List<PatternCandidate> patterns,
+    private List<Result> solveFinalMIP(List<PatternCandidate> patterns,
             Map<Integer, Integer> demands,
             Set<Integer> allowOverSet) {
         int[] stage1Result = solveMIPStage1(patterns, demands, allowOverSet);
         if (stage1Result == null) {
-            return Collections.emptyMap();
+            return Collections.emptyList();
         }
 
         int optimalOver = Arrays.stream(stage1Result).sum();
         Map<PatternCandidate, Integer> stage2Solution = solveMIPStage2(
                 patterns, demands, allowOverSet, optimalOver);
         if (stage2Solution == null || stage2Solution.isEmpty()) {
-            return Collections.emptyMap();
+            return Collections.emptyList();
         }
 
         int totalRolls = stage2Solution.values().stream().mapToInt(Integer::intValue).sum();
@@ -106,9 +109,16 @@ class LegacyOrderPatternSelectionSolver {
         Map<PatternCandidate, Integer> stage4Solution = solveMIPStage4(
                 patterns, demands, allowOverSet, optimalOver, totalRolls, totalWaste);
         if (stage4Solution == null || stage4Solution.isEmpty()) {
-            return stage3Solution;
+            stage4Solution = Collections.emptyMap();
         }
-        return stage4Solution;
+
+        List<Result> candidates = new ArrayList<>();
+        addCandidate(candidates, "legacy-best-waste", stage3Solution);
+        addCandidate(candidates, "legacy-min-pattern", stage4Solution);
+        if (candidates.isEmpty()) {
+            addCandidate(candidates, "legacy-min-rolls", stage2Solution);
+        }
+        return candidates;
     }
 
     private Set<Integer> expandAllowOverSet(Map<Integer, Integer> demands, int newTopK) {
@@ -566,6 +576,30 @@ class LegacyOrderPatternSelectionSolver {
 
     private int ceilToStep(int value, int step) {
         return ((value + step - 1) / step) * step;
+    }
+
+    private void addCandidate(List<Result> candidates,
+            String name,
+            Map<PatternCandidate, Integer> solution) {
+        if (solution == null || solution.isEmpty()) {
+            return;
+        }
+
+        String signature = solution.entrySet().stream()
+                .sorted((left, right) -> left.getKey().signature().compareTo(right.getKey().signature()))
+                .map(entry -> entry.getKey().signature() + "=" + entry.getValue())
+                .collect(Collectors.joining("|"));
+        for (Result candidate : candidates) {
+            String existingSignature = candidate.solution().entrySet().stream()
+                    .sorted((left, right) -> left.getKey().signature().compareTo(right.getKey().signature()))
+                    .map(entry -> entry.getKey().signature() + "=" + entry.getValue())
+                    .collect(Collectors.joining("|"));
+            if (existingSignature.equals(signature)) {
+                return;
+            }
+        }
+
+        candidates.add(new Result(name, new LinkedHashMap<>(solution)));
     }
 
     record Result(

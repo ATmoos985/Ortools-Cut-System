@@ -59,26 +59,43 @@ class CuttingSolverTest {
     }
 
     @Test
-    void isBetterPlanPrefersFewerSequenceGroupsBeforeWaste() throws Exception {
-        CuttingSolver solver = new CuttingSolver(SolverParameters.createDefault());
+    void isBetterPlanPrefersFewerSequenceGroupsInsideWasteTolerance() throws Exception {
+        SolverParameters params = SolverParameters.createDefault();
+        CuttingSolver solver = new CuttingSolver(params);
         Object worseWasteButFewerGroups = groupSolvePlan("min-pattern", solverResult(2, 300, 0, 10), 101, 0);
         Object lowerWasteButMoreGroups = groupSolvePlan("best-waste", solverResult(1, 200, 0, 10), 110, 1);
 
         Method method = betterPlanMethod();
-        boolean result = (boolean) method.invoke(solver, worseWasteButFewerGroups, lowerWasteButMoreGroups);
+        boolean result = (boolean) method.invoke(solver, worseWasteButFewerGroups, lowerWasteButMoreGroups, params);
 
         assertTrue(result);
     }
 
     @Test
-    void isBetterPlanBreaksTiesWithFewerPatterns() throws Exception {
-        CuttingSolver solver = new CuttingSolver(SolverParameters.createDefault());
-        Object fewerPatterns = groupSolvePlan("min-pattern", solverResult(1, 300, 0, 10), 110, 0);
-        Object morePatternsLowerWaste = groupSolvePlan("best-waste", solverResult(2, 200, 0, 10), 110, 1);
+    void isBetterPlanPrefersLowerWasteOutsideTolerance() throws Exception {
+        SolverParameters params = SolverParameters.createDefault();
+        CuttingSolver solver = new CuttingSolver(params);
+        Object lowerWasteButMoreGroups = groupSolvePlan("best-waste", solverResult(1, 200, 0, 10), 110, 0);
+        Object highWasteButFewerGroups = groupSolvePlan("min-pattern", solverResult(2, 600, 0, 10), 101, 1);
 
         Method method = betterPlanMethod();
-        boolean result = (boolean) method.invoke(solver, fewerPatterns, morePatternsLowerWaste);
-        boolean reverse = (boolean) method.invoke(solver, morePatternsLowerWaste, fewerPatterns);
+        boolean result = (boolean) method.invoke(solver, lowerWasteButMoreGroups, highWasteButFewerGroups, params);
+        boolean reverse = (boolean) method.invoke(solver, highWasteButFewerGroups, lowerWasteButMoreGroups, params);
+
+        assertTrue(result);
+        assertFalse(reverse);
+    }
+
+    @Test
+    void isBetterPlanBreaksTiesWithFewerPatterns() throws Exception {
+        SolverParameters params = SolverParameters.createDefault();
+        CuttingSolver solver = new CuttingSolver(params);
+        Object fewerPatterns = groupSolvePlan("min-pattern", solverResult(1, 300, 0, 10), 110, 0);
+        Object morePatterns = groupSolvePlan("best-waste", solverResult(2, 300, 0, 10), 110, 1);
+
+        Method method = betterPlanMethod();
+        boolean result = (boolean) method.invoke(solver, fewerPatterns, morePatterns, params);
+        boolean reverse = (boolean) method.invoke(solver, morePatterns, fewerPatterns, params);
 
         assertTrue(result);
         assertFalse(reverse);
@@ -86,7 +103,7 @@ class CuttingSolverTest {
 
     private static Method betterPlanMethod() throws Exception {
         Class<?> planClass = Class.forName("test.demo.apsmodule.generator.NewSolver.CuttingSolver$GroupSolvePlan");
-        Method method = CuttingSolver.class.getDeclaredMethod("isBetterPlan", planClass, planClass);
+        Method method = CuttingSolver.class.getDeclaredMethod("isBetterPlan", planClass, planClass, SolverParameters.class);
         method.setAccessible(true);
         return method;
     }

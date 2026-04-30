@@ -81,6 +81,7 @@ public class AssignmentMIPSolver {
 
         List<PatternCandidate> patternList = new ArrayList<>(solution.keySet());
         log.debug("Stage5 patterns={} detailedDemands={}", patternList.size(), detailedDemands.size());
+        logConfigurationScale(solution, groupItems);
 
         try {
             MPSolver solver = MPSolver.createSolver("SCIP");
@@ -233,6 +234,28 @@ public class AssignmentMIPSolver {
 
     private String demandKey(int width, String messageText) {
         return width + "_" + messageText;
+    }
+
+    private void logConfigurationScale(Map<PatternCandidate, Integer> solution,
+            List<SolverOrderItem> groupItems) {
+        AssignmentConfigurationEstimator.Estimate estimate =
+                AssignmentConfigurationEstimator.estimate(solution, groupItems);
+        PatternCandidate largestPattern = estimate.largestPattern();
+        log.info("Stage5 configuration-scale estimate: patterns={}, configs={}, band={}, maxPatternConfigs={}, maxWidthOptions={}, largestPattern={}",
+                estimate.patternCount(),
+                estimate.totalConfigurations(),
+                estimate.scaleBand(),
+                estimate.maxConfigurationsForPattern(),
+                estimate.maxWidthOptions(),
+                largestPattern == null ? "none" : largestPattern);
+
+        if ("large".equals(estimate.scaleBand())) {
+            log.info("Stage5 largest configuration patterns: {}",
+                    estimate.largestPatterns(3).stream()
+                            .map(pattern -> pattern.pattern() + " configs=" + pattern.configurationCount()
+                                    + " widthOptions=" + pattern.widthOptionCounts())
+                            .toList());
+        }
     }
 
     static List<AssignmentBlock> buildBlocksFromWidthAssignments(
