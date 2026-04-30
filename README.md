@@ -1,4 +1,5 @@
-# Solartron-Cut
+# OrTools—Cut-Sysytem
+> 主要解决一维切割➕集中分配的专业薄膜生产工具
 
 APS 一维切割模块。
 
