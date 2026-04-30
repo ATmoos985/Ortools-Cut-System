@@ -10,6 +10,7 @@ import org.slf4j.LoggerFactory;
 import test.demo.apsmodule.generator.NewSolver.config.SolverParameters;
 import test.demo.apsmodule.generator.NewSolver.mip.AssignmentMIPSolver;
 import test.demo.apsmodule.generator.NewSolver.model.PatternCandidate;
+import test.demo.apsmodule.generator.NewSolver.util.SolveDiagnostics;
 import test.demo.apsmodule.generator.NewSolver.util.SolverDeterminism;
 import test.demo.apsmodule.service.CuttingInstruction;
 import test.demo.apsmodule.service.SolverOrderItem;
@@ -92,27 +93,29 @@ public class InstructionConverter {
         List<ScoredInstructionPlan> candidates = new ArrayList<>();
         if (mipAssignment != null) {
             List<CuttingInstruction> mipInstructions = buildFromMIPAssignment(solution, groupKey, groupItems, mipAssignment);
-            addCandidate(candidates, "stage5-mip", mipInstructions);
-            addPostProcessedCandidate(candidates, "stage5-mip-post", mipInstructions);
+            addCandidate(candidates, groupKey, "stage5-mip", mipInstructions);
+            addPostProcessedCandidate(candidates, groupKey, "stage5-mip-post", mipInstructions);
         }
 
         log.info("Evaluating greedy assignment candidate");
         List<CuttingInstruction> greedyInstructions = buildFromGreedyAssignment(
                 solution, groupKey, groupItems, OrderAssignmentOptimizer.GreedyStrategy.BATCH_FIRST);
-        addCandidate(candidates, "greedy", greedyInstructions);
-        addPostProcessedCandidate(candidates, "greedy-post", greedyInstructions);
+        addCandidate(candidates, groupKey, "greedy", greedyInstructions);
+        addPostProcessedCandidate(candidates, groupKey, "greedy-post", greedyInstructions);
 
         log.info("Evaluating reuse-first greedy assignment candidate");
         List<CuttingInstruction> reuseGreedyInstructions = buildFromGreedyAssignment(
                 solution, groupKey, groupItems, OrderAssignmentOptimizer.GreedyStrategy.REUSE_FIRST);
-        addCandidate(candidates, "greedy-reuse", reuseGreedyInstructions);
-        addPostProcessedCandidate(candidates, "greedy-reuse-post", reuseGreedyInstructions);
+        addCandidate(candidates, groupKey, "greedy-reuse", reuseGreedyInstructions);
+        addPostProcessedCandidate(candidates, groupKey, "greedy-reuse-post", reuseGreedyInstructions);
 
         if (candidates.isEmpty()) {
             return new ArrayList<>();
         }
 
         ScoredInstructionPlan bestPlan = selectBestCandidate(candidates);
+        SolveDiagnostics.recordCandidate(groupKey, "instruction-candidate", bestPlan.name(),
+                bestPlan.sequenceGroupCount(), null, true, "winner");
         log.info("Sequence-group selection: winner={} groups={} candidates={}",
                 bestPlan.name(), bestPlan.sequenceGroupCount(), summarizeCandidates(candidates));
         return bestPlan.instructions();
@@ -288,18 +291,25 @@ public class InstructionConverter {
         return instructions;
     }
 
-    private void addCandidate(List<ScoredInstructionPlan> candidates, String name, List<CuttingInstruction> instructions) {
+    private void addCandidate(List<ScoredInstructionPlan> candidates,
+            String groupKey,
+            String name,
+            List<CuttingInstruction> instructions) {
         if (instructions == null || instructions.isEmpty()) {
             return;
         }
 
         int sequenceGroupCount = SequenceGroupPostProcessor.countTotalGroups(instructions);
         candidates.add(new ScoredInstructionPlan(name, instructions, sequenceGroupCount));
+        SolveDiagnostics.recordCandidate(groupKey, "instruction-candidate", name, sequenceGroupCount, null,
+                false, "instructions=" + instructions.size());
         log.info("Sequence-group candidate: {} groups={} instructions={}",
                 name, sequenceGroupCount, instructions.size());
     }
 
-    private void addPostProcessedCandidate(List<ScoredInstructionPlan> candidates, String name,
+    private void addPostProcessedCandidate(List<ScoredInstructionPlan> candidates,
+            String groupKey,
+            String name,
             List<CuttingInstruction> baseInstructions) {
         if (baseInstructions == null || baseInstructions.isEmpty()) {
             return;
@@ -311,10 +321,12 @@ public class InstructionConverter {
         Map<String, Integer> after = countAssignmentsByDemandKey(candidate);
         if (!before.equals(after)) {
             log.warn("Sequence-group postprocess rejected for {} because width-message counts changed", name);
+            SolveDiagnostics.recordCandidate(groupKey, "instruction-candidate", name, null, null,
+                    false, "rejected=countChanged");
             return;
         }
 
-        addCandidate(candidates, name, candidate);
+        addCandidate(candidates, groupKey, name, candidate);
     }
 
     private Map<String, Integer> countAssignmentsByDemandKey(List<CuttingInstruction> instructions) {
@@ -524,6 +536,8 @@ public class InstructionConverter {
                 candidateConfigs,
                 currentBlockCount,
                 currentOddBlockCount,
+                Objects.toString(template.getGroupKey(), ""),
+                "instruction-family-repack",
                 repackProfile);
         if (repackPlan == null) {
             return family;
@@ -579,6 +593,8 @@ public class InstructionConverter {
                 candidateConfigs,
                 currentBlockCount,
                 currentOddBlockCount,
+                Objects.toString(instruction.getGroupKey(), ""),
+                "instruction-repack",
                 repackProfile);
         if (repackPlan == null) {
             return;
@@ -659,6 +675,8 @@ public class InstructionConverter {
             List<RollConfig> candidateConfigs,
             int currentBlockCount,
             int currentOddBlockCount,
+            String groupKey,
+            String repackName,
             RepackProfile repackProfile) {
         MPSolver solver = MPSolver.createSolver("SCIP");
         if (solver == null) {
@@ -725,11 +743,20 @@ public class InstructionConverter {
         for (int index = 0; index < activeConfigs.size(); index++) {
             objective.setCoefficient(useVars.get(index), 10_000);
             objective.setCoefficient(oddVars.get(index), 100);
+            objective.setCoefficient(countVars.get(index), SolverDeterminism.tinyTieBreak(index));
         }
         objective.setMinimization();
 
         solver.setTimeLimit(repackProfile.timeLimitMs());
+        long startTime = System.currentTimeMillis();
         MPSolver.ResultStatus status = solver.solve();
+        long elapsed = System.currentTimeMillis() - startTime;
+        SolveDiagnostics.recordMip(groupKey, "mip", repackName, status, elapsed,
+                objective.value(), objective.bestBound(),
+                "configs=" + activeConfigs.size()
+                        + ";currentBlocks=" + currentBlockCount
+                        + ";currentOddBlocks=" + currentOddBlockCount
+                        + ";timeLimit=" + repackProfile.timeLimitMs());
         if (status != MPSolver.ResultStatus.OPTIMAL) {
             if (status == MPSolver.ResultStatus.FEASIBLE) {
                 log.debug("Instruction repack ignored non-optimal feasible solution after {}ms",

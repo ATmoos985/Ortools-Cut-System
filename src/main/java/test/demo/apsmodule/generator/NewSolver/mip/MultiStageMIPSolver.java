@@ -9,6 +9,7 @@ import org.slf4j.LoggerFactory;
 import test.demo.apsmodule.generator.NewSolver.config.SolverParameters;
 import test.demo.apsmodule.generator.NewSolver.model.PatternCandidate;
 import test.demo.apsmodule.generator.NewSolver.model.SolverResult;
+import test.demo.apsmodule.generator.NewSolver.util.SolveDiagnostics;
 import test.demo.apsmodule.generator.NewSolver.util.SolverDeterminism;
 
 import java.util.ArrayList;
@@ -35,6 +36,7 @@ public class MultiStageMIPSolver {
     private static final int MAX_SOLVE_ATTEMPTS = 3;
     private static final double WASTE_PROTECTION_RATIO = 0.02;
     private static final int MIN_WASTE_PROTECTION_MM = 200;
+    private static final long MIN_FALLBACK_STAGE_TIME_LIMIT_MS = 1_000L;
 
     private final SolverParameters params;
 
@@ -422,9 +424,15 @@ public class MultiStageMIPSolver {
             }
             objective.setMinimization();
 
-            solver.setTimeLimit(params.getTimeoutMs());
+            solver.setTimeLimit(fallbackStageTimeLimitMs());
+            long startTime = System.currentTimeMillis();
             MPSolver.ResultStatus status = solver.solve();
+            long elapsed = System.currentTimeMillis() - startTime;
             if (status != MPSolver.ResultStatus.OPTIMAL && status != MPSolver.ResultStatus.FEASIBLE) {
+                SolveDiagnostics.recordMip("PATTERN_SELECTION", "mip", "FallbackStage1", status, elapsed,
+                        objective.value(), objective.bestBound(),
+                        "patterns=" + patterns.size() + ";demands=" + demands.size()
+                                + ";stageTimeLimit=" + fallbackStageTimeLimitMs());
                 log.warn("Stage1 returned {}", status);
                 return null;
             }
@@ -441,6 +449,11 @@ public class MultiStageMIPSolver {
                 }
                 totalOver += over;
             }
+            SolveDiagnostics.recordMip("PATTERN_SELECTION", "mip", "FallbackStage1", status, elapsed,
+                    objective.value(), objective.bestBound(),
+                    "patterns=" + patterns.size() + ";demands=" + demands.size()
+                            + ";stageTimeLimit=" + fallbackStageTimeLimitMs()
+                            + ";totalOver=" + totalOver + ";totalUnder=" + totalUnder);
 
             return new Stage1SolveResult(extractSolution(patterns, xVars), totalOver, totalUnder, underByWidth);
         } catch (Exception e) {
@@ -506,8 +519,14 @@ public class MultiStageMIPSolver {
             objective.setMinimization();
 
             applyHint(solver, patterns, xVars, null, hintSolution);
-            solver.setTimeLimit(params.getTimeoutMs());
+            solver.setTimeLimit(fallbackStageTimeLimitMs());
+            long startTime = System.currentTimeMillis();
             MPSolver.ResultStatus status = solver.solve();
+            long elapsed = System.currentTimeMillis() - startTime;
+            SolveDiagnostics.recordMip("PATTERN_SELECTION", "mip", "FallbackStage2BestWaste", status, elapsed,
+                    objective.value(), objective.bestBound(),
+                    "patterns=" + patterns.size() + ";maxTotalOver=" + maxTotalOver
+                            + ";stageTimeLimit=" + fallbackStageTimeLimitMs());
             if (status != MPSolver.ResultStatus.OPTIMAL && status != MPSolver.ResultStatus.FEASIBLE) {
                 log.warn("Stage2 returned {}", status);
                 return null;
@@ -597,8 +616,8 @@ public class MultiStageMIPSolver {
             }
 
             MPObjective objective = solver.objective();
-            for (MPVariable yVar : yVars) {
-                objective.setCoefficient(yVar, 1);
+            for (int i = 0; i < yVars.size(); i++) {
+                objective.setCoefficient(yVars.get(i), 1.0);
             }
             objective.setMinimization();
 
@@ -606,7 +625,12 @@ public class MultiStageMIPSolver {
             applyHint(solver, patterns, xVars, yVars, hintSolution);
             solver.setTimeLimit(timeLimit);
 
+            long startTime = System.currentTimeMillis();
             MPSolver.ResultStatus status = solver.solve();
+            long elapsed = System.currentTimeMillis() - startTime;
+            SolveDiagnostics.recordMip("PATTERN_SELECTION", "mip", "FallbackStage3MinPatterns", status, elapsed,
+                    objective.value(), objective.bestBound(),
+                    "patterns=" + patterns.size() + ";maxTotalWaste=" + maxTotalWaste + ";timeLimit=" + timeLimit);
             if (status != MPSolver.ResultStatus.OPTIMAL && status != MPSolver.ResultStatus.FEASIBLE) {
                 log.warn("Stage3 returned {} after {}ms", status, timeLimit);
                 return null;
@@ -708,7 +732,12 @@ public class MultiStageMIPSolver {
             applyHint(solver, patterns, xVars, yVars, hintSolution);
             solver.setTimeLimit(timeLimitMs);
 
+            long startTime = System.currentTimeMillis();
             MPSolver.ResultStatus status = solver.solve();
+            long elapsed = System.currentTimeMillis() - startTime;
+            SolveDiagnostics.recordMip("PATTERN_SELECTION", "mip", "FallbackStage3Refine", status, elapsed,
+                    objective.value(), objective.bestBound(),
+                    "patterns=" + patterns.size() + ";targetPatternCount=" + targetPatternCount + ";timeLimit=" + timeLimitMs);
             if (status != MPSolver.ResultStatus.OPTIMAL && status != MPSolver.ResultStatus.FEASIBLE) {
                 log.debug("Stage3 refinement target={} returned {} after {}ms",
                         targetPatternCount, status, timeLimitMs);
@@ -796,6 +825,11 @@ public class MultiStageMIPSolver {
     private int calculateProtectedWasteCap(int bestWaste) {
         int slack = Math.max(MIN_WASTE_PROTECTION_MM, (int) Math.ceil(bestWaste * WASTE_PROTECTION_RATIO));
         return bestWaste + slack;
+    }
+
+    private long fallbackStageTimeLimitMs() {
+        return Math.max(MIN_FALLBACK_STAGE_TIME_LIMIT_MS,
+                Math.min(params.getStage4TimeLimit(), params.getTimeoutMs()));
     }
 
     private int calculateTotalWaste(Map<PatternCandidate, Integer> solution) {

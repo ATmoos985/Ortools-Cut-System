@@ -12,6 +12,7 @@ import test.demo.apsmodule.generator.NewSolver.model.SolverResult;
 import test.demo.apsmodule.generator.NewSolver.output.InstructionConverter;
 import test.demo.apsmodule.generator.NewSolver.output.SequenceGroupPostProcessor;
 import test.demo.apsmodule.generator.NewSolver.pattern.PatternGenerator;
+import test.demo.apsmodule.generator.NewSolver.util.SolveDiagnostics;
 import test.demo.apsmodule.service.CuttingInstruction;
 import test.demo.apsmodule.service.SolverConfig;
 import test.demo.apsmodule.service.SolverOrderItem;
@@ -62,6 +63,12 @@ public class CuttingSolver implements CuttingSolverAlgorithm {
 
     @Override
     public List<CuttingInstruction> solve(List<SolverOrderItem> items, SolverConfig config) {
+        try (SolveDiagnostics.RunHandle ignored = SolveDiagnostics.beginRun("NewSolver")) {
+            return solveInternal(items, config);
+        }
+    }
+
+    private List<CuttingInstruction> solveInternal(List<SolverOrderItem> items, SolverConfig config) {
         log.info("\n========== NewSolver START ==========");
         long startTime = System.currentTimeMillis();
 
@@ -127,6 +134,16 @@ public class CuttingSolver implements CuttingSolverAlgorithm {
                         result.getTotalWaste(),
                         result.getTotalOverProduction(),
                         sequenceGroups);
+                SolveDiagnostics.recordCandidate(
+                        groupKey,
+                        "pattern-candidate",
+                        solveCandidate.name(),
+                        sequenceGroups,
+                        result.getTotalWaste(),
+                        false,
+                        "patterns=" + result.getPatternCount()
+                                + ";over=" + result.getTotalOverProduction()
+                                + ";rolls=" + result.getTotalRolls());
 
                 GroupSolvePlan plan = new GroupSolvePlan(
                         solveCandidate.name(),
@@ -146,6 +163,14 @@ public class CuttingSolver implements CuttingSolverAlgorithm {
             }
 
             logCandidateDiagnostics(groupKey, plansByName, groupItems, bestPlan, params);
+            SolveDiagnostics.recordCandidate(
+                    groupKey,
+                    "pattern-candidate",
+                    bestPlan.name(),
+                    bestPlan.sequenceGroupCount(),
+                    bestPlan.result().getTotalWaste(),
+                    true,
+                    "selected");
             log.info("Selected pattern candidate for group {}: {} (groups={}, patterns={}, waste={}mm)",
                     groupKey,
                     bestPlan.name(),

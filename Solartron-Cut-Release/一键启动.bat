@@ -1,18 +1,19 @@
 @echo off
 chcp 65001 >nul
-title 太阳诱电-排程切割优化系统
+setlocal
+title Solartron Cut - Optimization Server
 
 echo ========================================
-echo        排程切割优化系统 - 正在启动
+echo   Solartron Cut - Optimization Server
+echo   Starting backend service...
 echo ========================================
 echo.
-echo.
-echo 注意：请勿关闭本黑色窗口，这是系统运行的后端服务。
-echo 如果页面无法访问，请等待几秒钟再刷新。
+echo Please keep this window open while using the web page.
+echo If the page is not ready, wait a few seconds and refresh.
 echo.
 
 start http://localhost:8081
 
-java -jar app.jar --app.auto-open-browser=true
+java -Dfile.encoding=UTF-8 -Dsun.stdout.encoding=UTF-8 -Dsun.stderr.encoding=UTF-8 -jar app.jar --app.auto-open-browser=true
 
 pause

@@ -8,10 +8,10 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import test.demo.apsmodule.generator.NewSolver.config.SolverParameters;
 import test.demo.apsmodule.generator.NewSolver.model.PatternCandidate;
+import test.demo.apsmodule.generator.NewSolver.util.SolveDiagnostics;
 import test.demo.apsmodule.generator.NewSolver.util.SolverDeterminism;
 
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
@@ -26,6 +26,7 @@ class LegacyOrderPatternSelectionSolver {
     private static final int MAX_REPAIR_ATTEMPTS = 3;
     private static final double LEGACY_SEQ_GROUP_ALPHA = 1.0;
     private static final double LEGACY_SEQ_GROUP_BETA = 0.0;
+    private static final long MIN_LEGACY_STAGE_TIME_LIMIT_MS = 1_000L;
 
     private final SolverParameters params;
 
@@ -87,12 +88,17 @@ class LegacyOrderPatternSelectionSolver {
     private List<Result> solveFinalMIP(List<PatternCandidate> patterns,
             Map<Integer, Integer> demands,
             Set<Integer> allowOverSet) {
-        int[] stage1Result = solveMIPStage1(patterns, demands, allowOverSet);
+        Stage1Result stage1Result = solveMIPStage1(patterns, demands, allowOverSet);
         if (stage1Result == null) {
             return Collections.emptyList();
         }
+        if (stage1Result.totalUnder() > 0) {
+            log.warn("Legacy-order Stage1 stopped with under-production: totalUnder={} details={}",
+                    stage1Result.totalUnder(), stage1Result.underByWidth());
+            return Collections.emptyList();
+        }
 
-        int optimalOver = Arrays.stream(stage1Result).sum();
+        int optimalOver = stage1Result.totalOver();
         Map<PatternCandidate, Integer> stage2Solution = solveMIPStage2(
                 patterns, demands, allowOverSet, optimalOver);
         if (stage2Solution == null || stage2Solution.isEmpty()) {
@@ -140,7 +146,7 @@ class LegacyOrderPatternSelectionSolver {
         return expandedSet;
     }
 
-    private int[] solveMIPStage1(List<PatternCandidate> patterns,
+    private Stage1Result solveMIPStage1(List<PatternCandidate> patterns,
             Map<Integer, Integer> demands,
             Set<Integer> allowOverSet) {
         try {
@@ -194,18 +200,37 @@ class LegacyOrderPatternSelectionSolver {
             }
             objective.setMinimization();
 
-            solver.setTimeLimit(params.getTimeoutMs());
+            solver.setTimeLimit(legacyStageTimeLimitMs());
+            long startTime = System.currentTimeMillis();
             MPSolver.ResultStatus status = solver.solve();
+            long elapsed = System.currentTimeMillis() - startTime;
             if (status != MPSolver.ResultStatus.OPTIMAL && status != MPSolver.ResultStatus.FEASIBLE) {
+                SolveDiagnostics.recordMip("PATTERN_SELECTION", "mip", "LegacyStage1", status, elapsed,
+                        objective.value(), objective.bestBound(),
+                        "patterns=" + patterns.size() + ";demands=" + demands.size()
+                                + ";stageTimeLimit=" + legacyStageTimeLimitMs());
                 log.warn("Legacy-order Stage1 returned {}", status);
                 return null;
             }
 
-            int[] overValues = new int[widthList.size()];
-            for (int i = 0; i < widthList.size(); i++) {
-                overValues[i] = (int) Math.round(overVars.get(widthList.get(i)).solutionValue());
+            Map<Integer, Integer> underByWidth = new LinkedHashMap<>();
+            int totalOver = 0;
+            int totalUnder = 0;
+            for (int width : widthList) {
+                int over = (int) Math.round(overVars.get(width).solutionValue());
+                int under = (int) Math.round(underVars.get(width).solutionValue());
+                totalOver += over;
+                totalUnder += under;
+                if (under > 0) {
+                    underByWidth.put(width, under);
+                }
             }
-            return overValues;
+            SolveDiagnostics.recordMip("PATTERN_SELECTION", "mip", "LegacyStage1", status, elapsed,
+                    objective.value(), objective.bestBound(),
+                    "patterns=" + patterns.size() + ";demands=" + demands.size()
+                            + ";stageTimeLimit=" + legacyStageTimeLimitMs()
+                            + ";totalOver=" + totalOver + ";totalUnder=" + totalUnder);
+            return new Stage1Result(totalOver, totalUnder, underByWidth);
         } catch (Exception e) {
             log.error("Legacy-order Stage1 failed", e);
             return null;
@@ -262,14 +287,33 @@ class LegacyOrderPatternSelectionSolver {
                 objective.setCoefficient(underVar, params.getUnderPenalty());
             }
             for (MPVariable xVar : xVars) {
-                objective.setCoefficient(xVar, 1);
+                objective.setCoefficient(xVar, 1.0);
             }
             objective.setMinimization();
 
-            solver.setTimeLimit(params.getTimeoutMs());
+            solver.setTimeLimit(legacyStageTimeLimitMs());
+            long startTime = System.currentTimeMillis();
             MPSolver.ResultStatus status = solver.solve();
+            long elapsed = System.currentTimeMillis() - startTime;
             if (status != MPSolver.ResultStatus.OPTIMAL && status != MPSolver.ResultStatus.FEASIBLE) {
+                SolveDiagnostics.recordMip("PATTERN_SELECTION", "mip", "LegacyStage2", status, elapsed,
+                        objective.value(), objective.bestBound(),
+                        "patterns=" + patterns.size() + ";maxTotalOver=" + maxTotalOver
+                                + ";stageTimeLimit=" + legacyStageTimeLimitMs());
                 log.warn("Legacy-order Stage2 returned {}", status);
+                return null;
+            }
+
+            int totalUnder = underVars.values().stream()
+                    .mapToInt(var -> (int) Math.round(var.solutionValue()))
+                    .sum();
+            SolveDiagnostics.recordMip("PATTERN_SELECTION", "mip", "LegacyStage2", status, elapsed,
+                    objective.value(), objective.bestBound(),
+                    "patterns=" + patterns.size() + ";maxTotalOver=" + maxTotalOver
+                            + ";stageTimeLimit=" + legacyStageTimeLimitMs()
+                            + ";totalUnder=" + totalUnder);
+            if (totalUnder > 0) {
+                log.warn("Legacy-order Stage2 stopped with under-production: totalUnder={}", totalUnder);
                 return null;
             }
 
@@ -334,8 +378,15 @@ class LegacyOrderPatternSelectionSolver {
             }
             objective.setMinimization();
 
-            solver.setTimeLimit(params.getTimeoutMs());
+            solver.setTimeLimit(legacyStageTimeLimitMs());
+            long startTime = System.currentTimeMillis();
             MPSolver.ResultStatus status = solver.solve();
+            long elapsed = System.currentTimeMillis() - startTime;
+            SolveDiagnostics.recordMip("PATTERN_SELECTION", "mip", "LegacyStage3", status, elapsed,
+                    objective.value(), objective.bestBound(),
+                    "patterns=" + patterns.size() + ";maxTotalOver=" + maxTotalOver
+                            + ";maxTotalRolls=" + maxTotalRolls
+                            + ";stageTimeLimit=" + legacyStageTimeLimitMs());
             if (status != MPSolver.ResultStatus.OPTIMAL && status != MPSolver.ResultStatus.FEASIBLE) {
                 log.warn("Legacy-order Stage3 returned {}", status);
                 return null;
@@ -429,7 +480,12 @@ class LegacyOrderPatternSelectionSolver {
             solver.setHint(new MPVariable[] {}, new double[] {});
             solver.setTimeLimit(stage4TimeLimit);
 
+            long startTime = System.currentTimeMillis();
             MPSolver.ResultStatus status = solver.solve();
+            long elapsed = System.currentTimeMillis() - startTime;
+            SolveDiagnostics.recordMip("PATTERN_SELECTION", "mip", "LegacyStage4", status, elapsed,
+                    objective.value(), objective.bestBound(),
+                    "patterns=" + patterns.size() + ";maxTotalWaste=" + maxTotalWaste + ";stage4TimeLimit=" + stage4TimeLimit);
             if (status != MPSolver.ResultStatus.OPTIMAL && status != MPSolver.ResultStatus.FEASIBLE) {
                 log.warn("Legacy-order Stage4 returned {}", status);
                 return null;
@@ -440,6 +496,14 @@ class LegacyOrderPatternSelectionSolver {
             log.error("Legacy-order Stage4 failed", e);
             return null;
         }
+    }
+
+    private long legacyStageTimeLimitMs() {
+        return Math.max(MIN_LEGACY_STAGE_TIME_LIMIT_MS,
+                Math.min(params.getStage4TimeLimit(), params.getTimeoutMs()));
+    }
+
+    private record Stage1Result(int totalOver, int totalUnder, Map<Integer, Integer> underByWidth) {
     }
 
     private boolean isFeasible(Map<PatternCandidate, Integer> solution, Map<Integer, Integer> demands) {

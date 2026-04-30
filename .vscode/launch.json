@@ -5,7 +5,8 @@
             "name": "CuttingOptimizationApplication",
             "request": "launch",
             "mainClass": "test.demo.CuttingOptimizationApplication",
-            "projectName": "test-demo"
+            "projectName": "test-demo",
+            "vmArgs": "-Dfile.encoding=UTF-8 -Dsun.stdout.encoding=UTF-8 -Dsun.stderr.encoding=UTF-8"
         },
         {
             "type": "java",

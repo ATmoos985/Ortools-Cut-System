@@ -8,6 +8,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import test.demo.apsmodule.generator.NewSolver.config.SolverParameters;
 import test.demo.apsmodule.generator.NewSolver.model.PatternCandidate;
+import test.demo.apsmodule.generator.NewSolver.util.SolveDiagnostics;
 import test.demo.apsmodule.generator.NewSolver.util.SolverDeterminism;
 
 import java.util.ArrayList;
@@ -197,7 +198,12 @@ public class ColumnGenerationSolver {
             }
             objective.setMinimization();
 
+            long startTime = System.currentTimeMillis();
             MPSolver.ResultStatus status = solver.solve();
+            long elapsed = System.currentTimeMillis() - startTime;
+            SolveDiagnostics.recordMip("PATTERN_POOL", "lp", "ColumnGenerationMasterLP", status, elapsed,
+                    objective.value(), objective.bestBound(),
+                    "patterns=" + patterns.size() + ";demands=" + demands.size());
             if (status != MPSolver.ResultStatus.OPTIMAL && status != MPSolver.ResultStatus.FEASIBLE) {
                 return new MasterLPResult(0, new HashMap<>(), false);
             }

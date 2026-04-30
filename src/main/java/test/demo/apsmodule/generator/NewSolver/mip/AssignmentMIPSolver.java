@@ -8,6 +8,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import test.demo.apsmodule.generator.NewSolver.config.SolverParameters;
 import test.demo.apsmodule.generator.NewSolver.model.PatternCandidate;
+import test.demo.apsmodule.generator.NewSolver.util.SolveDiagnostics;
 import test.demo.apsmodule.generator.NewSolver.util.SolverDeterminism;
 import test.demo.apsmodule.service.SolverOrderItem;
 
@@ -66,6 +67,7 @@ public class AssignmentMIPSolver {
             List<SolverOrderItem> groupItems) {
 
         log.info("--- Stage 5: assignment candidate MIP ---");
+        String groupKey = groupItems.isEmpty() ? "UNKNOWN" : groupItems.get(0).getGroupKey();
 
         Map<String, Integer> detailedDemands = new LinkedHashMap<>();
         for (SolverOrderItem item : groupItems) {
@@ -177,8 +179,9 @@ public class AssignmentMIPSolver {
             }
 
             MPObjective objective = solver.objective();
+            int yIndex = 0;
             for (MPVariable yVar : yVars.values()) {
-                objective.setCoefficient(yVar, 1);
+                objective.setCoefficient(yVar, 1.0 + SolverDeterminism.tinyTieBreak(yIndex++));
             }
             objective.setMinimization();
 
@@ -189,6 +192,15 @@ public class AssignmentMIPSolver {
             long startTime = System.currentTimeMillis();
             MPSolver.ResultStatus status = solver.solve();
             long elapsed = System.currentTimeMillis() - startTime;
+            SolveDiagnostics.recordMip(
+                    groupKey,
+                    "mip",
+                    "AssignmentMIP",
+                    status,
+                    elapsed,
+                    objective.value(),
+                    objective.bestBound(),
+                    "vars=" + solver.numVariables() + ";constraints=" + solver.numConstraints());
 
             if (status != MPSolver.ResultStatus.OPTIMAL && status != MPSolver.ResultStatus.FEASIBLE) {
                 log.warn("Stage5 failed: {} ({}ms)", status, elapsed);
