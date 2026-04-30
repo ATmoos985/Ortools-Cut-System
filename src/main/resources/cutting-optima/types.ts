@@ -97,6 +97,7 @@ export interface PreviewGroup {
   comboExpanded: string[];
   length: number;
   surfaceTreatment: string;
+  thickness?: number;
   rollWidth: number;
   usageCount: number;
   groupKey?: string;

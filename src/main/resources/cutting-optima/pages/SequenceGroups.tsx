@@ -6,7 +6,8 @@ import { Button } from '../components/ui/Button';
 import {
     Layers, LayoutDashboard, ChevronDown, ChevronRight,
     Hash, Users, Ruler, Package, Scissors, BarChart3,
-    Replace, Plus, Trash2, Pencil, X, AlertTriangle, ArrowRight, Check
+    Replace, Plus, Trash2, Pencil, X, AlertTriangle, ArrowRight, Check,
+    TableProperties
 } from 'lucide-react';
 import { useAppContext } from '../context/AppContext';
 
@@ -142,14 +143,6 @@ export default function SequenceGroups() {
         });
     };
 
-    // 操作按钮处理
-    const handleReplace = (group: PreviewGroup, rowIdx: number) => {
-        console.log('替换操作', { sequenceNumber: group.sequenceNumber, rowIdx, row: group.rows[rowIdx] });
-    };
-    const handleInsert = (group: PreviewGroup, rowIdx: number) => {
-        console.log('插入操作', { sequenceNumber: group.sequenceNumber, rowIdx, row: group.rows[rowIdx] });
-    };
-
     // 单行删除（释放槽位进入待搭切）
     const handleDeleteRow = (group: PreviewGroup, row: any) => {
         setDeleteConfirm({
@@ -166,8 +159,6 @@ export default function SequenceGroups() {
             }
         });
     };
-
-    // 移除了整组删除和批量删除
 
     // 执行删除
     const confirmDelete = async () => {
@@ -302,7 +293,7 @@ export default function SequenceGroups() {
     const totalRows = data.preview.reduce((acc, g) => acc + g.rows.length, 0);
 
     return (
-        <div className="max-w-7xl mx-auto">
+        <div className="max-w-[100vw] mx-auto pb-10">
             {/* 页面头部 */}
             <div className="flex justify-between items-center mb-6">
                 <div>
@@ -320,7 +311,7 @@ export default function SequenceGroups() {
                         )}
                     </div>
                     <p className="text-slate-500 mt-1 text-sm">
-                        展示所有序号组的搭切明细
+                        展示所有序号组的搭切明细（对应 Excel 的 A - AC 列），保留原始的分组折叠
                     </p>
                     {data.planId && data.revisionId && (
                         <div className="mt-2 inline-flex items-center gap-2 text-xs text-slate-500 bg-slate-100 border border-slate-200 rounded-full px-3 py-1">
@@ -412,7 +403,7 @@ export default function SequenceGroups() {
                             : 'bg-white text-slate-700 border border-slate-300 hover:bg-slate-50 hover:border-slate-400'
                             }`}
                     >
-                        {editMode ? <X className="w-4 h-4" /> : <Pencil className="w-4 h-4" />}
+                        {editMode ? <X className="w-4 h-4" /> : <TableProperties className="w-4 h-4" />}
                         {editMode ? '退出编辑' : '修改方案'}
                     </button>
                 </div>
@@ -428,14 +419,14 @@ export default function SequenceGroups() {
                     </div>
                 </div>
                 <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-sm flex items-center gap-3">
-                    <div className="p-2.5 bg-indigo-50 text-indigo-600 rounded-lg"><Layers className="w-5 h-5" /></div>
+                    <div className="p-2.5 bg-emerald-50 text-emerald-600 rounded-lg"><Layers className="w-5 h-5" /></div>
                     <div>
                         <div className="text-2xl font-bold text-slate-800">{clusters.length}</div>
                         <div className="text-xs text-slate-400">分组数</div>
                     </div>
                 </div>
                 <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-sm flex items-center gap-3">
-                    <div className="p-2.5 bg-emerald-50 text-emerald-600 rounded-lg"><Users className="w-5 h-5" /></div>
+                    <div className="p-2.5 bg-indigo-50 text-indigo-600 rounded-lg"><Users className="w-5 h-5" /></div>
                     <div>
                         <div className="text-2xl font-bold text-slate-800">{totalRows}</div>
                         <div className="text-xs text-slate-400">明细行数</div>
@@ -457,9 +448,8 @@ export default function SequenceGroups() {
                 </div>
             </div>
 
-            {/* 主内容区：左侧集群列表 + 右侧待搭切面板 */}
+            {/* 主内容区：左侧集群列表 */}
             <div className="flex gap-4 items-start">
-                {/* 左侧：各集群 */}
                 <div className="flex-1 min-w-0">
                     <div className="space-y-4">
                         {clusters.map((cluster) => {
@@ -468,12 +458,11 @@ export default function SequenceGroups() {
                             const maxRollWidth = Math.max(...cluster.groups.map(g => g.rollWidth));
 
                             return (
-                                <div key={cluster.groupKey} className="bg-white rounded-xl overflow-hidden shadow-sm border border-slate-200">
+                                <div key={cluster.groupKey} className="bg-white rounded-xl shadow-sm border border-slate-200">
                                     {/* 分组表头（可折叠） */}
                                     <button
                                         onClick={() => toggleCluster(cluster.groupKey)}
                                         className="w-full px-5 py-3.5 flex items-center justify-between bg-gradient-to-r from-slate-50 to-white border-b border-slate-100 hover:from-slate-100 hover:to-slate-50 transition-colors"
-
                                     >
                                         <div className="flex items-center gap-3">
                                             {isCollapsed
@@ -502,211 +491,197 @@ export default function SequenceGroups() {
                                         </div>
                                     </button>
 
-                                    {/* 表格内容 */}
+                                    {/* 表格内容：29列 Excel 样式 */}
                                     {!isCollapsed && (
-                                        <div className="overflow-x-auto">
-                                            <table className="w-full text-sm table-fixed">
+                                        <div className="overflow-x-auto relative">
+                                            <table className="w-full text-[13px] whitespace-nowrap">
                                                 <thead>
-                                                    <tr className="bg-slate-50/80 text-slate-500 text-xs uppercase tracking-wider">
+                                                    <tr className="bg-slate-100/80 text-slate-600 font-bold tracking-wider border-b border-slate-200">
                                                         {editMode && (
-                                                            <th className="px-3 py-2.5 text-center w-10 border-r border-slate-100">
+                                                            <th className="px-3 py-3 text-center border-r border-slate-200 sticky left-0 bg-slate-100 z-20 shadow-[2px_0_5px_rgba(0,0,0,0.02)]">
                                                                 <input
                                                                     type="checkbox"
-                                                                            checked={cluster.groups.every((g) => selectedGroups.has(getGroupSelectionKey(g)))}
+                                                                    checked={cluster.groups.every((g) => selectedGroups.has(getGroupSelectionKey(g)))}
                                                                     onChange={() => toggleClusterSelection(cluster)}
                                                                     className="w-3.5 h-3.5 rounded border-slate-300 text-blue-600 focus:ring-blue-500 cursor-pointer"
                                                                 />
                                                             </th>
                                                         )}
-                                                        <th className="px-4 py-2.5 text-center w-14 border-r border-slate-100">序号</th>
-                                                        <th className="px-4 py-2.5 text-left w-52 border-r border-slate-100">切割方案</th>
-                                                        <th className="px-4 py-2.5 text-left w-20 border-r border-slate-100">业务员</th>
-                                                        <th className="px-4 py-2.5 text-left w-24 border-r border-slate-100">订单信息</th>
-                                                        <th className="px-4 py-2.5 text-center w-24 border-r border-slate-100">幅宽 (mm)</th>
-                                                        <th className="px-4 py-2.5 text-center w-16 border-r border-slate-100">数量</th>
-                                                        {editMode && <th className="px-4 py-2.5 text-center w-36">操作</th>}
+                                                        <th className={`px-3 py-3 text-center border-r border-slate-200 sticky bg-slate-100 z-20 ${editMode ? 'left-[46px] shadow-[2px_0_5px_rgba(0,0,0,0.02)]' : 'left-0 shadow-[2px_0_5px_rgba(0,0,0,0.02)]'}`}>A 序号</th>
+                                                        <th className="px-4 py-3 text-left border-r border-slate-200 min-w-[80px]">B 业务员</th>
+                                                        <th className="px-4 py-3 text-left border-r border-slate-200 min-w-[120px]">C 编号</th>
+                                                        <th className="px-2 py-3 border-r border-slate-200 text-slate-300 font-normal">D</th>
+                                                        <th className="px-2 py-3 border-r border-slate-200 text-slate-300 font-normal">E</th>
+                                                        <th className="px-2 py-3 border-r border-slate-200 text-slate-300 font-normal">F</th>
+                                                        <th className="px-2 py-3 border-r border-slate-200 text-slate-300 font-normal">G</th>
+                                                        <th className="px-3 py-3 text-center border-r border-slate-200">H 厚度</th>
+                                                        <th className="px-4 py-3 text-center border-r border-slate-200">I 宽度</th>
+                                                        <th className="px-4 py-3 text-center border-r border-slate-200">J 长度</th>
+                                                        <th className="px-4 py-3 text-center border-r border-slate-200">K 纸管内径</th>
+                                                        <th className="px-4 py-3 text-center border-r border-slate-200">L 分切卷数</th>
+                                                        <th className="px-4 py-3 text-center border-r border-slate-200 bg-blue-50/50">M 平米</th>
+                                                        <th className="px-4 py-3 text-center border-r border-slate-200 bg-blue-50/50">N 分切产量</th>
+                                                        <th className="px-4 py-3 text-center border-r border-slate-200">O 电晕处理</th>
+                                                        <th className="px-4 py-3 text-center border-r border-slate-200">P 工位数量</th>
+                                                        <th className="px-4 py-3 text-center border-r border-slate-200 bg-orange-50/50">Q 边料</th>
+                                                        <th className="px-4 py-3 text-center border-r border-slate-200">R 组合1</th>
+                                                        <th className="px-4 py-3 text-center border-r border-slate-200">S 组合2</th>
+                                                        <th className="px-4 py-3 text-center border-r border-slate-200">T 组合3</th>
+                                                        <th className="px-4 py-3 text-center border-r border-slate-200">U 组合4</th>
+                                                        <th className="px-4 py-3 text-center border-r border-slate-200">V 组合5</th>
+                                                        <th className="px-4 py-3 text-center border-r border-slate-200">W 组合6</th>
+                                                        <th className="px-4 py-3 text-center border-r border-slate-200">X 组合7</th>
+                                                        <th className="px-4 py-3 text-center border-r border-slate-200">Y 组合8</th>
+                                                        <th className="px-4 py-3 text-center border-r border-slate-200 bg-orange-50/50">Z 边料</th>
+                                                        <th className="px-4 py-3 text-center border-r border-slate-200">AA 分切车数</th>
+                                                        <th className="px-4 py-3 text-center border-r border-slate-200 bg-emerald-50/50">AB 有效宽度</th>
+                                                        <th className="px-4 py-3 text-center border-r border-slate-200 bg-emerald-50/50">AC 利用率</th>
+                                                        {editMode && <th className="px-4 py-3 text-center sticky right-0 bg-slate-100 z-20 shadow-[-2px_0_5px_rgba(0,0,0,0.02)] border-l border-slate-200">操作</th>}
                                                     </tr>
                                                 </thead>
                                                 <tbody>
                                                     {cluster.groups.map((group, gIdx) => {
-                                                        const comboWidths = (group.comboExpanded || []).map(s => parseInt(s, 10) || 0);
-                                                        const patternStr = (group.comboExpanded || []).join(' + ');
-                                                        const totalWidth = comboWidths.reduce((a, b) => a + b, 0);
-                                                        const utilization = maxRollWidth > 0 ? (totalWidth / maxRollWidth * 100) : 0;
                                                         const rowCount = group.rows.length;
+                                                        const isSelected = selectedGroups.has(getGroupSelectionKey(group));
+                                                        const comboWidths = (group.comboExpanded || []).map(s => parseInt(s, 10) || 0);
+                                                        const totalWidth = comboWidths.reduce((a, b) => a + b, 0);
+                                                        const waste = group.rollWidth > 0 ? group.rollWidth - totalWidth : 0;
+                                                        const utilization = group.rollWidth > 0 ? (totalWidth / group.rollWidth * 100) : 0;
                                                         const isSingleUse = group.usageCount === 1;
 
                                                         return group.rows.map((row, rIdx) => {
                                                             const isFirstRow = rIdx === 0;
                                                             const isLastRow = rIdx === rowCount - 1;
-                                                            const isSelected = selectedGroups.has(getGroupSelectionKey(group));
-                                                            const isNewGroup = !!(group as any).isNewGroup;
                                                             const rowDeleteKey = getRowDeleteKey(group, row);
                                                             const isRowDeleted = deletedRows.has(rowDeleteKey);
 
+                                                            const trClass = `
+                                                                hover:bg-blue-50/30 transition-colors
+                                                                ${isSelected ? 'bg-blue-50/40' : ''}
+                                                                ${isLastRow ? 'border-b-[3px] border-slate-300' : 'border-b border-slate-200/60'}
+                                                                ${row.isOverproduction ? 'bg-orange-50/40' : ''}
+                                                            `;
+
+                                                            // Calculate M and N
+                                                            const squareMeters = ((row.rolls * row.width * row.length) / 1000).toFixed(2);
+                                                            const yieldQty = row.rolls * row.length;
+
+                                                            // Extract Message Number (C 列)
+                                                            const msgMatch = row.messageText?.match(/\d+/);
+                                                            const msgNumber = msgMatch ? msgMatch[0] : (row.messageText || '-');
+
                                                             if (isRowDeleted) {
-                                                                // 已删除行：显示红虚线空位
                                                                 return (
-                                                                    <tr
-                                                                        key={`${group.sequenceNumber}-${rIdx}`}
-                                                                        className={`border-b border-slate-200/60 ${isLastRow ? 'border-b-2 border-slate-200' : ''}`}
-                                                                    >
+                                                                    <tr key={`${group.sequenceNumber}-${rIdx}`} className={trClass}>
                                                                         {editMode && isFirstRow && (
-                                                                            <td rowSpan={rowCount} className="px-3 py-2.5 text-center border-r border-slate-100 align-middle">
+                                                                            <td rowSpan={rowCount} className="px-3 py-2.5 text-center border-r border-slate-200 align-middle sticky left-0 bg-white z-10 shadow-[2px_0_5px_rgba(0,0,0,0.02)]">
                                                                                 <input type="checkbox" checked={isSelected} onChange={() => toggleGroupSelection(group)} className="w-3.5 h-3.5 rounded border-slate-300 text-blue-600 focus:ring-blue-500 cursor-pointer" />
                                                                             </td>
                                                                         )}
                                                                         {isFirstRow && (
-                                                                            <td rowSpan={rowCount} className="px-4 py-2.5 text-center font-bold text-slate-700 border-r border-slate-100 align-middle">
-                                                                                <span className="inline-flex items-center justify-center w-8 h-8 rounded-lg text-sm font-bold bg-slate-100 text-slate-700 border border-slate-200">{group.sequenceNumber}</span>
+                                                                            <td rowSpan={rowCount} className={`px-3 py-2.5 text-center font-bold text-slate-700 border-r border-slate-200 align-middle sticky ${editMode ? 'left-[46px]' : 'left-0'} bg-white z-10 shadow-[2px_0_5px_rgba(0,0,0,0.02)]`}>
+                                                                                <span className="inline-flex items-center justify-center w-8 h-8 rounded-lg text-sm font-bold bg-slate-100 border border-slate-200">{group.sequenceNumber}</span>
                                                                             </td>
                                                                         )}
-                                                                        {isFirstRow && (
-                                                                            <td rowSpan={rowCount} className="px-4 py-2.5 border-r border-slate-100 align-middle">
-                                                                                <div className="font-mono text-xs text-blue-600 font-semibold">{patternStr} = {totalWidth}</div>
-                                                                            </td>
-                                                                        )}
-                                                                        <td colSpan={editMode ? 4 : 3} className="px-4 py-3 text-center">
-                                                                            <div className="border-2 border-dashed border-red-300 rounded-lg px-4 py-2 bg-red-50/30">
+                                                                        <td colSpan={28} className="px-4 py-3 text-center border-r border-slate-200">
+                                                                            <div className="border-2 border-dashed border-red-300 rounded-lg px-4 py-1.5 bg-red-50/30 inline-block">
                                                                                 <span className="text-xs text-red-400 font-medium">已删除 · {row.salesperson} · {row.width}mm</span>
                                                                             </div>
                                                                         </td>
+                                                                        {editMode && <td className="px-2 py-2 text-center sticky right-0 bg-white z-10 shadow-[-2px_0_5px_rgba(0,0,0,0.02)] border-l border-slate-200"></td>}
                                                                     </tr>
                                                                 );
                                                             }
 
                                                             return (
-                                                                <tr
-                                                                    key={`${group.sequenceNumber}-${rIdx}`}
-                                                                    className={`
-                                hover:bg-blue-50/30 transition-colors
-                                ${isSelected ? 'bg-blue-50/40' : ''}
-                                ${isLastRow ? 'border-b-2 border-slate-200' : 'border-b border-slate-200/60'}
-                                ${row.isOverproduction ? 'bg-orange-50/40' : ''}
-                                ${isNewGroup ? 'bg-blue-100/60 border-l-4 border-l-blue-400' : ''}
-                              `}
-                                                                >
-                                                                    {/* 复选框 - 合并行（仅编辑模式） */}
+                                                                <tr key={`${group.sequenceNumber}-${rIdx}`} className={trClass}>
+                                                                    {/* Edit Checkbox */}
                                                                     {editMode && isFirstRow && (
-                                                                        <td
-                                                                            rowSpan={rowCount}
-                                                                            className="px-3 py-2.5 text-center border-r border-slate-100 align-middle"
-                                                                        >
-                                                                            <input
-                                                                                type="checkbox"
-                                                                                checked={isSelected}
-                                                                                onChange={() => toggleGroupSelection(group)}
-                                                                                className="w-3.5 h-3.5 rounded border-slate-300 text-blue-600 focus:ring-blue-500 cursor-pointer"
-                                                                            />
+                                                                        <td rowSpan={rowCount} className="px-3 py-2.5 text-center border-r border-slate-200 align-middle sticky left-0 bg-white z-10 shadow-[2px_0_5px_rgba(0,0,0,0.02)]">
+                                                                            <input type="checkbox" checked={isSelected} onChange={() => toggleGroupSelection(group)} className="w-3.5 h-3.5 rounded border-slate-300 text-blue-600 focus:ring-blue-500 cursor-pointer" />
                                                                         </td>
                                                                     )}
-
-                                                                    {/* 序号 - 合并行 */}
+                                                                    {/* A: 序号 */}
                                                                     {isFirstRow && (
-                                                                        <td
-                                                                            rowSpan={rowCount}
-                                                                            className="px-4 py-2.5 text-center font-bold text-slate-700 border-r border-slate-100 align-middle"
-                                                                        >
-                                                                            <span className={`
-                                    inline-flex items-center justify-center w-8 h-8 rounded-lg text-sm font-bold
-                                    ${isNewGroup
-                                                                                    ? 'bg-blue-100 text-blue-700 border border-blue-300'
-                                                                                    : isSingleUse
-                                                                                        ? 'bg-purple-100 text-purple-700 border border-purple-200'
-                                                                                        : 'bg-slate-100 text-slate-700 border border-slate-200'}
-                                  `}>
+                                                                        <td rowSpan={rowCount} className={`px-3 py-2.5 text-center font-bold text-slate-700 border-r border-slate-200 align-middle sticky ${editMode ? 'left-[46px]' : 'left-0'} bg-white z-10 shadow-[2px_0_5px_rgba(0,0,0,0.02)]`}>
+                                                                            <span className={`inline-flex items-center justify-center w-8 h-8 rounded-lg text-sm font-bold ${isSingleUse ? 'bg-purple-100 text-purple-700 border border-purple-200' : 'bg-slate-100 text-slate-700 border border-slate-200'}`}>
                                                                                 {group.sequenceNumber}
                                                                             </span>
-                                                                            {isNewGroup && (
-                                                                                <span className="ml-1 text-[10px] font-bold text-blue-600 bg-blue-50 px-1 py-0.5 rounded border border-blue-200">新</span>
-                                                                            )}
                                                                         </td>
                                                                     )}
-
-
-
-                                                                    {/* 切割方案 - 合并行 */}
+                                                                    {/* B: 业务员 */}
+                                                                    <td className="px-4 py-2.5 text-slate-700 border-r border-slate-200">{row.salesperson || '-'}</td>
+                                                                    {/* C: 编号 */}
+                                                                    <td className="px-4 py-2.5 text-slate-700 border-r border-slate-200">{msgNumber}</td>
+                                                                    {/* D-G: 留空 */}
+                                                                    <td className="px-2 py-2.5 border-r border-slate-200"></td>
+                                                                    <td className="px-2 py-2.5 border-r border-slate-200"></td>
+                                                                    <td className="px-2 py-2.5 border-r border-slate-200"></td>
+                                                                    <td className="px-2 py-2.5 border-r border-slate-200"></td>
+                                                                    {/* H: 厚度 */}
                                                                     {isFirstRow && (
-                                                                        <td
-                                                                            rowSpan={rowCount}
-                                                                            className="px-4 py-2.5 border-r border-slate-100 align-middle"
-                                                                        >
-                                                                            <div className="space-y-1.5">
-                                                                                <div className="font-mono text-xs text-blue-600 font-semibold">
-                                                                                    {patternStr} = {totalWidth}
-                                                                                </div>
-                                                                                <div className="flex items-center gap-1.5 flex-wrap">
-                                                                                    <span className={`inline-flex items-center px-2 py-0.5 rounded-md text-xs font-bold ${isSingleUse
-                                                                                        ? 'bg-purple-100 text-purple-700 border border-purple-200'
-                                                                                        : 'bg-amber-50 text-amber-700 border border-amber-200'
-                                                                                        }`}>
-                                                                                        ×{group.usageCount} 车
-                                                                                    </span>
-                                                                                    <span className={`inline-flex items-center px-1.5 py-0.5 rounded-md text-[11px] font-bold ${utilization >= 99 ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
-                                                                                        : utilization >= 95 ? 'bg-blue-50 text-blue-700 border border-blue-200'
-                                                                                            : 'bg-orange-50 text-orange-600 border border-orange-200'
-                                                                                        }`}>
-                                                                                        {utilization.toFixed(1)}%
-                                                                                    </span>
-                                                                                </div>
-                                                                            </div>
-                                                                        </td>
+                                                                        <td rowSpan={rowCount} className="px-3 py-2.5 text-center text-slate-700 border-r border-slate-200 align-middle">{group.thickness || '-'}</td>
+                                                                    )}
+                                                                    {/* I: 宽度 */}
+                                                                    <td className="px-4 py-2.5 text-center font-mono text-slate-700 border-r border-slate-200">{row.width}</td>
+                                                                    {/* J: 长度 */}
+                                                                    <td className="px-4 py-2.5 text-center font-mono text-slate-700 border-r border-slate-200">{row.length}</td>
+                                                                    {/* K: 纸管内径 */}
+                                                                    <td className="px-4 py-2.5 text-center text-slate-600 border-r border-slate-200">6"</td>
+                                                                    {/* L: 分切卷数 */}
+                                                                    <td className="px-4 py-2.5 text-center font-bold text-slate-800 border-r border-slate-200">{row.rolls}</td>
+                                                                    {/* M: 平米 */}
+                                                                    <td className="px-4 py-2.5 text-center text-blue-700 font-mono bg-blue-50/30 border-r border-slate-200">{squareMeters}</td>
+                                                                    {/* N: 分切产量 */}
+                                                                    <td className="px-4 py-2.5 text-center text-blue-700 font-mono bg-blue-50/30 border-r border-slate-200">{yieldQty}</td>
+                                                                    {/* O: 电晕处理 */}
+                                                                    {isFirstRow && (
+                                                                        <td rowSpan={rowCount} className="px-4 py-2.5 text-center text-slate-700 border-r border-slate-200 align-middle">{group.surfaceTreatment}</td>
+                                                                    )}
+                                                                    {/* P: 工位数量 */}
+                                                                    <td className="px-4 py-2.5 text-center font-bold text-slate-800 border-r border-slate-200">{row.stationCount}</td>
+                                                                    
+                                                                    {/* Q: 边料 */}
+                                                                    {isFirstRow && (
+                                                                        <td rowSpan={rowCount} className="px-4 py-2.5 text-center text-orange-600 font-bold bg-orange-50/30 border-r border-slate-200 align-middle">{waste}</td>
                                                                     )}
 
-                                                                    {/* 业务员 */}
-                                                                    <td className="px-4 py-2.5 text-slate-600 border-r border-slate-100">
-                                                                        {row.salesperson || '-'}
-                                                                    </td>
-
-                                                                    {/* 订单信息 */}
-                                                                    <td className={`px-4 py-2.5 border-r border-slate-100 ${row.isOverproduction ? 'text-orange-700 font-medium' : 'text-slate-700'}`}>
-                                                                        {row.messageText || '-'}
-                                                                        {row.isOverproduction && (
-                                                                            <span className="ml-1.5 text-[10px] bg-orange-100 text-orange-600 px-1.5 py-0.5 rounded font-medium">
-                                                                                超产
-                                                                            </span>
-                                                                        )}
-                                                                    </td>
-
-                                                                    {/* 幅宽 */}
-                                                                    <td className="px-4 py-2.5 text-center font-mono text-slate-700 border-r border-slate-100">
-                                                                        {row.width}
-                                                                    </td>
-
-                                                                    {/* 数量 */}
-                                                                    <td className="px-4 py-2.5 text-center font-bold text-slate-800 border-r border-slate-100">
-                                                                        {row.rolls}
-                                                                    </td>
+                                                                    {/* R-Y Combo 1-8 */}
+                                                                    {isFirstRow && (
+                                                                        <>
+                                                                            {[...Array(8)].map((_, i) => (
+                                                                                <td key={`combo-${i}`} rowSpan={rowCount} className={`px-4 py-2.5 text-center font-mono text-slate-700 border-r border-slate-200 align-middle ${comboWidths[i] ? 'bg-slate-50/80' : ''}`}>
+                                                                                    {comboWidths[i] || ''}
+                                                                                </td>
+                                                                            ))}
+                                                                        </>
+                                                                    )}
+                                                                    
+                                                                    {isFirstRow && (
+                                                                        <>
+                                                                            {/* Z: 边料 */}
+                                                                            <td rowSpan={rowCount} className="px-4 py-2.5 text-center text-orange-600 font-bold bg-orange-50/30 border-r border-slate-200 align-middle">{waste}</td>
+                                                                            {/* AA: 分切车数 */}
+                                                                            <td rowSpan={rowCount} className="px-4 py-2.5 text-center font-bold text-purple-700 border-r border-slate-200 align-middle">{group.usageCount}</td>
+                                                                            {/* AB: 有效宽度 */}
+                                                                            <td rowSpan={rowCount} className="px-4 py-2.5 text-center text-emerald-700 font-bold bg-emerald-50/30 border-r border-slate-200 align-middle">{totalWidth}</td>
+                                                                            {/* AC: 利用率 */}
+                                                                            <td rowSpan={rowCount} className="px-4 py-2.5 text-center text-emerald-600 font-bold bg-emerald-50/30 border-r border-slate-200 align-middle">{utilization.toFixed(1)}%</td>
+                                                                        </>
+                                                                    )}
 
                                                                     {/* 操作列（仅编辑模式） */}
                                                                     {editMode && (
-                                                                        <td className="px-2 py-2 text-center">
+                                                                        <td className="px-2 py-2 text-center sticky right-0 bg-white z-10 shadow-[-2px_0_5px_rgba(0,0,0,0.02)] border-l border-slate-200">
                                                                             <div className="flex items-center justify-center gap-1">
                                                                                 <button
-                                                                                    onClick={() => handleReplace(group, rIdx)}
-                                                                                    className="inline-flex items-center gap-0.5 px-2 py-1 text-[11px] font-medium text-blue-600 hover:bg-blue-50 rounded transition-colors border border-transparent hover:border-blue-200"
-                                                                                    title="替换此行"
-                                                                                >
-                                                                                    <Replace className="w-3 h-3" />
-                                                                                    替换
-                                                                                </button>
-                                                                                <button
-                                                                                    onClick={() => handleInsert(group, rIdx)}
-                                                                                    className="inline-flex items-center gap-0.5 px-2 py-1 text-[11px] font-medium text-emerald-600 hover:bg-emerald-50 rounded transition-colors border border-transparent hover:border-emerald-200"
-                                                                                    title="在此行后插入"
-                                                                                >
-                                                                                    <Plus className="w-3 h-3" />
-                                                                                    插入
-                                                                                </button>
-                                                                                <button
-                                                                                    onClick={() => handleDeleteRow(group, group.rows[rIdx])}
-                                                                                    className="inline-flex items-center gap-0.5 px-2 py-1 text-[11px] font-medium text-red-500 hover:bg-red-50 rounded transition-colors border border-transparent hover:border-red-200"
+                                                                                    onClick={() => handleDeleteRow(group, row)}
+                                                                                    className="inline-flex items-center gap-0.5 px-2 py-1 text-[11px] font-medium text-red-500 hover:bg-red-50 rounded transition-colors"
                                                                                     title="删除此行（释放宽幅）"
                                                                                 >
                                                                                     <Trash2 className="w-3 h-3" />
                                                                                     删行
                                                                                 </button>
-
                                                                             </div>
                                                                         </td>
                                                                     )}
@@ -722,10 +697,8 @@ export default function SequenceGroups() {
                             );
                         })}
                     </div>
-                </div>{/* end flex-1 */}
-
-
-            </div>{/* end flex container */}
+                </div>
+            </div>
 
             {/* 删除确认对话框 */}
             {deleteConfirm.show && (
@@ -765,8 +738,6 @@ export default function SequenceGroups() {
                     </div>
                 </div>
             )}
-
-
         </div>
     );
 }

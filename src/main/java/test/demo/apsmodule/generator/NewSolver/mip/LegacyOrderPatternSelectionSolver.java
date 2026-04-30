@@ -408,7 +408,7 @@ class LegacyOrderPatternSelectionSolver {
             }
             objective.setMinimization();
 
-            long stage4TimeLimit = Math.min(30_000L, params.getTimeoutMs());
+            long stage4TimeLimit = Math.min(params.getStage4TimeLimit(), params.getTimeoutMs());
             solver.setHint(new MPVariable[] {}, new double[] {});
             solver.setTimeLimit(stage4TimeLimit);
 

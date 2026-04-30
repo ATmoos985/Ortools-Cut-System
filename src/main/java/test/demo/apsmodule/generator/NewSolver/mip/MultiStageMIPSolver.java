@@ -197,7 +197,7 @@ public class MultiStageMIPSolver {
             return null;
         }
 
-        long refinementBudgetMs = Math.min(12_000L, Math.max(2_000L, params.getStage4TimeLimit() / 2));
+        long refinementBudgetMs = Math.max(2_000L, params.getStage4TimeLimit() / 2);
         long deadlineMs = System.currentTimeMillis() + refinementBudgetMs;
         Map<PatternCandidate, Integer> bestSolution = currentSolution;
         Map<PatternCandidate, Integer> hintSolution = currentSolution;
