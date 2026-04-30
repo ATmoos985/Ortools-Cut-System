@@ -1,0 +1,8 @@
+target/
+logs/
+
+logs/cutting-optimization.log
+logs/solver-detail.log
+/logs/
+logs/cutting-optimization.log
+logs/solver-detail.log

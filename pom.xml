@@ -1,0 +1,115 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+    <groupId>org.acme</groupId>
+    <artifactId>test-demo</artifactId>
+    <version>1.0.0-SNAPSHOT</version>
+    <packaging>jar</packaging>
+
+    <parent>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-parent</artifactId>
+        <version>3.2.0</version>
+        <relativePath/>
+    </parent>
+
+    <properties>
+        <compiler-plugin.version>3.14.0</compiler-plugin.version>
+        <maven.compiler.release>17</maven.compiler.release>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
+        <skipITs>true</skipITs>
+        <surefire-plugin.version>3.5.3</surefire-plugin.version>
+    </properties>
+
+    <dependencies>
+      
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-web</artifactId>
+        </dependency>
+        
+      
+        <dependency>
+            <groupId>org.apache.poi</groupId>
+            <artifactId>poi</artifactId>
+            <version>5.2.5</version>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.poi</groupId>
+            <artifactId>poi-ooxml</artifactId>
+            <version>5.2.5</version>
+        </dependency>
+        
+        
+        <dependency>
+            <groupId>com.google.ortools</groupId>
+            <artifactId>ortools-java</artifactId>
+            <version>9.10.4067</version>
+            <exclusions>
+                <exclusion>
+                    <groupId>com.google.ortools</groupId>
+                    <artifactId>ortools-linux-x86-64</artifactId>
+                </exclusion>
+                <exclusion>
+                    <groupId>com.google.ortools</groupId>
+                    <artifactId>ortools-linux-aarch64</artifactId>
+                </exclusion>
+                <exclusion>
+                    <groupId>com.google.ortools</groupId>
+                    <artifactId>ortools-darwin-x86-64</artifactId>
+                </exclusion>
+                <exclusion>
+                    <groupId>com.google.ortools</groupId>
+                    <artifactId>ortools-darwin-aarch64</artifactId>
+                </exclusion>
+            </exclusions>
+        </dependency>
+        
+       
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-maven-plugin</artifactId>
+                <configuration>
+                    <mainClass>test.demo.CuttingOptimizationApplication</mainClass>
+                </configuration>
+            </plugin>
+            <plugin>
+                <artifactId>maven-compiler-plugin</artifactId>
+                <version>${compiler-plugin.version}</version>
+                <configuration>
+                    <source>17</source>
+                    <target>17</target>
+                </configuration>
+            </plugin>
+            <plugin>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <version>${surefire-plugin.version}</version>
+                <configuration>
+                    <includes>
+                        <include>**/*Test.java</include>
+                    </includes>
+                </configuration>
+            </plugin>
+            <plugin>
+                <groupId>org.codehaus.mojo</groupId>
+                <artifactId>exec-maven-plugin</artifactId>
+                <version>3.1.0</version>
+                <configuration>
+                    <mainClass></mainClass>
+                </configuration>
+            </plugin>
+            
+          
+        </plugins>
+    </build>
+</project>

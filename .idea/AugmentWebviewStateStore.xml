@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="AugmentWebviewStateStore">
+    <option name="stateMap">
+      <map>
+        <entry key="CHAT_STATE" value="[[&quot;currentConversationId&quot;,&quot;pins&quot;,&quot;agentExecutionMode&quot;,&quot;isPanelCollapsed&quot;,&quot;displayedAnnouncements&quot;,&quot;conversations&quot;,&quot;onboarding&quot;,&quot;a|0|1|2|3|4|5|6&quot;,&quot;__NEW_AGENT__&quot;,&quot;o|&quot;,&quot;manual&quot;,&quot;b|F&quot;,&quot;a|&quot;,&quot;a|8&quot;,&quot;id&quot;,&quot;createdAtIso&quot;,&quot;lastInteractedAtIso&quot;,&quot;selectedModelId&quot;,&quot;requestIds&quot;,&quot;isPinned&quot;,&quot;isShareable&quot;,&quot;extraData&quot;,&quot;personaType&quot;,&quot;toolUseStates&quot;,&quot;chatHistory&quot;,&quot;feedbackStates&quot;,&quot;draftExchange&quot;,&quot;a|E|F|G|H|I|J|K|L|M|N|O|P|Q&quot;,&quot;2026-03-03T09:20:36.976Z&quot;,&quot;claude-sonnet-4-6&quot;,&quot;isAgentConversation&quot;,&quot;a|U&quot;,&quot;b|T&quot;,&quot;o|V|W&quot;,&quot;n|0&quot;,&quot;request_message&quot;,&quot;rich_text_json_repr&quot;,&quot;status&quot;,&quot;a|Z|a|b&quot;,&quot;&quot;,&quot;type&quot;,&quot;content&quot;,&quot;a|e|f&quot;,&quot;doc&quot;,&quot;a|e&quot;,&quot;paragraph&quot;,&quot;o|i|j&quot;,&quot;a|k&quot;,&quot;o|g|h|l&quot;,&quot;draft&quot;,&quot;o|c|d|m|n&quot;,&quot;o|R|8|S|S|T|C|B|B|X|Y|9|C|9|o&quot;,&quot;o|D|p&quot;,&quot;shown&quot;,&quot;workspaceQuestions&quot;,&quot;a|r|s&quot;,&quot;o|t|B|C&quot;,&quot;o|7|8|9|A|B|C|q|u&quot;],&quot;v&quot;]" />
+      </map>
+    </option>
+  </component>
+</project>

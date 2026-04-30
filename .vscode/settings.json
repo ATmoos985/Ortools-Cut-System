@@ -1,0 +1,6 @@
+{
+    "java.compile.nullAnalysis.mode": "automatic",
+    "java.configuration.updateBuildConfiguration": "automatic",
+    "chatgpt.openOnStartup": true,
+    "boot-java.ai.mcp-server-enabled": true
+}

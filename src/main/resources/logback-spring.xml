@@ -1,0 +1,72 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<configuration>
+
+    <!-- ============ 控制台输出（带颜色） ============ -->
+    <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder>
+            <pattern>%d{HH:mm:ss.SSS} %highlight(%-5level) %cyan([%thread]) %logger{36} - %msg%n</pattern>
+            <!-- IDEA 控制台与现代终端默认按 UTF-8 处理输出 -->
+            <charset>UTF-8</charset>
+        </encoder>
+    </appender>
+
+    <!-- ============ 文件输出（按天滚动） ============ -->
+    <appender name="FILE" class="ch.qos.logback.core.rolling.RollingFileAppender">
+        <file>logs/cutting-optimization.log</file>
+        <rollingPolicy class="ch.qos.logback.core.rolling.TimeBasedRollingPolicy">
+            <!-- 按天滚动，保留 30 天 -->
+            <fileNamePattern>logs/cutting-optimization.%d{yyyy-MM-dd}.log</fileNamePattern>
+            <maxHistory>30</maxHistory>
+            <totalSizeCap>500MB</totalSizeCap>
+        </rollingPolicy>
+        <encoder>
+            <pattern>%d{yyyy-MM-dd HH:mm:ss.SSS} %-5level [%thread] %logger{50} - %msg%n</pattern>
+            <charset>UTF-8</charset>
+        </encoder>
+    </appender>
+
+    <!-- ============ 求解器详细日志（单独文件） ============ -->
+    <appender name="SOLVER_FILE" class="ch.qos.logback.core.rolling.RollingFileAppender">
+        <file>logs/solver-detail.log</file>
+        <rollingPolicy class="ch.qos.logback.core.rolling.TimeBasedRollingPolicy">
+            <fileNamePattern>logs/solver-detail.%d{yyyy-MM-dd}.log</fileNamePattern>
+            <maxHistory>7</maxHistory>
+            <totalSizeCap>200MB</totalSizeCap>
+        </rollingPolicy>
+        <encoder>
+            <pattern>%d{HH:mm:ss.SSS} %-5level %logger{30} - %msg%n</pattern>
+            <charset>UTF-8</charset>
+        </encoder>
+    </appender>
+
+    <!-- ============ 分模块日志级别 ============ -->
+
+    <!-- 求解器层：DEBUG（输出所有求解细节），同时写入 solver-detail.log -->
+    <logger name="test.demo.generator" level="DEBUG" additivity="true">
+        <appender-ref ref="SOLVER_FILE" />
+    </logger>
+    <logger name="test.demo.solver" level="DEBUG" additivity="true">
+        <appender-ref ref="SOLVER_FILE" />
+    </logger>
+
+    <!-- 业务服务层：INFO -->
+    <logger name="test.demo.service" level="INFO" />
+
+    <!-- REST API 层：INFO -->
+    <logger name="test.demo.rest" level="INFO" />
+
+    <!-- 工具层：INFO -->
+    <logger name="test.demo.util" level="INFO" />
+
+    <!-- 第三方库：WARN（减少噪音） -->
+    <logger name="org.springframework" level="WARN" />
+    <logger name="org.apache" level="WARN" />
+    <logger name="com.google" level="WARN" />
+
+    <!-- ============ 根日志 ============ -->
+    <root level="INFO">
+        <appender-ref ref="CONSOLE" />
+        <appender-ref ref="FILE" />
+    </root>
+
+</configuration>
