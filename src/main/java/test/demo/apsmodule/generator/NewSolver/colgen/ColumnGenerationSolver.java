@@ -8,6 +8,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import test.demo.apsmodule.generator.NewSolver.config.SolverParameters;
 import test.demo.apsmodule.generator.NewSolver.model.PatternCandidate;
+import test.demo.apsmodule.generator.NewSolver.util.SolverDeterminism;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -130,6 +131,7 @@ public class ColumnGenerationSolver {
             if (solver == null) {
                 return new MasterLPResult(0, new HashMap<>(), false);
             }
+            SolverDeterminism.configure(solver);
 
             int totalDemand = demands.values().stream().mapToInt(Integer::intValue).sum();
             int maxDemand = demands.values().stream().mapToInt(Integer::intValue).max().orElse(1);
@@ -234,9 +236,15 @@ public class ColumnGenerationSolver {
             }
         }
 
-        newPatterns.sort((a, b) -> Double.compare(
-                calculateReducedCost(a, dualPrices),
-                calculateReducedCost(b, dualPrices)));
+        newPatterns.sort((a, b) -> {
+            int byReducedCost = Double.compare(
+                    calculateReducedCost(a, dualPrices),
+                    calculateReducedCost(b, dualPrices));
+            if (byReducedCost != 0) {
+                return byReducedCost;
+            }
+            return a.signature().compareTo(b.signature());
+        });
 
         if (newPatterns.size() > PRICING_CANDIDATE_LIMIT) {
             return new ArrayList<>(newPatterns.subList(0, PRICING_CANDIDATE_LIMIT));
@@ -428,7 +436,13 @@ public class ColumnGenerationSolver {
             Set<Integer> allowOverSet) {
         int repaired = 0;
         List<Integer> widths = new ArrayList<>(demands.keySet());
-        widths.sort((a, b) -> Integer.compare(demands.get(b), demands.get(a)));
+        widths.sort((a, b) -> {
+            int byDemand = Integer.compare(demands.get(b), demands.get(a));
+            if (byDemand != 0) {
+                return byDemand;
+            }
+            return Integer.compare(a, b);
+        });
 
         int minRollWidth = params.getMinRollWidth();
         int maxRollWidth = params.getMaxRollWidth();

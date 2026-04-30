@@ -8,10 +8,15 @@ import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.TreeMap;
 
 /**
  * Estimates the size of a future (pattern, whole-roll configuration) assignment
  * model after pruning configurations that exceed width-message demand.
+ *
+ * This is a local-feasibility upper bound. Global over-production caps and
+ * cross-configuration balance constraints can only reduce the configurations
+ * that a real MIP can use.
  */
 final class AssignmentConfigurationEstimator {
 
@@ -76,10 +81,10 @@ final class AssignmentConfigurationEstimator {
     }
 
     private static Map<Integer, List<MessageDemand>> buildDemandsByWidth(List<SolverOrderItem> groupItems) {
-        Map<Integer, Map<String, Integer>> demandMap = new LinkedHashMap<>();
+        Map<Integer, Map<String, Integer>> demandMap = new TreeMap<>();
         for (SolverOrderItem item : groupItems) {
             demandMap
-                    .computeIfAbsent(item.getWidth(), ignored -> new LinkedHashMap<>())
+                    .computeIfAbsent(item.getWidth(), ignored -> new TreeMap<>())
                     .merge(item.getMessageText(), item.getDemand(), Integer::sum);
         }
 

@@ -59,6 +59,29 @@ class CuttingSolverTest {
     }
 
     @Test
+    void buildAllowOverSetBreaksDemandTiesByWidth() throws Exception {
+        SolverConfig config = new SolverConfig();
+        config.setStepSize(10);
+        config.setNewSolverTopK(1);
+
+        SolverParameters params = SolverParameters.createDefault();
+        params.mergeFrom(config);
+
+        Map<Integer, Integer> demands = new LinkedHashMap<>();
+        demands.put(3400, 10);
+        demands.put(3300, 10);
+
+        CuttingSolver solver = new CuttingSolver(params);
+        Method method = CuttingSolver.class.getDeclaredMethod("buildAllowOverSet", Map.class, SolverParameters.class);
+        method.setAccessible(true);
+
+        @SuppressWarnings("unchecked")
+        Set<Integer> allowOverSet = (Set<Integer>) method.invoke(solver, demands, params);
+
+        assertEquals(Set.of(3300), allowOverSet);
+    }
+
+    @Test
     void isBetterPlanPrefersFewerSequenceGroupsInsideWasteTolerance() throws Exception {
         SolverParameters params = SolverParameters.createDefault();
         CuttingSolver solver = new CuttingSolver(params);

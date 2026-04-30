@@ -12,7 +12,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Queue;
-import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 
 /**
@@ -40,14 +39,14 @@ public class SequenceGroupPostProcessor {
             return;
         }
 
-        long safeBudgetMs = Math.max(1L, timeBudgetMs);
-        long deadlineNanos = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(safeBudgetMs);
+        long operationLimit = Math.max(1L, timeBudgetMs) * 100L;
+        OperationBudget budget = new OperationBudget(operationLimit);
         int totalBefore = 0;
         int totalAfter = 0;
         boolean completed = true;
 
         for (CuttingInstruction instruction : instructions) {
-            if (System.nanoTime() >= deadlineNanos) {
+            if (!budget.tryConsume()) {
                 completed = false;
                 break;
             }
@@ -66,14 +65,11 @@ public class SequenceGroupPostProcessor {
             List<int[]> groupsBefore = identifyGroups(rolls);
             totalBefore += groupsBefore.size();
 
-            boolean changed = tryMergeAdjacentGroups(rolls, deadlineNanos);
-            if (System.nanoTime() >= deadlineNanos) {
-                completed = false;
-            }
+            boolean changed = tryMergeAdjacentGroups(rolls, budget);
 
             List<int[]> groupsForEvenize = changed ? identifyGroups(rolls) : groupsBefore;
-            if (System.nanoTime() < deadlineNanos) {
-                tryEvenizeGroups(rolls, groupsForEvenize, deadlineNanos);
+            if (budget.hasRemaining()) {
+                tryEvenizeGroups(rolls, groupsForEvenize, budget);
             } else {
                 completed = false;
             }
@@ -95,7 +91,7 @@ public class SequenceGroupPostProcessor {
                     totalBefore, totalAfter, totalBefore - totalAfter);
         }
         if (logSummary && !completed) {
-            log.info("Sequence-group postprocess stopped early after {}ms budget", safeBudgetMs);
+            log.info("Sequence-group postprocess stopped early after deterministic operation budget {}", operationLimit);
         }
     }
 
@@ -205,17 +201,17 @@ public class SequenceGroupPostProcessor {
         return keys1.equals(keys2);
     }
 
-    private static boolean tryMergeAdjacentGroups(List<List<StationAssignment>> rolls, long deadlineNanos) {
+    private static boolean tryMergeAdjacentGroups(List<List<StationAssignment>> rolls, OperationBudget budget) {
         boolean anyChanged = false;
         int maxPasses = Math.max(1, rolls.size());
 
-        for (int pass = 0; pass < maxPasses && System.nanoTime() < deadlineNanos; pass++) {
+        for (int pass = 0; pass < maxPasses && budget.tryConsume(); pass++) {
             boolean changedThisPass = false;
             List<int[]> groups = identifyGroups(rolls);
             int groupCountBefore = groups.size();
 
             for (int groupIndex = 0; groupIndex < groups.size() - 1; groupIndex++) {
-                if (System.nanoTime() >= deadlineNanos) {
+                if (!budget.tryConsume()) {
                     return anyChanged;
                 }
 
@@ -304,13 +300,13 @@ public class SequenceGroupPostProcessor {
         }
     }
 
-    private static void tryEvenizeGroups(List<List<StationAssignment>> rolls, List<int[]> groups, long deadlineNanos) {
+    private static void tryEvenizeGroups(List<List<StationAssignment>> rolls, List<int[]> groups, OperationBudget budget) {
         if (groups.size() < 2) {
             return;
         }
 
         for (int groupIndex = 0; groupIndex < groups.size() - 1; groupIndex++) {
-            if (System.nanoTime() >= deadlineNanos) {
+            if (!budget.tryConsume()) {
                 return;
             }
 
@@ -323,6 +319,9 @@ public class SequenceGroupPostProcessor {
                 List<StationAssignment> boundaryRoll = rolls.get(group1[1]);
                 List<StationAssignment> targetRoll = rolls.get(group2[0]);
                 for (int i = 0; i < boundaryRoll.size() && i < targetRoll.size(); i++) {
+                    if (!budget.tryConsume()) {
+                        return;
+                    }
                     StationAssignment boundary = boundaryRoll.get(i);
                     StationAssignment target = targetRoll.get(i);
                     if (boundary.getWidth() == target.getWidth()
@@ -353,5 +352,25 @@ public class SequenceGroupPostProcessor {
     }
 
     private record GroupSnapshot(int startRoll, List<List<StationAssignment>> rolls) {
+    }
+
+    private static final class OperationBudget {
+        private long remaining;
+
+        private OperationBudget(long remaining) {
+            this.remaining = Math.max(1L, remaining);
+        }
+
+        private boolean hasRemaining() {
+            return remaining > 0;
+        }
+
+        private boolean tryConsume() {
+            if (remaining <= 0) {
+                return false;
+            }
+            remaining--;
+            return true;
+        }
     }
 }

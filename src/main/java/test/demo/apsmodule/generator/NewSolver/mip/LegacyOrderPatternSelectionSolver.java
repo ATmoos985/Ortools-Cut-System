@@ -8,6 +8,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import test.demo.apsmodule.generator.NewSolver.config.SolverParameters;
 import test.demo.apsmodule.generator.NewSolver.model.PatternCandidate;
+import test.demo.apsmodule.generator.NewSolver.util.SolverDeterminism;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -123,7 +124,13 @@ class LegacyOrderPatternSelectionSolver {
 
     private Set<Integer> expandAllowOverSet(Map<Integer, Integer> demands, int newTopK) {
         List<Map.Entry<Integer, Integer>> sorted = demands.entrySet().stream()
-                .sorted((a, b) -> Integer.compare(b.getValue(), a.getValue()))
+                .sorted((a, b) -> {
+                    int byDemand = Integer.compare(b.getValue(), a.getValue());
+                    if (byDemand != 0) {
+                        return byDemand;
+                    }
+                    return Integer.compare(a.getKey(), b.getKey());
+                })
                 .toList();
 
         Set<Integer> expandedSet = new HashSet<>();
@@ -460,9 +467,15 @@ class LegacyOrderPatternSelectionSolver {
             Set<Integer> allowOverSet) {
         int repaired = 0;
         List<Integer> widths = new ArrayList<>(demands.keySet());
-        widths.sort((a, b) -> Integer.compare(demands.get(b), demands.get(a)));
+        widths.sort((a, b) -> {
+            int byDemand = Integer.compare(demands.get(b), demands.get(a));
+            if (byDemand != 0) {
+                return byDemand;
+            }
+            return Integer.compare(a, b);
+        });
 
-        for (int width : demands.keySet()) {
+        for (int width : widths) {
             List<Integer> coefficients = new ArrayList<>();
             for (PatternCandidate pattern : patterns) {
                 int count = pattern.getPattern().getOrDefault(width, 0);
@@ -562,6 +575,7 @@ class LegacyOrderPatternSelectionSolver {
         if (solver == null) {
             solver = MPSolver.createSolver("CBC");
         }
+        SolverDeterminism.configure(solver);
         return solver;
     }
 

@@ -10,6 +10,7 @@ import org.slf4j.LoggerFactory;
 import test.demo.apsmodule.generator.NewSolver.config.SolverParameters;
 import test.demo.apsmodule.generator.NewSolver.mip.AssignmentMIPSolver;
 import test.demo.apsmodule.generator.NewSolver.model.PatternCandidate;
+import test.demo.apsmodule.generator.NewSolver.util.SolverDeterminism;
 import test.demo.apsmodule.service.CuttingInstruction;
 import test.demo.apsmodule.service.SolverOrderItem;
 import test.demo.apsmodule.service.StationAssignment;
@@ -26,6 +27,9 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Queue;
+import java.util.Set;
+import java.util.TreeMap;
+import java.util.TreeSet;
 import java.util.stream.Collectors;
 
 /**
@@ -199,9 +203,17 @@ public class InstructionConverter {
 
         List<CuttingInstruction> instructions = new ArrayList<>();
         Map<Integer, List<SolverOrderItem>> widthToItems = groupItems.stream()
-                .collect(Collectors.groupingBy(SolverOrderItem::getWidth));
+                .collect(Collectors.groupingBy(
+                        SolverOrderItem::getWidth,
+                        TreeMap::new,
+                        Collectors.collectingAndThen(Collectors.toList(), items -> {
+                            items.sort(Comparator
+                                    .comparing(SolverOrderItem::getMessageText)
+                                    .thenComparingInt(SolverOrderItem::getDemand));
+                            return items;
+                        })));
 
-        Map<String, Integer> remainingDemands = new HashMap<>();
+        Map<String, Integer> remainingDemands = new LinkedHashMap<>();
         for (SolverOrderItem item : groupItems) {
             remainingDemands.merge(demandKey(item.getWidth(), item.getMessageText()), item.getDemand(), Integer::sum);
         }
@@ -306,7 +318,7 @@ public class InstructionConverter {
     }
 
     private Map<String, Integer> countAssignmentsByDemandKey(List<CuttingInstruction> instructions) {
-        Map<String, Integer> counts = new HashMap<>();
+        Map<String, Integer> counts = new TreeMap<>();
         for (CuttingInstruction instruction : instructions) {
             if (instruction.getStationAssignments() == null) {
                 continue;
@@ -315,16 +327,16 @@ public class InstructionConverter {
                 counts.merge(demandKey(assignment.getWidth(), assignment.getMessageText()), 1, Integer::sum);
             }
         }
-        return counts;
+        return new LinkedHashMap<>(counts);
     }
 
     private void rebalanceAssignments(List<CuttingInstruction> instructions, List<SolverOrderItem> groupItems) {
-        Map<String, Integer> demandByKey = new HashMap<>();
+        Map<String, Integer> demandByKey = new LinkedHashMap<>();
         for (SolverOrderItem item : groupItems) {
             demandByKey.merge(demandKey(item.getWidth(), item.getMessageText()), item.getDemand(), Integer::sum);
         }
 
-        Map<String, Integer> allocatedByKey = new HashMap<>();
+        Map<String, Integer> allocatedByKey = new LinkedHashMap<>();
         for (CuttingInstruction instruction : instructions) {
             if (instruction.getStationAssignments() == null) {
                 continue;
@@ -334,18 +346,19 @@ public class InstructionConverter {
             }
         }
 
-        Map<Integer, List<String>> messagesByWidth = new HashMap<>();
+        Map<Integer, Set<String>> messageSetsByWidth = new TreeMap<>();
         for (SolverOrderItem item : groupItems) {
-            messagesByWidth.computeIfAbsent(item.getWidth(), key -> new ArrayList<>()).add(item.getMessageText());
+            messageSetsByWidth
+                    .computeIfAbsent(item.getWidth(), key -> new TreeSet<>())
+                    .add(item.getMessageText());
         }
-        for (List<String> messages : messagesByWidth.values()) {
-            List<String> unique = new ArrayList<>(new LinkedHashSet<>(messages));
-            messages.clear();
-            messages.addAll(unique);
+        Map<Integer, List<String>> messagesByWidth = new LinkedHashMap<>();
+        for (Map.Entry<Integer, Set<String>> entry : messageSetsByWidth.entrySet()) {
+            messagesByWidth.put(entry.getKey(), new ArrayList<>(entry.getValue()));
         }
 
-        Map<String, Integer> overByKey = new HashMap<>();
-        Map<String, Integer> underByKey = new HashMap<>();
+        Map<String, Integer> overByKey = new LinkedHashMap<>();
+        Map<String, Integer> underByKey = new LinkedHashMap<>();
         for (String key : demandByKey.keySet()) {
             int demand = demandByKey.get(key);
             int allocated = allocatedByKey.getOrDefault(key, 0);
@@ -654,9 +667,11 @@ public class InstructionConverter {
         if (solver == null) {
             return null;
         }
+        SolverDeterminism.configure(solver);
 
         List<RollConfig> activeConfigs = candidateConfigs.stream()
                 .filter(config -> config.support() > 0)
+                .sorted(Comparator.comparing(RollConfig::signature))
                 .toList();
         if (activeConfigs.isEmpty()) {
             return null;
@@ -715,7 +730,11 @@ public class InstructionConverter {
 
         solver.setTimeLimit(repackProfile.timeLimitMs());
         MPSolver.ResultStatus status = solver.solve();
-        if (status != MPSolver.ResultStatus.OPTIMAL && status != MPSolver.ResultStatus.FEASIBLE) {
+        if (status != MPSolver.ResultStatus.OPTIMAL) {
+            if (status == MPSolver.ResultStatus.FEASIBLE) {
+                log.debug("Instruction repack ignored non-optimal feasible solution after {}ms",
+                        repackProfile.timeLimitMs());
+            }
             return null;
         }
 

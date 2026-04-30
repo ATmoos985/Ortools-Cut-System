@@ -9,6 +9,7 @@ import org.slf4j.LoggerFactory;
 import test.demo.apsmodule.generator.NewSolver.config.SolverParameters;
 import test.demo.apsmodule.generator.NewSolver.model.PatternCandidate;
 import test.demo.apsmodule.generator.NewSolver.model.SolverResult;
+import test.demo.apsmodule.generator.NewSolver.util.SolverDeterminism;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -261,7 +262,13 @@ public class MultiStageMIPSolver {
 
         int repaired = 0;
         List<Integer> allWidths = new ArrayList<>(demands.keySet());
-        allWidths.sort((a, b) -> Integer.compare(demands.get(b), demands.get(a)));
+        allWidths.sort((a, b) -> {
+            int byDemand = Integer.compare(demands.get(b), demands.get(a));
+            if (byDemand != 0) {
+                return byDemand;
+            }
+            return Integer.compare(a, b);
+        });
 
         List<Integer> targetWidths = underByWidth.entrySet().stream()
                 .sorted((a, b) -> {
@@ -269,7 +276,13 @@ public class MultiStageMIPSolver {
                     if (byUnder != 0) {
                         return byUnder;
                     }
-                    return Integer.compare(demands.getOrDefault(b.getKey(), 0), demands.getOrDefault(a.getKey(), 0));
+                    int byDemand = Integer.compare(
+                            demands.getOrDefault(b.getKey(), 0),
+                            demands.getOrDefault(a.getKey(), 0));
+                    if (byDemand != 0) {
+                        return byDemand;
+                    }
+                    return Integer.compare(a.getKey(), b.getKey());
                 })
                 .map(Map.Entry::getKey)
                 .toList();
@@ -763,7 +776,13 @@ public class MultiStageMIPSolver {
 
     private Set<Integer> expandAllowOverSet(Map<Integer, Integer> demands, int newTopK) {
         List<Map.Entry<Integer, Integer>> sorted = demands.entrySet().stream()
-                .sorted((a, b) -> Integer.compare(b.getValue(), a.getValue()))
+                .sorted((a, b) -> {
+                    int byDemand = Integer.compare(b.getValue(), a.getValue());
+                    if (byDemand != 0) {
+                        return byDemand;
+                    }
+                    return Integer.compare(a.getKey(), b.getKey());
+                })
                 .toList();
 
         Set<Integer> expandedSet = new HashSet<>();
@@ -860,6 +879,7 @@ public class MultiStageMIPSolver {
         if (solver == null) {
             solver = MPSolver.createSolver("CBC");
         }
+        SolverDeterminism.configure(solver);
         return solver;
     }
 

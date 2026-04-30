@@ -77,7 +77,10 @@ public class CuttingSolver implements CuttingSolverAlgorithm {
         InstructionConverter converter = new InstructionConverter(params);
 
         Map<String, List<SolverOrderItem>> groups = items.stream()
-                .collect(Collectors.groupingBy(SolverOrderItem::getGroupKey));
+                .collect(Collectors.groupingBy(
+                        SolverOrderItem::getGroupKey,
+                        TreeMap::new,
+                        Collectors.toList()));
 
         log.info("Group count: {}", groups.size());
 
@@ -92,6 +95,7 @@ public class CuttingSolver implements CuttingSolverAlgorithm {
             Map<Integer, Integer> demands = groupItems.stream()
                     .collect(Collectors.groupingBy(
                             SolverOrderItem::getWidth,
+                            TreeMap::new,
                             Collectors.summingInt(SolverOrderItem::getDemand)));
 
             Set<Integer> allowOverSet = buildAllowOverSet(demands, params);
@@ -163,14 +167,22 @@ public class CuttingSolver implements CuttingSolverAlgorithm {
 
     private Set<Integer> buildAllowOverSet(Map<Integer, Integer> demands, SolverParameters params) {
         List<Map.Entry<Integer, Integer>> sorted = demands.entrySet().stream()
-                .sorted((a, b) -> Integer.compare(b.getValue(), a.getValue()))
+                .sorted((a, b) -> {
+                    int byDemand = Integer.compare(b.getValue(), a.getValue());
+                    if (byDemand != 0) {
+                        return byDemand;
+                    }
+                    return Integer.compare(a.getKey(), b.getKey());
+                })
                 .collect(Collectors.toList());
 
-        Set<Integer> allowOverSet = new HashSet<>();
+        Set<Integer> allowOverSet = new LinkedHashSet<>();
         for (int i = 0; i < Math.min(params.getTopK(), sorted.size()); i++) {
             allowOverSet.add(sorted.get(i).getKey());
         }
-        allowOverSet.addAll(params.getForceAllowOverWidths());
+        params.getForceAllowOverWidths().stream()
+                .sorted()
+                .forEach(allowOverSet::add);
         return allowOverSet;
     }
 
@@ -264,14 +276,14 @@ public class CuttingSolver implements CuttingSolverAlgorithm {
     }
 
     private int estimateSequenceGroupLowerBound(List<SolverOrderItem> groupItems, SolverResult result) {
-        Map<Integer, Set<String>> messagesByWidth = new HashMap<>();
+        Map<Integer, Set<String>> messagesByWidth = new TreeMap<>();
         for (SolverOrderItem item : groupItems) {
             messagesByWidth
-                    .computeIfAbsent(item.getWidth(), ignored -> new HashSet<>())
+                    .computeIfAbsent(item.getWidth(), ignored -> new TreeSet<>())
                     .add(item.getMessageText());
         }
 
-        Map<Integer, Integer> maxSlotsByWidth = new HashMap<>();
+        Map<Integer, Integer> maxSlotsByWidth = new TreeMap<>();
         for (PatternCandidate pattern : result.getSolution().keySet()) {
             for (Map.Entry<Integer, Integer> entry : pattern.getPattern().entrySet()) {
                 maxSlotsByWidth.merge(entry.getKey(), entry.getValue(), Math::max);

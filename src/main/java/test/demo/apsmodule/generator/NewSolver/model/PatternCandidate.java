@@ -20,9 +20,15 @@ public class PatternCandidate {
     private final int patternWidth;
 
     public PatternCandidate(Map<Integer, Integer> pattern, int rollWidth) {
-        this.pattern = new LinkedHashMap<>(pattern);
+        this.pattern = pattern.entrySet().stream()
+                .sorted(Map.Entry.comparingByKey())
+                .collect(Collectors.toMap(
+                        Map.Entry::getKey,
+                        Map.Entry::getValue,
+                        (left, right) -> left,
+                        LinkedHashMap::new));
         this.rollWidth = rollWidth;
-        this.patternWidth = pattern.entrySet().stream()
+        this.patternWidth = this.pattern.entrySet().stream()
                 .mapToInt(e -> e.getKey() * e.getValue()).sum();
     }
 

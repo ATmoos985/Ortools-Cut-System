@@ -37,7 +37,13 @@ public class PatternGenerator {
         List<Integer> widths = new ArrayList<>(demands.keySet());
 
         // 按需求量降序排列，大需求优先参与组合
-        widths.sort((a, b) -> Integer.compare(demands.get(b), demands.get(a)));
+        widths.sort((a, b) -> {
+            int byDemand = Integer.compare(demands.get(b), demands.get(a));
+            if (byDemand != 0) {
+                return byDemand;
+            }
+            return Integer.compare(a, b);
+        });
 
         int minRw = params.getMinRollWidth();
         int maxRw = params.getMaxRollWidth();

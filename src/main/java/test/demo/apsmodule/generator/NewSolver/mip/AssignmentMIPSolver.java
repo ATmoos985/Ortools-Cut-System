@@ -8,6 +8,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import test.demo.apsmodule.generator.NewSolver.config.SolverParameters;
 import test.demo.apsmodule.generator.NewSolver.model.PatternCandidate;
+import test.demo.apsmodule.generator.NewSolver.util.SolverDeterminism;
 import test.demo.apsmodule.service.SolverOrderItem;
 
 import java.util.ArrayList;
@@ -18,6 +19,8 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.TreeMap;
+import java.util.TreeSet;
 
 /**
  * Stage 5 assignment MIP.
@@ -70,16 +73,20 @@ public class AssignmentMIPSolver {
             detailedDemands.merge(key, item.getDemand(), Integer::sum);
         }
 
-        Map<Integer, List<String>> messagesByWidth = new LinkedHashMap<>();
+        Map<Integer, Set<String>> messageSetsByWidth = new TreeMap<>();
         for (SolverOrderItem item : groupItems) {
-            messagesByWidth.computeIfAbsent(item.getWidth(), key -> new ArrayList<>());
-            List<String> messages = messagesByWidth.get(item.getWidth());
-            if (!messages.contains(item.getMessageText())) {
-                messages.add(item.getMessageText());
-            }
+            messageSetsByWidth
+                    .computeIfAbsent(item.getWidth(), key -> new TreeSet<>())
+                    .add(item.getMessageText());
+        }
+
+        Map<Integer, List<String>> messagesByWidth = new LinkedHashMap<>();
+        for (Map.Entry<Integer, Set<String>> entry : messageSetsByWidth.entrySet()) {
+            messagesByWidth.put(entry.getKey(), new ArrayList<>(entry.getValue()));
         }
 
         List<PatternCandidate> patternList = new ArrayList<>(solution.keySet());
+        patternList.sort(Comparator.comparing(PatternCandidate::signature));
         log.debug("Stage5 patterns={} detailedDemands={}", patternList.size(), detailedDemands.size());
         logConfigurationScale(solution, groupItems);
 
@@ -92,6 +99,7 @@ public class AssignmentMIPSolver {
                 log.error("Stage5 could not create a MIP solver");
                 return null;
             }
+            SolverDeterminism.configure(solver);
 
             Map<String, MPVariable> aVars = new LinkedHashMap<>();
             Map<String, MPVariable> yVars = new LinkedHashMap<>();

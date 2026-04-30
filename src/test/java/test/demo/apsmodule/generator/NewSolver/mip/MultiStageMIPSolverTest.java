@@ -145,7 +145,7 @@ class MultiStageMIPSolverTest {
                 Set.of(380, 390));
 
         assertEquals(1, candidates.size());
-        assertEquals("legacy-order", candidates.get(0).name());
+        assertEquals("legacy-best-waste", candidates.get(0).name());
         assertEquals(1, candidates.get(0).result().getPatternCount());
         assertEquals(370, candidates.get(0).result().getTotalWaste());
     }
