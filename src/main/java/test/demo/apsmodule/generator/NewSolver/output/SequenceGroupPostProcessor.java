@@ -6,6 +6,7 @@ import test.demo.apsmodule.service.CuttingInstruction;
 import test.demo.apsmodule.service.StationAssignment;
 
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.LinkedList;
 import java.util.List;
@@ -40,17 +41,10 @@ public class SequenceGroupPostProcessor {
             return;
         }
 
-        long safeBudgetMs = Math.max(1L, timeBudgetMs);
-        long deadlineNanos = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(safeBudgetMs);
         int totalBefore = 0;
         int totalAfter = 0;
-        boolean completed = true;
 
         for (CuttingInstruction instruction : instructions) {
-            if (System.nanoTime() >= deadlineNanos) {
-                completed = false;
-                break;
-            }
             if (instruction.getStationAssignments() == null || instruction.getStationAssignments().isEmpty()) {
                 continue;
             }
@@ -58,35 +52,30 @@ public class SequenceGroupPostProcessor {
                 continue;
             }
 
-            List<List<StationAssignment>> rolls = simulateRolls(instruction);
-            if (rolls.size() <= 1) {
+            List<List<StationAssignment>> rollsBefore = simulateRolls(instruction);
+            if (rollsBefore.size() <= 1) {
                 continue;
             }
 
-            List<int[]> groupsBefore = identifyGroups(rolls);
-            totalBefore += groupsBefore.size();
+            int groupsBefore = identifyGroups(rollsBefore).size();
+            totalBefore += groupsBefore;
 
-            boolean changed = tryMergeAdjacentGroups(rolls, deadlineNanos);
-            if (System.nanoTime() >= deadlineNanos) {
-                completed = false;
-            }
+            List<StationAssignment> resequenced = resequenceBySort(instruction);
+            instruction.setStationAssignments(resequenced);
 
-            List<int[]> groupsForEvenize = changed ? identifyGroups(rolls) : groupsBefore;
-            if (System.nanoTime() < deadlineNanos) {
-                tryEvenizeGroups(rolls, groupsForEvenize, deadlineNanos);
-            } else {
-                completed = false;
-            }
+            List<List<StationAssignment>> rollsAfter = simulateRolls(instruction);
+            int groupsAfter = identifyGroups(rollsAfter).size();
 
-            List<int[]> groupsAfter = identifyGroups(rolls);
-            totalAfter += groupsAfter.size();
-
-            if (groupsAfter.size() < groupsBefore.size() || changed) {
-                List<StationAssignment> newAssignments = new ArrayList<>();
-                for (List<StationAssignment> roll : rolls) {
-                    newAssignments.addAll(roll);
+            if (groupsAfter > groupsBefore) {
+                // Revert if the sort made things worse (e.g., multi-width interaction)
+                List<StationAssignment> original = new ArrayList<>();
+                for (List<StationAssignment> roll : rollsBefore) {
+                    original.addAll(roll);
                 }
-                instruction.setStationAssignments(newAssignments);
+                instruction.setStationAssignments(original);
+                totalAfter += groupsBefore;
+            } else {
+                totalAfter += groupsAfter;
             }
         }
 
@@ -94,9 +83,57 @@ public class SequenceGroupPostProcessor {
             log.info("Sequence-group postprocess: {} -> {} (reduced by {})",
                     totalBefore, totalAfter, totalBefore - totalAfter);
         }
-        if (logSummary && !completed) {
-            log.info("Sequence-group postprocess stopped early after {}ms budget", safeBudgetMs);
+    }
+
+    /**
+     * Reorder StationAssignments within an instruction so that identical roll
+     * configurations are consecutive, minimising sequence groups.
+     *
+     * Each StationAssignment object is kept intact (messageText is never changed).
+     * Only the order in which assignments are consumed per-roll is changed.
+     *
+     * Strategy: sort each per-width assignment list by messageText so that all
+     * same-message assignments are consecutive.  Then rebuild the flat list by
+     * interleaving width buckets in pattern order.  For single-width patterns
+     * this is provably optimal; for multi-width patterns it is a strong heuristic.
+     */
+    private static List<StationAssignment> resequenceBySort(CuttingInstruction instruction) {
+        // Group assignments by width, preserving insertion order per width
+        Map<Integer, List<StationAssignment>> byWidth = new LinkedHashMap<>();
+        for (StationAssignment a : instruction.getStationAssignments()) {
+            byWidth.computeIfAbsent(a.getWidth(), k -> new ArrayList<>()).add(a);
         }
+
+        // Sort each width group by messageText to cluster same messages
+        for (List<StationAssignment> group : byWidth.values()) {
+            group.sort(Comparator.comparing(StationAssignment::getMessageText,
+                    Comparator.nullsLast(Comparator.naturalOrder())));
+        }
+
+        // Convert to queues for sequential consumption
+        Map<Integer, java.util.ArrayDeque<StationAssignment>> queues = new LinkedHashMap<>();
+        for (Map.Entry<Integer, List<StationAssignment>> e : byWidth.entrySet()) {
+            queues.put(e.getKey(), new java.util.ArrayDeque<>(e.getValue()));
+        }
+
+        // Rebuild: for each roll, take the required count from each width queue
+        int usageCount = instruction.getUsageCount();
+        Map<Integer, Integer> subRolls = instruction.getSubRolls();
+        List<StationAssignment> result = new ArrayList<>(instruction.getStationAssignments().size());
+
+        for (int i = 0; i < usageCount; i++) {
+            for (Map.Entry<Integer, Integer> e : subRolls.entrySet()) {
+                int width = e.getKey();
+                int slotsPerRoll = e.getValue();
+                java.util.ArrayDeque<StationAssignment> q = queues.get(width);
+                for (int j = 0; j < slotsPerRoll; j++) {
+                    if (q != null && !q.isEmpty()) {
+                        result.add(q.poll());
+                    }
+                }
+            }
+        }
+        return result;
     }
 
     public static int countTotalGroups(List<CuttingInstruction> instructions) {

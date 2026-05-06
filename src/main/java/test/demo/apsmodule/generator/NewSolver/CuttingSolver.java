@@ -107,7 +107,7 @@ public class CuttingSolver implements CuttingSolverAlgorithm {
                 patterns = colGenSolver.solve(patterns, demands, allowOverSet);
 
                 List<MultiStageMIPSolver.SolveCandidate> solveCandidates =
-                        mipSolver.solveCandidates(patterns, demands, allowOverSet);
+                        mipSolver.solveCandidates(patterns, demands, allowOverSet, groupItems);
                 if (solveCandidates.isEmpty()) {
                     log.warn("Solve failed for group: {}", groupKey);
                     report.writeGroupFailure(

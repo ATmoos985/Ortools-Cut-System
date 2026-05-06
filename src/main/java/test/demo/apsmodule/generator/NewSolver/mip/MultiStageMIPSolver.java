@@ -9,6 +9,8 @@ import org.slf4j.LoggerFactory;
 import test.demo.apsmodule.generator.NewSolver.config.SolverParameters;
 import test.demo.apsmodule.generator.NewSolver.model.PatternCandidate;
 import test.demo.apsmodule.generator.NewSolver.model.SolverResult;
+import test.demo.apsmodule.generator.NewSolver.scoring.PatternAlignmentScorer;
+import test.demo.apsmodule.service.SolverOrderItem;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -44,9 +46,16 @@ public class MultiStageMIPSolver {
     public SolverResult solve(List<PatternCandidate> patterns,
             Map<Integer, Integer> demands,
             Set<Integer> allowOverSet) {
+        return solve(patterns, demands, allowOverSet, java.util.Collections.emptyList());
+    }
+
+    public SolverResult solve(List<PatternCandidate> patterns,
+            Map<Integer, Integer> demands,
+            Set<Integer> allowOverSet,
+            List<SolverOrderItem> groupItems) {
         long startTime = System.currentTimeMillis();
 
-        List<SolveCandidate> candidates = solveCandidates(patterns, demands, allowOverSet);
+        List<SolveCandidate> candidates = solveCandidates(patterns, demands, allowOverSet, groupItems);
         if (candidates.isEmpty()) {
             return SolverResult.failure(System.currentTimeMillis() - startTime);
         }
@@ -57,10 +66,17 @@ public class MultiStageMIPSolver {
     public List<SolveCandidate> solveCandidates(List<PatternCandidate> patterns,
             Map<Integer, Integer> demands,
             Set<Integer> allowOverSet) {
+        return solveCandidates(patterns, demands, allowOverSet, java.util.Collections.emptyList());
+    }
+
+    public List<SolveCandidate> solveCandidates(List<PatternCandidate> patterns,
+            Map<Integer, Integer> demands,
+            Set<Integer> allowOverSet,
+            List<SolverOrderItem> groupItems) {
         long startTime = System.currentTimeMillis();
 
         List<NamedSolution> finalSolutions = solvePrimaryPatternSelection(
-                patterns, demands, allowOverSet);
+                patterns, demands, allowOverSet, groupItems);
         if (finalSolutions.isEmpty()) {
             return Collections.emptyList();
         }
@@ -80,7 +96,8 @@ public class MultiStageMIPSolver {
 
     private List<NamedSolution> solvePrimaryPatternSelection(List<PatternCandidate> patterns,
             Map<Integer, Integer> demands,
-            Set<Integer> allowOverSet) {
+            Set<Integer> allowOverSet,
+            List<SolverOrderItem> groupItems) {
         long deadlineMs = System.currentTimeMillis() + params.getTimeoutMs();
 
         LegacyOrderPatternSelectionSolver legacySolver = new LegacyOrderPatternSelectionSolver(params);
@@ -106,7 +123,7 @@ public class MultiStageMIPSolver {
                 log.info("Legacy succeeded (waste={}mm), searching for diverse alternatives...", bestWaste);
                 List<NamedSolution> diverse = generateDiverseSolutions(
                         patterns, demands, allowOverSet, primaryOver, bestWaste,
-                        primarySolution, deadlineMs);
+                        primarySolution, deadlineMs, groupItems);
                 // Add any diverse candidates not already present
                 for (NamedSolution d : diverse) {
                     if (!d.name().equals(allCandidates.get(0).name())) {
@@ -179,7 +196,7 @@ public class MultiStageMIPSolver {
 
             List<NamedSolution> candidates = generateDiverseSolutions(
                     patterns, demands, workingAllowOverSet, stage1Result.totalOver(),
-                    bestWaste, stage2Solution, deadlineMs);
+                    bestWaste, stage2Solution, deadlineMs, java.util.Collections.emptyList());
 
             if (!candidates.isEmpty()) {
                 printSolutionSummary(candidates.get(0).solution(), demands);
@@ -203,7 +220,12 @@ public class MultiStageMIPSolver {
             int maxTotalOver,
             int bestWaste,
             Map<PatternCandidate, Integer> primarySolution,
-            long deadlineMs) {
+            long deadlineMs,
+            List<SolverOrderItem> groupItems) {
+
+        Map<PatternCandidate, Double> alignmentScores = groupItems.isEmpty()
+                ? java.util.Collections.emptyMap()
+                : PatternAlignmentScorer.score(patterns, groupItems);
 
         List<NamedSolution> solutions = new ArrayList<>();
         addSolutionCandidate(solutions, "best-waste", primarySolution);
@@ -216,7 +238,7 @@ public class MultiStageMIPSolver {
             }
             long diverseTime = Math.min(remaining / 2, params.getStage4TimeLimit());
             Map<PatternCandidate, Integer> diverse = solveMIPDiverseAlternative(
-                    patterns, demands, allowOverSet, maxTotalOver, bestWaste, solutions, diverseTime);
+                    patterns, demands, allowOverSet, maxTotalOver, bestWaste, solutions, diverseTime, alignmentScores);
 
             if (diverse != null && !diverse.isEmpty()) {
                 String name = "diverse-" + k;
@@ -239,7 +261,8 @@ public class MultiStageMIPSolver {
             int maxTotalOver,
             int maxWaste,
             List<NamedSolution> existingSolutions,
-            long timeLimitMs) {
+            long timeLimitMs,
+            Map<PatternCandidate, Double> alignmentScores) {
         try {
             MPSolver solver = createMIPSolver();
             if (solver == null) return null;
@@ -293,12 +316,22 @@ public class MultiStageMIPSolver {
             }
             double maxUsage = totalUsage.values().stream().mapToDouble(Double::doubleValue).max().orElse(1.0);
             double DIVERSITY_WEIGHT = 0.5;
+            double ALIGNMENT_ALPHA = 20.0;
+            double KW_PENALTY_PER_EXTRA_SLOT = 15.0;
 
             MPObjective objective = solver.objective();
             for (int i = 0; i < patterns.size(); i++) {
                 double waste = patterns.get(i).getRealWaste(params.getTotalWidth());
                 double penalty = totalUsage.getOrDefault(patterns.get(i), 0.0) / maxUsage * DIVERSITY_WEIGHT;
-                objective.setCoefficient(xVars.get(i), waste + penalty);
+                double alignBonus = alignmentScores.getOrDefault(patterns.get(i), 0.0) * ALIGNMENT_ALPHA;
+                // Penalise patterns where any width appears more than once per roll.
+                // Each extra slot (kw - 1) forces the postprocessor to handle intra-roll
+                // multi-slot pairing, which tends to create extra sequence group transitions.
+                double kwPenalty = 0.0;
+                for (int kw : patterns.get(i).getPattern().values()) {
+                    if (kw > 1) kwPenalty += (kw - 1) * KW_PENALTY_PER_EXTRA_SLOT;
+                }
+                objective.setCoefficient(xVars.get(i), waste + penalty - alignBonus + kwPenalty);
             }
             objective.setMinimization();
 

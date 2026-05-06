@@ -5,7 +5,17 @@
       "Bash(node -e ' *)",
       "Bash(node)",
       "Bash(node patch_primary_selection.js)",
-      "Bash(node patch_assignment_mip.js)"
+      "Bash(node patch_assignment_mip.js)",
+      "Read(//e/Note/Base/Moss/Ami/Ami/6.工作/1. 项目记录/4. 长阳科技/**)",
+      "Bash(node -e 'const fs=require\\('\\\\''fs'\\\\''\\); const c=fs.readFileSync\\('\\\\''e:/Note/Base/Moss/Ami/Ami/6.工作/1. 项目记录/4. 长阳科技/5. 搭切方案/3. 搭切逻辑-system/4. Claude新方案.md'\\\\'','\\\\''utf8'\\\\''\\); console.log\\(c.length\\);')",
+      "Bash(node claude_plan_update.js)",
+      "Bash(node -e \"const fs=require\\('fs'\\); const c=fs.readFileSync\\('e:/Note/Base/Moss/Ami/Ami/6.工作/1. 项目记录/4. 长阳科技/5. 搭切方案/3. 搭切逻辑-system/4. Claude新方案.md','utf8'\\); console.log\\('Length:', c.length, 'Preview:'\\); console.log\\(c.slice\\(0,300\\)\\);\")",
+      "Bash(node patch_alignment_scorer.js)",
+      "Bash(node patch_alignment2.js)",
+      "Bash(sed -n '124,127p' src/main/java/test/demo/apsmodule/generator/NewSolver/mip/MultiStageMIPSolver.java)",
+      "Bash(sed -n '197,200p' src/main/java/test/demo/apsmodule/generator/NewSolver/mip/MultiStageMIPSolver.java)",
+      "Bash(node patch_postprocessor.js)",
+      "Bash(node patch_kw_penalty.js)"
     ]
   }
 }
