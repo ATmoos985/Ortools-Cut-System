@@ -35,6 +35,14 @@ class LegacyOrderPatternSelectionSolver {
     List<Result> solveCandidates(List<PatternCandidate> patterns,
             Map<Integer, Integer> demands,
             Set<Integer> allowOverSet) {
+        return solveCandidates(patterns, demands, allowOverSet,
+                System.currentTimeMillis() + params.getTimeoutMs());
+    }
+
+    List<Result> solveCandidates(List<PatternCandidate> patterns,
+            Map<Integer, Integer> demands,
+            Set<Integer> allowOverSet,
+            long deadlineMs) {
         Set<String> seen = patterns.stream()
                 .map(PatternCandidate::signature)
                 .collect(Collectors.toCollection(HashSet::new));
@@ -50,7 +58,8 @@ class LegacyOrderPatternSelectionSolver {
             Map<PatternCandidate, Integer> solution = solveFinalMIP(
                     patterns,
                     demands,
-                    workingAllowOverSet);
+                    workingAllowOverSet,
+                    deadlineMs);
 
             if (isFeasible(solution, demands)) {
                 return List.of(new Result("legacy-order", new LinkedHashMap<>(solution)));
@@ -82,29 +91,41 @@ class LegacyOrderPatternSelectionSolver {
 
     private Map<PatternCandidate, Integer> solveFinalMIP(List<PatternCandidate> patterns,
             Map<Integer, Integer> demands,
-            Set<Integer> allowOverSet) {
-        int[] stage1Result = solveMIPStage1(patterns, demands, allowOverSet);
+            Set<Integer> allowOverSet,
+            long deadlineMs) {
+        // Distribute remaining budget across stages. Stage1/2 are critical;
+        // Stage3/4 are refinements and get whatever is left.
+        long now = System.currentTimeMillis();
+        long remaining = Math.max(5000, deadlineMs - now);
+        long stage1Time = Math.max(5000, remaining / 6);
+        int[] stage1Result = solveMIPStage1(patterns, demands, allowOverSet, stage1Time);
         if (stage1Result == null) {
             return Collections.emptyMap();
         }
 
         int optimalOver = Arrays.stream(stage1Result).sum();
+        remaining = Math.max(5000, deadlineMs - System.currentTimeMillis());
+        long stage2Time = Math.max(5000, remaining * 55 / 100);
         Map<PatternCandidate, Integer> stage2Solution = solveMIPStage2(
-                patterns, demands, allowOverSet, optimalOver);
+                patterns, demands, allowOverSet, optimalOver, stage2Time);
         if (stage2Solution == null || stage2Solution.isEmpty()) {
             return Collections.emptyMap();
         }
 
         int totalRolls = stage2Solution.values().stream().mapToInt(Integer::intValue).sum();
+        remaining = Math.max(3000, deadlineMs - System.currentTimeMillis());
+        long stage3Time = Math.max(3000, remaining * 60 / 100);
         Map<PatternCandidate, Integer> stage3Solution = solveMIPStage3(
-                patterns, demands, allowOverSet, optimalOver, totalRolls);
+                patterns, demands, allowOverSet, optimalOver, totalRolls, stage3Time);
         if (stage3Solution == null || stage3Solution.isEmpty()) {
             stage3Solution = stage2Solution;
         }
 
         int totalWaste = calculateTotalWaste(stage3Solution);
+        remaining = Math.max(2000, deadlineMs - System.currentTimeMillis());
+        long stage4Time = Math.min(remaining, 20_000L);
         Map<PatternCandidate, Integer> stage4Solution = solveMIPStage4(
-                patterns, demands, allowOverSet, optimalOver, totalRolls, totalWaste);
+                patterns, demands, allowOverSet, optimalOver, totalRolls, totalWaste, stage4Time);
         if (stage4Solution == null || stage4Solution.isEmpty()) {
             return stage3Solution;
         }
@@ -125,7 +146,8 @@ class LegacyOrderPatternSelectionSolver {
 
     private int[] solveMIPStage1(List<PatternCandidate> patterns,
             Map<Integer, Integer> demands,
-            Set<Integer> allowOverSet) {
+            Set<Integer> allowOverSet,
+            long timeLimitMs) {
         try {
             MPSolver solver = createMIPSolver();
             if (solver == null) {
@@ -177,7 +199,7 @@ class LegacyOrderPatternSelectionSolver {
             }
             objective.setMinimization();
 
-            solver.setTimeLimit(params.getTimeoutMs());
+            solver.setTimeLimit(Math.max(1000, timeLimitMs));
             MPSolver.ResultStatus status = solver.solve();
             if (status != MPSolver.ResultStatus.OPTIMAL && status != MPSolver.ResultStatus.FEASIBLE) {
                 log.warn("Legacy-order Stage1 returned {}", status);
@@ -198,7 +220,8 @@ class LegacyOrderPatternSelectionSolver {
     private Map<PatternCandidate, Integer> solveMIPStage2(List<PatternCandidate> patterns,
             Map<Integer, Integer> demands,
             Set<Integer> allowOverSet,
-            int maxTotalOver) {
+            int maxTotalOver,
+            long timeLimitMs) {
         try {
             MPSolver solver = createMIPSolver();
             if (solver == null) {
@@ -249,7 +272,7 @@ class LegacyOrderPatternSelectionSolver {
             }
             objective.setMinimization();
 
-            solver.setTimeLimit(params.getTimeoutMs());
+            solver.setTimeLimit(Math.max(1000, timeLimitMs));
             MPSolver.ResultStatus status = solver.solve();
             if (status != MPSolver.ResultStatus.OPTIMAL && status != MPSolver.ResultStatus.FEASIBLE) {
                 log.warn("Legacy-order Stage2 returned {}", status);
@@ -267,7 +290,8 @@ class LegacyOrderPatternSelectionSolver {
             Map<Integer, Integer> demands,
             Set<Integer> allowOverSet,
             int maxTotalOver,
-            int maxTotalRolls) {
+            int maxTotalRolls,
+            long timeLimitMs) {
         try {
             MPSolver solver = createMIPSolver();
             if (solver == null) {
@@ -317,7 +341,7 @@ class LegacyOrderPatternSelectionSolver {
             }
             objective.setMinimization();
 
-            solver.setTimeLimit(params.getTimeoutMs());
+            solver.setTimeLimit(Math.max(1000, timeLimitMs));
             MPSolver.ResultStatus status = solver.solve();
             if (status != MPSolver.ResultStatus.OPTIMAL && status != MPSolver.ResultStatus.FEASIBLE) {
                 log.warn("Legacy-order Stage3 returned {}", status);
@@ -336,7 +360,8 @@ class LegacyOrderPatternSelectionSolver {
             Set<Integer> allowOverSet,
             int maxTotalOver,
             int maxTotalRolls,
-            int maxTotalWaste) {
+            int maxTotalWaste,
+            long timeLimitMs) {
         try {
             MPSolver solver = createMIPSolver();
             if (solver == null) {
@@ -408,7 +433,7 @@ class LegacyOrderPatternSelectionSolver {
             }
             objective.setMinimization();
 
-            long stage4TimeLimit = Math.min(30_000L, params.getTimeoutMs());
+            long stage4TimeLimit = Math.min(timeLimitMs, 20_000L);
             solver.setHint(new MPVariable[] {}, new double[] {});
             solver.setTimeLimit(stage4TimeLimit);
 

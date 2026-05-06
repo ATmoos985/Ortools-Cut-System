@@ -15,7 +15,16 @@
       "Bash(sed -n '124,127p' src/main/java/test/demo/apsmodule/generator/NewSolver/mip/MultiStageMIPSolver.java)",
       "Bash(sed -n '197,200p' src/main/java/test/demo/apsmodule/generator/NewSolver/mip/MultiStageMIPSolver.java)",
       "Bash(node patch_postprocessor.js)",
-      "Bash(node patch_kw_penalty.js)"
+      "Bash(node patch_kw_penalty.js)",
+      "Bash(node patch_timeout.js)",
+      "Bash(sed -n '147,153p' src/main/java/test/demo/apsmodule/generator/NewSolver/mip/LegacyOrderPatternSelectionSolver.java)",
+      "Bash(sed -n '220,227p' src/main/java/test/demo/apsmodule/generator/NewSolver/mip/LegacyOrderPatternSelectionSolver.java)",
+      "Bash(sed -n '288,296p' src/main/java/test/demo/apsmodule/generator/NewSolver/mip/LegacyOrderPatternSelectionSolver.java)",
+      "Bash(sed -n '356,366p' src/main/java/test/demo/apsmodule/generator/NewSolver/mip/LegacyOrderPatternSelectionSolver.java)",
+      "Bash(node patch_timeout2.js)",
+      "Bash(sed -n '147,152p' src/main/java/test/demo/apsmodule/generator/NewSolver/mip/LegacyOrderPatternSelectionSolver.java)",
+      "Bash(sed -n '289,297p' src/main/java/test/demo/apsmodule/generator/NewSolver/mip/LegacyOrderPatternSelectionSolver.java)",
+      "Bash(sed -n '358,367p' src/main/java/test/demo/apsmodule/generator/NewSolver/mip/LegacyOrderPatternSelectionSolver.java)"
     ]
   }
 }

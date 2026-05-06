@@ -94,15 +94,18 @@ public class MultiStageMIPSolver {
         return candidates;
     }
 
+    private static final long DIVERSE_RESERVE_MS = 35_000L;
+
     private List<NamedSolution> solvePrimaryPatternSelection(List<PatternCandidate> patterns,
             Map<Integer, Integer> demands,
             Set<Integer> allowOverSet,
             List<SolverOrderItem> groupItems) {
         long deadlineMs = System.currentTimeMillis() + params.getTimeoutMs();
+        long legacyDeadlineMs = deadlineMs - DIVERSE_RESERVE_MS;
 
         LegacyOrderPatternSelectionSolver legacySolver = new LegacyOrderPatternSelectionSolver(params);
         List<LegacyOrderPatternSelectionSolver.Result> legacySolutions = legacySolver.solveCandidates(
-                patterns, demands, allowOverSet);
+                patterns, demands, allowOverSet, legacyDeadlineMs);
 
         if (!legacySolutions.isEmpty()) {
             // Convert legacy solutions to NamedSolution list
