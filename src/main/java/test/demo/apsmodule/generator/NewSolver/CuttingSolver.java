@@ -12,6 +12,7 @@ import test.demo.apsmodule.generator.NewSolver.model.SolverResult;
 import test.demo.apsmodule.generator.NewSolver.output.InstructionConverter;
 import test.demo.apsmodule.generator.NewSolver.output.SequenceGroupPostProcessor;
 import test.demo.apsmodule.generator.NewSolver.pattern.PatternGenerator;
+import test.demo.apsmodule.generator.NewSolver.report.SolveReportWriter;
 import test.demo.apsmodule.service.CuttingInstruction;
 import test.demo.apsmodule.service.SolverConfig;
 import test.demo.apsmodule.service.SolverOrderItem;
@@ -82,71 +83,104 @@ public class CuttingSolver implements CuttingSolverAlgorithm {
 
         List<CuttingInstruction> allInstructions = new ArrayList<>();
 
-        for (Map.Entry<String, List<SolverOrderItem>> group : groups.entrySet()) {
-            String groupKey = group.getKey();
-            List<SolverOrderItem> groupItems = group.getValue();
+        try (SolveReportWriter report = SolveReportWriter.create()) {
+            log.info("Solve report: {}", report.getFilePath());
 
-            log.info("--- Processing group: {} ({} items) ---", groupKey, groupItems.size());
+            int totalGroups = groups.size();
+            for (Map.Entry<String, List<SolverOrderItem>> group : groups.entrySet()) {
+                String groupKey = group.getKey();
+                List<SolverOrderItem> groupItems = group.getValue();
+                long groupStart = System.currentTimeMillis();
 
-            Map<Integer, Integer> demands = groupItems.stream()
-                    .collect(Collectors.groupingBy(
-                            SolverOrderItem::getWidth,
-                            Collectors.summingInt(SolverOrderItem::getDemand)));
+                log.info("--- Processing group: {} ({} items) ---", groupKey, groupItems.size());
 
-            Set<Integer> allowOverSet = buildAllowOverSet(demands, params);
-            log.debug("Allow-over widths: {}", allowOverSet);
+                Map<Integer, Integer> demands = groupItems.stream()
+                        .collect(Collectors.groupingBy(
+                                SolverOrderItem::getWidth,
+                                Collectors.summingInt(SolverOrderItem::getDemand)));
 
-            List<PatternCandidate> patterns = patternGenerator.generate(demands);
-            patterns = colGenSolver.solve(patterns, demands, allowOverSet);
+                Set<Integer> allowOverSet = buildAllowOverSet(demands, params);
+                report.beginGroup(groupKey, groupItems, demands, allowOverSet, totalGroups);
+                log.debug("Allow-over widths: {}", allowOverSet);
 
-            List<MultiStageMIPSolver.SolveCandidate> solveCandidates = mipSolver.solveCandidates(patterns, demands, allowOverSet);
-            if (solveCandidates.isEmpty()) {
-                log.warn("Solve failed for group: {}", groupKey);
-                continue;
-            }
+                List<PatternCandidate> patterns = patternGenerator.generate(demands);
+                patterns = colGenSolver.solve(patterns, demands, allowOverSet);
 
-            GroupSolvePlan bestPlan = null;
-            for (int candidateIndex = 0; candidateIndex < solveCandidates.size(); candidateIndex++) {
-                MultiStageMIPSolver.SolveCandidate solveCandidate = solveCandidates.get(candidateIndex);
-                SolverResult result = solveCandidate.result();
-                printSolutionSummary(result, demands);
-
-                List<CuttingInstruction> instructions = converter.convert(
-                        result.getSolution(), groupKey, groupItems, demands);
-                int sequenceGroups = SequenceGroupPostProcessor.countTotalGroups(instructions);
-
-                log.info("Pattern candidate {}: patterns={}, waste={}mm, over={}, groups={}",
-                        solveCandidate.name(),
-                        result.getPatternCount(),
-                        result.getTotalWaste(),
-                        result.getTotalOverProduction(),
-                        sequenceGroups);
-
-                GroupSolvePlan plan = new GroupSolvePlan(
-                        solveCandidate.name(),
-                        result,
-                        instructions,
-                        sequenceGroups,
-                        candidateIndex);
-                if (bestPlan == null || isBetterPlan(plan, bestPlan)) {
-                    bestPlan = plan;
+                List<MultiStageMIPSolver.SolveCandidate> solveCandidates =
+                        mipSolver.solveCandidates(patterns, demands, allowOverSet);
+                if (solveCandidates.isEmpty()) {
+                    log.warn("Solve failed for group: {}", groupKey);
+                    report.writeGroupFailure(
+                            groupKey,
+                            "pattern selection returned no candidates",
+                            System.currentTimeMillis() - groupStart);
+                    continue;
                 }
+
+                GroupSolvePlan bestPlan = null;
+                List<SolveReportWriter.CandidateRow> reportRows = new ArrayList<>();
+                for (int candidateIndex = 0; candidateIndex < solveCandidates.size(); candidateIndex++) {
+                    MultiStageMIPSolver.SolveCandidate solveCandidate = solveCandidates.get(candidateIndex);
+                    SolverResult result = solveCandidate.result();
+                    printSolutionSummary(result, demands);
+
+                    List<CuttingInstruction> instructions = converter.convert(
+                            result.getSolution(), groupKey, groupItems, demands);
+                    int sequenceGroups = SequenceGroupPostProcessor.countTotalGroups(instructions);
+
+                    log.info("Pattern candidate {}: patterns={}, waste={}mm, over={}, groups={}",
+                            solveCandidate.name(),
+                            result.getPatternCount(),
+                            result.getTotalWaste(),
+                            result.getTotalOverProduction(),
+                            sequenceGroups);
+
+                    reportRows.add(new SolveReportWriter.CandidateRow(
+                            solveCandidate.name(),
+                            result,
+                            sequenceGroups,
+                            params.getTotalWidth()));
+
+                    GroupSolvePlan plan = new GroupSolvePlan(
+                            solveCandidate.name(),
+                            result,
+                            instructions,
+                            sequenceGroups,
+                            candidateIndex);
+                    if (bestPlan == null || isBetterPlan(plan, bestPlan)) {
+                        bestPlan = plan;
+                    }
+                }
+
+                if (bestPlan == null) {
+                    log.warn("No usable instruction plan produced for group: {}", groupKey);
+                    report.writeGroupFailure(
+                            groupKey,
+                            "instruction conversion produced no usable plan",
+                            System.currentTimeMillis() - groupStart);
+                    continue;
+                }
+
+                log.info("Selected pattern candidate for group {}: {} (groups={}, patterns={}, waste={}mm)",
+                        groupKey,
+                        bestPlan.name(),
+                        bestPlan.sequenceGroupCount(),
+                        bestPlan.result().getPatternCount(),
+                        bestPlan.result().getTotalWaste());
+
+                report.writeGroupResult(
+                        reportRows,
+                        bestPlan.name(),
+                        bestPlan.result().getSolution(),
+                        bestPlan.sequenceGroupCount(),
+                        params.getTotalWidth(),
+                        System.currentTimeMillis() - groupStart);
+
+                allInstructions.addAll(bestPlan.instructions());
+                log.debug("Generated instructions: {}", bestPlan.instructions().size());
             }
 
-            if (bestPlan == null) {
-                log.warn("No usable instruction plan produced for group: {}", groupKey);
-                continue;
-            }
-
-            log.info("Selected pattern candidate for group {}: {} (groups={}, patterns={}, waste={}mm)",
-                    groupKey,
-                    bestPlan.name(),
-                    bestPlan.sequenceGroupCount(),
-                    bestPlan.result().getPatternCount(),
-                    bestPlan.result().getTotalWaste());
-
-            allInstructions.addAll(bestPlan.instructions());
-            log.debug("Generated instructions: {}", bestPlan.instructions().size());
+            report.writeSummary(allInstructions.size());
         }
 
         long totalTime = System.currentTimeMillis() - startTime;
