@@ -198,20 +198,21 @@ public class CuttingSolver implements CuttingSolverAlgorithm {
     }
 
     private boolean isBetterPlan(GroupSolvePlan candidate, GroupSolvePlan currentBest) {
-        if (candidate.sequenceGroupCount() != currentBest.sequenceGroupCount()) {
-            return candidate.sequenceGroupCount() < currentBest.sequenceGroupCount();
-        }
-        if (candidate.result().getPatternCount() != currentBest.result().getPatternCount()) {
-            return candidate.result().getPatternCount() < currentBest.result().getPatternCount();
-        }
+        // Priority 1: utilization — lower waste is strictly better
         if (candidate.result().getTotalWaste() != currentBest.result().getTotalWaste()) {
             return candidate.result().getTotalWaste() < currentBest.result().getTotalWaste();
         }
+        // Priority 2: sequence groups — fewer is better
+        if (candidate.sequenceGroupCount() != currentBest.sequenceGroupCount()) {
+            return candidate.sequenceGroupCount() < currentBest.sequenceGroupCount();
+        }
+        // Priority 3: pattern count — fewer distinct patterns simplifies production
+        if (candidate.result().getPatternCount() != currentBest.result().getPatternCount()) {
+            return candidate.result().getPatternCount() < currentBest.result().getPatternCount();
+        }
+        // Tiebreak: over-production, then candidate order
         if (candidate.result().getTotalOverProduction() != currentBest.result().getTotalOverProduction()) {
             return candidate.result().getTotalOverProduction() < currentBest.result().getTotalOverProduction();
-        }
-        if (candidate.result().getTotalRolls() != currentBest.result().getTotalRolls()) {
-            return candidate.result().getTotalRolls() < currentBest.result().getTotalRolls();
         }
         return candidate.order() < currentBest.order();
     }

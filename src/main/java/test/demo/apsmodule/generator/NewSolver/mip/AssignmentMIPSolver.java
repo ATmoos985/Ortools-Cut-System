@@ -115,7 +115,8 @@ public class AssignmentMIPSolver {
 
                 for (int width : pattern.getPattern().keySet()) {
                     List<String> messages = messagesByWidth.getOrDefault(width, Collections.emptyList());
-                    MPConstraint usageConstraint = solver.makeConstraint(usage, usage, "usage_" + patternIndex + "_" + width);
+                    MPConstraint usageConstraint = solver.makeConstraint(usage, usage,
+                            "usage_" + patternIndex + "_" + width);
                     for (String message : messages) {
                         String varKey = patternIndex + "_" + width + "_" + message;
                         MPVariable aVar = aVars.get(varKey);

@@ -103,6 +103,7 @@ public class MultiStageMIPSolver {
             Set<Integer> allowOverSet,
             int currentTopK) {
 
+        long deadlineMs = System.currentTimeMillis() + params.getTimeoutMs();
         Set<String> seen = patterns.stream()
                 .map(PatternCandidate::signature)
                 .collect(Collectors.toCollection(HashSet::new));
@@ -120,7 +121,9 @@ public class MultiStageMIPSolver {
             log.info("--- Final integer MIP attempt {}/{} ---", attempt + 1, MAX_SOLVE_ATTEMPTS);
             log.debug("Patterns: {}, allowOver widths: {}", patterns.size(), workingAllowOverSet.size());
 
-            Stage1SolveResult stage1Result = solveMIPStage1(patterns, demands, workingAllowOverSet);
+            long remaining = deadlineMs - System.currentTimeMillis();
+            long stage1Time = Math.max(5000, remaining - 25000);
+            Stage1SolveResult stage1Result = solveMIPStage1(patterns, demands, workingAllowOverSet, stage1Time);
             if (stage1Result == null) {
                 log.warn("Stage1 feasibility solve failed on attempt {}/{}", attempt + 1, MAX_SOLVE_ATTEMPTS);
                 continue;
@@ -135,42 +138,22 @@ public class MultiStageMIPSolver {
 
             log.info("Stage1 result: totalOver={}", stage1Result.totalOver());
 
+            remaining = deadlineMs - System.currentTimeMillis();
+            long stage2Time = Math.max(5000, remaining - 15000);
             Map<PatternCandidate, Integer> stage2Solution = solveMIPStage2BestWaste(
-                    patterns, demands, workingAllowOverSet, stage1Result.totalOver(), stage1Result.solution());
+                    patterns, demands, workingAllowOverSet, stage1Result.totalOver(),
+                    stage1Result.solution(), stage2Time);
             if (stage2Solution == null || stage2Solution.isEmpty()) {
                 log.warn("Stage2 best-waste solve failed on attempt {}/{}", attempt + 1, MAX_SOLVE_ATTEMPTS);
                 continue;
             }
 
             int bestWaste = calculateTotalWaste(stage2Solution);
-            int protectedWasteCap = calculateProtectedWasteCap(bestWaste);
-            log.info("Stage2 result: bestWaste={}mm, protectedWasteCap={}mm", bestWaste, protectedWasteCap);
+            log.info("Stage2 result: bestWaste={}mm", bestWaste);
 
-            Map<PatternCandidate, Integer> stage3Solution = solveMIPStage3MinPatterns(
-                    patterns, demands, workingAllowOverSet, stage1Result.totalOver(), protectedWasteCap, stage2Solution);
-            if (stage3Solution == null || stage3Solution.isEmpty()) {
-                log.warn("Stage3 pattern minimization failed, falling back to Stage2 best-waste solution");
-                stage3Solution = stage2Solution;
-            } else {
-                log.info("Stage3 result: patternCount={}, totalWaste={}mm",
-                        stage3Solution.size(), calculateTotalWaste(stage3Solution));
-            }
-
-            List<NamedSolution> candidates = new ArrayList<>();
-            Map<PatternCandidate, Integer> refinedStage3Solution = refineStage3PatternCount(
-                    patterns,
-                    demands,
-                    workingAllowOverSet,
-                    stage1Result.totalOver(),
-                    protectedWasteCap,
-                    stage3Solution);
-            if (refinedStage3Solution != null && !refinedStage3Solution.isEmpty()) {
-                log.info("Stage3 refinement result: patternCount={}, totalWaste={}mm",
-                        refinedStage3Solution.size(), calculateTotalWaste(refinedStage3Solution));
-                addSolutionCandidate(candidates, "min-pattern-refined", refinedStage3Solution);
-            }
-            addSolutionCandidate(candidates, "min-pattern", stage3Solution);
-            addSolutionCandidate(candidates, "best-waste", stage2Solution);
+            List<NamedSolution> candidates = generateDiverseSolutions(
+                    patterns, demands, workingAllowOverSet, stage1Result.totalOver(),
+                    bestWaste, stage2Solution, deadlineMs);
 
             if (!candidates.isEmpty()) {
                 printSolutionSummary(candidates.get(0).solution(), demands);
@@ -185,6 +168,127 @@ public class MultiStageMIPSolver {
             log.error("Final integer MIP failed after {} attempts", MAX_SOLVE_ATTEMPTS);
         }
         return Collections.emptyList();
+    }
+
+    private List<NamedSolution> generateDiverseSolutions(
+            List<PatternCandidate> patterns,
+            Map<Integer, Integer> demands,
+            Set<Integer> allowOverSet,
+            int maxTotalOver,
+            int bestWaste,
+            Map<PatternCandidate, Integer> primarySolution,
+            long deadlineMs) {
+
+        List<NamedSolution> solutions = new ArrayList<>();
+        addSolutionCandidate(solutions, "best-waste", primarySolution);
+
+        for (int k = 1; k < 3; k++) {
+            long remaining = deadlineMs - System.currentTimeMillis();
+            if (remaining < 3000) {
+                log.info("Stopping diversity search: only {}ms remaining", remaining);
+                break;
+            }
+            long diverseTime = Math.min(remaining / 2, params.getStage4TimeLimit());
+            Map<PatternCandidate, Integer> diverse = solveMIPDiverseAlternative(
+                    patterns, demands, allowOverSet, maxTotalOver, bestWaste, solutions, diverseTime);
+
+            if (diverse != null && !diverse.isEmpty()) {
+                String name = "diverse-" + k;
+                addSolutionCandidate(solutions, name, diverse);
+                log.info("Diversity candidate {}: patterns={}, waste={}mm",
+                        name, diverse.size(), calculateTotalWaste(diverse));
+            } else {
+                log.info("Could not find diversity candidate {}, stopping", k);
+                break;
+            }
+        }
+
+        return solutions;
+    }
+
+    private Map<PatternCandidate, Integer> solveMIPDiverseAlternative(
+            List<PatternCandidate> patterns,
+            Map<Integer, Integer> demands,
+            Set<Integer> allowOverSet,
+            int maxTotalOver,
+            int maxWaste,
+            List<NamedSolution> existingSolutions,
+            long timeLimitMs) {
+        try {
+            MPSolver solver = createMIPSolver();
+            if (solver == null) return null;
+
+            int totalDemand = demands.values().stream().mapToInt(Integer::intValue).sum();
+            int totalOverCap = params.getTotalOverCap();
+            int maxTotalRolls = totalDemand + totalOverCap;
+
+            List<MPVariable> xVars = new ArrayList<>();
+            for (int i = 0; i < patterns.size(); i++) {
+                xVars.add(solver.makeIntVar(0, totalDemand + totalOverCap, "x_" + i));
+            }
+
+            Map<Integer, MPVariable> overVars = new LinkedHashMap<>();
+            for (int width : demands.keySet()) {
+                double overUb = allowOverSet.contains(width) ? totalOverCap : 0;
+                overVars.put(width, solver.makeNumVar(0, overUb, "over_" + width));
+            }
+
+            for (Map.Entry<Integer, Integer> demandEntry : demands.entrySet()) {
+                int width = demandEntry.getKey();
+                int demand = demandEntry.getValue();
+                MPConstraint constraint = solver.makeConstraint(demand, demand, "demand_" + width);
+                for (int i = 0; i < patterns.size(); i++) {
+                    int count = patterns.get(i).getPattern().getOrDefault(width, 0);
+                    if (count > 0) constraint.setCoefficient(xVars.get(i), count);
+                }
+                constraint.setCoefficient(overVars.get(width), -1);
+            }
+
+            MPConstraint totalOverConstraint = solver.makeConstraint(0, maxTotalOver, "totalOverCap");
+            for (MPVariable overVar : overVars.values()) totalOverConstraint.setCoefficient(overVar, 1);
+
+            MPConstraint rollsCap = solver.makeConstraint(0, maxTotalRolls, "rollsCap");
+            for (MPVariable xVar : xVars) rollsCap.setCoefficient(xVar, 1);
+
+            // Hard waste bound — ensures same utilization as primary solution
+            MPConstraint wasteCap = solver.makeConstraint(0, maxWaste, "wasteCap");
+            for (int i = 0; i < patterns.size(); i++) {
+                wasteCap.setCoefficient(xVars.get(i), patterns.get(i).getRealWaste(params.getTotalWidth()));
+            }
+
+            // Diversity penalty: penalise patterns heavily used in existing solutions.
+            // Weight (0.5mm) is tiny relative to typical waste differences between patterns,
+            // so the waste bound is preserved while the solver explores different pattern mixes.
+            Map<PatternCandidate, Double> totalUsage = new HashMap<>();
+            for (NamedSolution sol : existingSolutions) {
+                for (Map.Entry<PatternCandidate, Integer> e : sol.solution().entrySet()) {
+                    totalUsage.merge(e.getKey(), (double) e.getValue(), Double::sum);
+                }
+            }
+            double maxUsage = totalUsage.values().stream().mapToDouble(Double::doubleValue).max().orElse(1.0);
+            double DIVERSITY_WEIGHT = 0.5;
+
+            MPObjective objective = solver.objective();
+            for (int i = 0; i < patterns.size(); i++) {
+                double waste = patterns.get(i).getRealWaste(params.getTotalWidth());
+                double penalty = totalUsage.getOrDefault(patterns.get(i), 0.0) / maxUsage * DIVERSITY_WEIGHT;
+                objective.setCoefficient(xVars.get(i), waste + penalty);
+            }
+            objective.setMinimization();
+
+            solver.setTimeLimit(Math.max(1000, timeLimitMs));
+            MPSolver.ResultStatus status = solver.solve();
+
+            if (status != MPSolver.ResultStatus.OPTIMAL && status != MPSolver.ResultStatus.FEASIBLE) {
+                log.debug("Diverse solve returned {}", status);
+                return null;
+            }
+
+            return extractSolution(patterns, xVars);
+        } catch (Exception e) {
+            log.error("Diverse solve failed", e);
+            return null;
+        }
     }
 
     private Map<PatternCandidate, Integer> refineStage3PatternCount(List<PatternCandidate> patterns,
@@ -357,7 +461,8 @@ public class MultiStageMIPSolver {
 
     private Stage1SolveResult solveMIPStage1(List<PatternCandidate> patterns,
             Map<Integer, Integer> demands,
-            Set<Integer> allowOverSet) {
+            Set<Integer> allowOverSet,
+            long timeLimitMs) {
         try {
             MPSolver solver = createMIPSolver();
             if (solver == null) {
@@ -376,8 +481,8 @@ public class MultiStageMIPSolver {
             Map<Integer, MPVariable> underVars = new LinkedHashMap<>();
             for (int width : demands.keySet()) {
                 double overUb = allowOverSet.contains(width) ? totalOverCap : 0;
-                overVars.put(width, solver.makeIntVar(0, overUb, "over_" + width));
-                underVars.put(width, solver.makeIntVar(0, totalDemand, "under_" + width));
+                overVars.put(width, solver.makeNumVar(0, overUb, "over_" + width));
+                underVars.put(width, solver.makeNumVar(0, totalDemand, "under_" + width));
             }
 
             for (Map.Entry<Integer, Integer> demandEntry : demands.entrySet()) {
@@ -409,7 +514,7 @@ public class MultiStageMIPSolver {
             }
             objective.setMinimization();
 
-            solver.setTimeLimit(params.getTimeoutMs());
+            solver.setTimeLimit(Math.max(2000, timeLimitMs));
             MPSolver.ResultStatus status = solver.solve();
             if (status != MPSolver.ResultStatus.OPTIMAL && status != MPSolver.ResultStatus.FEASIBLE) {
                 log.warn("Stage1 returned {}", status);
@@ -440,7 +545,8 @@ public class MultiStageMIPSolver {
             Map<Integer, Integer> demands,
             Set<Integer> allowOverSet,
             int maxTotalOver,
-            Map<PatternCandidate, Integer> hintSolution) {
+            Map<PatternCandidate, Integer> hintSolution,
+            long timeLimitMs) {
         try {
             MPSolver solver = createMIPSolver();
             if (solver == null) {
@@ -459,7 +565,7 @@ public class MultiStageMIPSolver {
             Map<Integer, MPVariable> overVars = new LinkedHashMap<>();
             for (int width : demands.keySet()) {
                 double overUb = allowOverSet.contains(width) ? totalOverCap : 0;
-                overVars.put(width, solver.makeIntVar(0, overUb, "over_" + width));
+                overVars.put(width, solver.makeNumVar(0, overUb, "over_" + width));
             }
 
             for (Map.Entry<Integer, Integer> demandEntry : demands.entrySet()) {
@@ -493,7 +599,7 @@ public class MultiStageMIPSolver {
             objective.setMinimization();
 
             applyHint(solver, patterns, xVars, null, hintSolution);
-            solver.setTimeLimit(params.getTimeoutMs());
+            solver.setTimeLimit(Math.max(2000, timeLimitMs));
             MPSolver.ResultStatus status = solver.solve();
             if (status != MPSolver.ResultStatus.OPTIMAL && status != MPSolver.ResultStatus.FEASIBLE) {
                 log.warn("Stage2 returned {}", status);
@@ -533,7 +639,7 @@ public class MultiStageMIPSolver {
             Map<Integer, MPVariable> overVars = new LinkedHashMap<>();
             for (int width : demands.keySet()) {
                 double overUb = allowOverSet.contains(width) ? totalOverCap : 0;
-                overVars.put(width, solver.makeIntVar(0, overUb, "over_" + width));
+                overVars.put(width, solver.makeNumVar(0, overUb, "over_" + width));
             }
 
             for (Map.Entry<Integer, Integer> demandEntry : demands.entrySet()) {
@@ -634,7 +740,7 @@ public class MultiStageMIPSolver {
             Map<Integer, MPVariable> overVars = new LinkedHashMap<>();
             for (int width : demands.keySet()) {
                 double overUb = allowOverSet.contains(width) ? totalOverCap : 0;
-                overVars.put(width, solver.makeIntVar(0, overUb, "over_" + width));
+                overVars.put(width, solver.makeNumVar(0, overUb, "over_" + width));
             }
 
             for (Map.Entry<Integer, Integer> demandEntry : demands.entrySet()) {
