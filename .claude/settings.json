@@ -3,7 +3,9 @@
     "allow": [
       "Bash(ls:*)",
       "Bash(node -e ' *)",
-      "Bash(node)"
+      "Bash(node)",
+      "Bash(node patch_primary_selection.js)",
+      "Bash(node patch_assignment_mip.js)"
     ]
   }
 }

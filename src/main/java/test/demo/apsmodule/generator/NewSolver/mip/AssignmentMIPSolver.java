@@ -100,10 +100,13 @@ public class AssignmentMIPSolver {
                 int usage = solution.get(pattern);
 
                 for (int width : pattern.getPattern().keySet()) {
+                    int kw = pattern.getPattern().get(width); // slots per car for this width
                     List<String> messages = messagesByWidth.getOrDefault(width, Collections.emptyList());
                     for (String message : messages) {
                         String varKey = patternIndex + "_" + width + "_" + message;
-                        aVars.put(varKey, solver.makeIntVar(0, usage, "a_" + varKey));
+                        // Slot-level variable: a[p,w,m] counts SLOTS (not cars) assigned to message m.
+                        // Upper bound = usage * kw (total slots for this width in this pattern).
+                        aVars.put(varKey, solver.makeIntVar(0, usage * kw, "a_" + varKey));
                         yVars.put(varKey, solver.makeBoolVar("y_" + varKey));
                     }
                 }
@@ -114,8 +117,10 @@ public class AssignmentMIPSolver {
                 int usage = solution.get(pattern);
 
                 for (int width : pattern.getPattern().keySet()) {
+                    int kw = pattern.getPattern().get(width);
                     List<String> messages = messagesByWidth.getOrDefault(width, Collections.emptyList());
-                    MPConstraint usageConstraint = solver.makeConstraint(usage, usage,
+                    // Total slots for this width = usage * kw (hard equality)
+                    MPConstraint usageConstraint = solver.makeConstraint(usage * kw, usage * kw,
                             "usage_" + patternIndex + "_" + width);
                     for (String message : messages) {
                         String varKey = patternIndex + "_" + width + "_" + message;
@@ -142,7 +147,7 @@ public class AssignmentMIPSolver {
                         String varKey = patternIndex + "_" + width + "_" + message;
                         MPVariable aVar = aVars.get(varKey);
                         if (aVar != null) {
-                            demandConstraint.setCoefficient(aVar, countInPattern);
+                            demandConstraint.setCoefficient(aVar, 1); // a is slot count; 1 slot = 1 roll
                         }
                     }
                 }
@@ -153,16 +158,18 @@ public class AssignmentMIPSolver {
                 int usage = solution.get(pattern);
 
                 for (int width : pattern.getPattern().keySet()) {
+                    int kw = pattern.getPattern().get(width);
                     List<String> messages = messagesByWidth.getOrDefault(width, Collections.emptyList());
                     for (String message : messages) {
                         String varKey = patternIndex + "_" + width + "_" + message;
                         MPVariable aVar = aVars.get(varKey);
                         MPVariable yVar = yVars.get(varKey);
                         if (aVar != null && yVar != null) {
+                            // a[p,w,m] <= (usage * kw) * y[p,w,m]
                             MPConstraint linkConstraint = solver.makeConstraint(
                                     -MPSolver.infinity(), 0, "link_" + varKey);
                             linkConstraint.setCoefficient(aVar, 1);
-                            linkConstraint.setCoefficient(yVar, -usage);
+                            linkConstraint.setCoefficient(yVar, -(long) usage * kw);
                         }
                     }
                 }
@@ -197,19 +204,22 @@ public class AssignmentMIPSolver {
 
                 Map<Integer, List<Map.Entry<String, Integer>>> widthAssignments = new LinkedHashMap<>();
                 for (int width : pattern.getPattern().keySet()) {
-                    List<Map.Entry<String, Integer>> assignments = new ArrayList<>();
+                    int kw = pattern.getPattern().get(width);
                     List<String> messages = messagesByWidth.getOrDefault(width, Collections.emptyList());
+                    // Collect slot counts from MIP solution
+                    List<Map.Entry<String, Integer>> slotCounts = new ArrayList<>();
                     for (String message : messages) {
                         String varKey = patternIndex + "_" + width + "_" + message;
                         MPVariable aVar = aVars.get(varKey);
                         if (aVar != null) {
-                            int value = (int) Math.round(aVar.solutionValue());
-                            if (value > 0) {
-                                assignments.add(Map.entry(message, value));
+                            int slots = (int) Math.round(aVar.solutionValue());
+                            if (slots > 0) {
+                                slotCounts.add(Map.entry(message, slots));
                             }
                         }
                     }
-                    widthAssignments.put(width, assignments);
+                    // Normalize slot counts to car counts (largest-remainder rounding)
+                    widthAssignments.put(width, slotsToCarCounts(slotCounts, kw, solution.get(pattern)));
                 }
 
                 List<Integer> widths = new ArrayList<>(widthAssignments.keySet());
@@ -234,6 +244,45 @@ public class AssignmentMIPSolver {
 
     private String demandKey(int width, String messageText) {
         return width + "_" + messageText;
+    }
+
+    /**
+     * Converts slot-level MIP assignments to car-level counts using largest-remainder rounding.
+     * Ensures the returned counts sum to targetCars.
+     */
+    private static List<Map.Entry<String, Integer>> slotsToCarCounts(
+            List<Map.Entry<String, Integer>> slotCounts, int kw, int targetCars) {
+        if (slotCounts.isEmpty() || kw <= 0) return slotCounts;
+
+        // Compute floor car counts and fractional remainders
+        int[] floors = new int[slotCounts.size()];
+        double[] remainders = new double[slotCounts.size()];
+        int floorSum = 0;
+        for (int i = 0; i < slotCounts.size(); i++) {
+            double floatCars = (double) slotCounts.get(i).getValue() / kw;
+            floors[i] = (int) floatCars;
+            remainders[i] = floatCars - floors[i];
+            floorSum += floors[i];
+        }
+
+        // Distribute remaining cars by largest remainder
+        int remaining = targetCars - floorSum;
+        if (remaining > 0) {
+            Integer[] idx = new Integer[slotCounts.size()];
+            for (int i = 0; i < idx.length; i++) idx[i] = i;
+            java.util.Arrays.sort(idx, (a, b) -> Double.compare(remainders[b], remainders[a]));
+            for (int i = 0; i < Math.min(remaining, idx.length); i++) {
+                floors[idx[i]]++;
+            }
+        }
+
+        List<Map.Entry<String, Integer>> result = new ArrayList<>();
+        for (int i = 0; i < slotCounts.size(); i++) {
+            if (floors[i] > 0) {
+                result.add(Map.entry(slotCounts.get(i).getKey(), floors[i]));
+            }
+        }
+        return result;
     }
 
     static List<AssignmentBlock> buildBlocksFromWidthAssignments(

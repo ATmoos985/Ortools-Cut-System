@@ -81,16 +81,42 @@ public class MultiStageMIPSolver {
     private List<NamedSolution> solvePrimaryPatternSelection(List<PatternCandidate> patterns,
             Map<Integer, Integer> demands,
             Set<Integer> allowOverSet) {
+        long deadlineMs = System.currentTimeMillis() + params.getTimeoutMs();
+
         LegacyOrderPatternSelectionSolver legacySolver = new LegacyOrderPatternSelectionSolver(params);
         List<LegacyOrderPatternSelectionSolver.Result> legacySolutions = legacySolver.solveCandidates(
                 patterns, demands, allowOverSet);
+
         if (!legacySolutions.isEmpty()) {
-            return legacySolutions.stream()
-                    .map(solution -> new NamedSolution(
-                            solution.name(),
-                            solution.solution(),
-                            solutionSignature(solution.solution())))
-                    .toList();
+            // Convert legacy solutions to NamedSolution list
+            List<NamedSolution> allCandidates = new ArrayList<>();
+            for (LegacyOrderPatternSelectionSolver.Result r : legacySolutions) {
+                addSolutionCandidate(allCandidates, r.name(), r.solution());
+            }
+
+            // Use best legacy waste as the hard upper bound for diversity search
+            int bestWaste = allCandidates.stream()
+                    .mapToInt(s -> calculateTotalWaste(s.solution()))
+                    .min().orElse(Integer.MAX_VALUE);
+            Map<PatternCandidate, Integer> primarySolution = allCandidates.get(0).solution();
+            int primaryOver = calculateTotalOver(primarySolution, demands);
+
+            long remaining = deadlineMs - System.currentTimeMillis();
+            if (remaining > 5000) {
+                log.info("Legacy succeeded (waste={}mm), searching for diverse alternatives...", bestWaste);
+                List<NamedSolution> diverse = generateDiverseSolutions(
+                        patterns, demands, allowOverSet, primaryOver, bestWaste,
+                        primarySolution, deadlineMs);
+                // Add any diverse candidates not already present
+                for (NamedSolution d : diverse) {
+                    if (!d.name().equals(allCandidates.get(0).name())) {
+                        addSolutionCandidate(allCandidates, d.name(), d.solution());
+                    }
+                }
+            }
+
+            log.info("Pattern selection produced {} candidate(s)", allCandidates.size());
+            return allCandidates;
         }
 
         log.warn("Legacy-order pattern selection failed, falling back to waste-first pattern selection");
