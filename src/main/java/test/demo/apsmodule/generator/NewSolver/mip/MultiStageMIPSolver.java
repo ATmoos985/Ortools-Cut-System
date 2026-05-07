@@ -257,7 +257,7 @@ public class MultiStageMIPSolver {
                         int totalDemandLocal = demands.values().stream().mapToInt(Integer::intValue).sum();
                         int maxRolls = totalDemandLocal + params.getTotalOverCap();
                         Map<PatternCandidate, Integer> refined = refiner.solveMIPStage4(
-                                diversePats, demands, allowOverSet, maxTotalOver, maxRolls, bestWaste, refineBudget);
+                                diversePats, demands, allowOverSet, maxTotalOver, maxRolls, bestWaste, refineBudget, false);
                         if (refined != null && !refined.isEmpty()) {
                             addSolutionCandidate(solutions, name + "-s4", refined);
                             log.info("Stage4 refined {}: patterns={}, waste={}mm",

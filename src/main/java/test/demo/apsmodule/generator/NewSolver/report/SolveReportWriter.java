@@ -166,6 +166,11 @@ public class SolveReportWriter implements Closeable {
                 });
     }
 
+    public void writeParityStats(int oddGroups, int evenGroups) {
+        writeln("Sequence group parity:  odd-car: %-3d  even-car: %-3d  (odd = wasted half-pallet)",
+                oddGroups, evenGroups);
+    }
+
     public void writeGroupFailure(String groupKey, String reason, long groupElapsedMs) {
         failedGroups++;
         writeln("Group failed: %s", groupKey);

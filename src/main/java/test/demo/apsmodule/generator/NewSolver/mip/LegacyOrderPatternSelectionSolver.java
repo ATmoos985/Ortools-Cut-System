@@ -27,6 +27,7 @@ class LegacyOrderPatternSelectionSolver {
     private static final double LEGACY_SEQ_GROUP_BETA = 0.0;
     private static final int    MIN_USAGE_THRESHOLD = 4;
     private static final double SMALL_USAGE_PENALTY = 0.02;
+    private static final double ODD_USAGE_PENALTY   = 0.1;
 
     private final SolverParameters params;
 
@@ -127,7 +128,7 @@ class LegacyOrderPatternSelectionSolver {
         remaining = Math.max(2000, deadlineMs - System.currentTimeMillis());
         long stage4Time = Math.min(remaining, 20_000L);
         Map<PatternCandidate, Integer> stage4Solution = solveMIPStage4(
-                patterns, demands, allowOverSet, optimalOver, totalRolls, totalWaste, stage4Time);
+                patterns, demands, allowOverSet, optimalOver, totalRolls, totalWaste, stage4Time, false);
         if (stage4Solution == null || stage4Solution.isEmpty()) {
             return stage3Solution;
         }
@@ -363,7 +364,8 @@ class LegacyOrderPatternSelectionSolver {
             int maxTotalOver,
             int maxTotalRolls,
             int maxTotalWaste,
-            long timeLimitMs) {
+            long timeLimitMs,
+            boolean enableParityPenalty) {
         try {
             MPSolver solver = createMIPSolver();
             if (solver == null) {
@@ -376,10 +378,16 @@ class LegacyOrderPatternSelectionSolver {
             List<MPVariable> xVars = new ArrayList<>();
             List<MPVariable> yVars = new ArrayList<>();
             List<MPVariable> sVars = new ArrayList<>();
+            List<MPVariable> eVars = enableParityPenalty ? new ArrayList<>() : null;
+            List<MPVariable> rOddVars = enableParityPenalty ? new ArrayList<>() : null;
             for (int i = 0; i < patterns.size(); i++) {
                 xVars.add(solver.makeIntVar(0, totalDemand + params.getTotalOverCap(), "x_" + i));
                 yVars.add(solver.makeBoolVar("y_" + i));
                 sVars.add(solver.makeNumVar(0, MIN_USAGE_THRESHOLD, "s_" + i));
+                if (enableParityPenalty) {
+                    eVars.add(solver.makeIntVar(0, (totalDemand + params.getTotalOverCap()) / 2, "e_" + i));
+                    rOddVars.add(solver.makeBoolVar("rodd_" + i));
+                }
             }
 
             Map<Integer, MPVariable> overVars = new LinkedHashMap<>();
@@ -431,6 +439,15 @@ class LegacyOrderPatternSelectionSolver {
                 minUse.setCoefficient(yVars.get(i), -MIN_USAGE_THRESHOLD);
             }
 
+            if (enableParityPenalty) {
+                for (int i = 0; i < patterns.size(); i++) {
+                    MPConstraint parityC = solver.makeConstraint(0, 0, "usageparity_" + i);
+                    parityC.setCoefficient(xVars.get(i), 1.0);
+                    parityC.setCoefficient(eVars.get(i), -2.0);
+                    parityC.setCoefficient(rOddVars.get(i), -1.0);
+                }
+            }
+
             int maxWidthCount = patterns.stream()
                     .mapToInt(PatternCandidate::getWidthCount)
                     .max()
@@ -442,6 +459,7 @@ class LegacyOrderPatternSelectionSolver {
                 double groupCost = (double) patterns.get(i).getWidthCount() / maxWidthCount;
                 objective.setCoefficient(xVars.get(i), LEGACY_SEQ_GROUP_BETA * groupCost);
                 objective.setCoefficient(sVars.get(i), SMALL_USAGE_PENALTY);
+                if (enableParityPenalty) objective.setCoefficient(rOddVars.get(i), ODD_USAGE_PENALTY);
             }
             objective.setMinimization();
 

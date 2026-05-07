@@ -191,6 +191,8 @@ public class CuttingSolver implements CuttingSolverAlgorithm {
                         params.getTotalWidth(),
                         System.currentTimeMillis() - groupStart);
 
+                int[] parityStats = SequenceGroupPostProcessor.computeGroupSizeParity(bestPlan.instructions());
+                report.writeParityStats(parityStats[0], parityStats[1]);
                 allInstructions.addAll(bestPlan.instructions());
                 log.debug("Generated instructions: {}", bestPlan.instructions().size());
             }

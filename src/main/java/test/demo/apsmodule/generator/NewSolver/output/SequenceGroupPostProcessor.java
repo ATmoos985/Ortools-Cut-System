@@ -162,6 +162,32 @@ public class SequenceGroupPostProcessor {
         return totalGroups;
     }
 
+    public static int[] computeGroupSizeParity(List<CuttingInstruction> instructions) {
+        int oddGroups = 0, evenGroups = 0;
+        List<StationAssignment> previousRoll = null;
+        int currentGroupSize = 0;
+        for (CuttingInstruction instruction : instructions) {
+            if (instruction == null || instruction.getStationAssignments() == null
+                    || instruction.getStationAssignments().isEmpty()) continue;
+            if (instruction.getSubRolls() == null || instruction.getSubRolls().isEmpty()) continue;
+            for (List<StationAssignment> roll : simulateRolls(instruction)) {
+                if (previousRoll == null || !isRollContentSame(previousRoll, roll)) {
+                    if (currentGroupSize > 0) {
+                        if (currentGroupSize % 2 == 0) evenGroups++; else oddGroups++;
+                    }
+                    currentGroupSize = 1;
+                } else {
+                    currentGroupSize++;
+                }
+                previousRoll = roll;
+            }
+        }
+        if (currentGroupSize > 0) {
+            if (currentGroupSize % 2 == 0) evenGroups++; else oddGroups++;
+        }
+        return new int[]{oddGroups, evenGroups};
+    }
+
     public static int countGroups(CuttingInstruction instruction) {
         if (instruction == null || instruction.getStationAssignments() == null || instruction.getStationAssignments().isEmpty()) {
             return 0;
