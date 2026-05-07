@@ -3,6 +3,7 @@ package test.demo.apsmodule.generator.NewSolver.output;
 import org.junit.jupiter.api.Test;
 import test.demo.apsmodule.generator.NewSolver.config.SolverParameters;
 import test.demo.apsmodule.generator.NewSolver.mip.AssignmentMIPSolver;
+import test.demo.apsmodule.generator.NewSolver.mip.Phase2SequenceGroupSolver;
 import test.demo.apsmodule.generator.NewSolver.model.PatternCandidate;
 import test.demo.apsmodule.service.CuttingInstruction;
 import test.demo.apsmodule.service.SolverOrderItem;
@@ -321,6 +322,21 @@ class InstructionConverterTest {
                     new AssignmentMIPSolver.AssignmentBlock(config1, 1),
                     new AssignmentMIPSolver.AssignmentBlock(config2, 1),
                     new AssignmentMIPSolver.AssignmentBlock(config1, 1)));
+        }
+
+        @Override
+        protected Phase2SequenceGroupSolver.SolveResult solveSequenceGroupsWithPhase2(
+                Map<PatternCandidate, Integer> solution,
+                List<SolverOrderItem> groupItems) {
+            return null;
+        }
+
+        @Override
+        protected Phase2SequenceGroupSolver.SolveResult solveSequenceGroupsWithPhase2(
+                Map<PatternCandidate, Integer> solution,
+                List<SolverOrderItem> groupItems,
+                Map<PatternCandidate, List<AssignmentMIPSolver.AssignmentBlock>> seedAssignments) {
+            return null;
         }
 
         @Override

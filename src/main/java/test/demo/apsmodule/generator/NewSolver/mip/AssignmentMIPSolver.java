@@ -38,19 +38,79 @@ public class AssignmentMIPSolver {
      */
     public static class AssignmentBlock {
         private final Map<Integer, String> config;
+        private final Map<Integer, List<String>> stationConfig;
         private final int count;
 
         public AssignmentBlock(Map<Integer, String> config, int count) {
-            this.config = config;
+            this(config, toStationConfig(config), count);
+        }
+
+        private AssignmentBlock(Map<Integer, String> config, Map<Integer, List<String>> stationConfig, int count) {
+            this.config = copyConfig(config);
+            this.stationConfig = copyStationConfig(stationConfig);
             this.count = count;
+        }
+
+        public static AssignmentBlock fromStationConfig(Map<Integer, List<String>> stationConfig, int count) {
+            return new AssignmentBlock(toRepresentativeConfig(stationConfig), stationConfig, count);
         }
 
         public Map<Integer, String> getConfig() {
             return config;
         }
 
+        public Map<Integer, List<String>> getStationConfig() {
+            return stationConfig;
+        }
+
         public int getCount() {
             return count;
+        }
+
+        private static Map<Integer, String> copyConfig(Map<Integer, String> source) {
+            Map<Integer, String> copy = new LinkedHashMap<>();
+            if (source != null) {
+                copy.putAll(source);
+            }
+            return copy;
+        }
+
+        private static Map<Integer, List<String>> toStationConfig(Map<Integer, String> config) {
+            Map<Integer, List<String>> stationConfig = new LinkedHashMap<>();
+            if (config != null) {
+                for (Map.Entry<Integer, String> entry : config.entrySet()) {
+                    stationConfig.put(entry.getKey(), List.of(entry.getValue() == null ? "" : entry.getValue()));
+                }
+            }
+            return stationConfig;
+        }
+
+        private static Map<Integer, String> toRepresentativeConfig(Map<Integer, List<String>> stationConfig) {
+            Map<Integer, String> representative = new LinkedHashMap<>();
+            if (stationConfig != null) {
+                for (Map.Entry<Integer, List<String>> entry : stationConfig.entrySet()) {
+                    List<String> messages = entry.getValue();
+                    representative.put(entry.getKey(),
+                            messages == null || messages.isEmpty() ? "" : messages.get(0));
+                }
+            }
+            return representative;
+        }
+
+        private static Map<Integer, List<String>> copyStationConfig(Map<Integer, List<String>> source) {
+            Map<Integer, List<String>> copy = new LinkedHashMap<>();
+            if (source != null) {
+                for (Map.Entry<Integer, List<String>> entry : source.entrySet()) {
+                    List<String> messages = new ArrayList<>();
+                    if (entry.getValue() != null) {
+                        for (String message : entry.getValue()) {
+                            messages.add(message == null ? "" : message);
+                        }
+                    }
+                    copy.put(entry.getKey(), List.copyOf(messages));
+                }
+            }
+            return copy;
         }
     }
 
@@ -202,9 +262,8 @@ public class AssignmentMIPSolver {
                 PatternCandidate pattern = patternList.get(patternIndex);
                 List<AssignmentBlock> blocks = new ArrayList<>();
 
-                Map<Integer, List<Map.Entry<String, Integer>>> widthAssignments = new LinkedHashMap<>();
+                Map<Integer, List<Map.Entry<String, Integer>>> widthSlotAssignments = new LinkedHashMap<>();
                 for (int width : pattern.getPattern().keySet()) {
-                    int kw = pattern.getPattern().get(width);
                     List<String> messages = messagesByWidth.getOrDefault(width, Collections.emptyList());
                     // Collect slot counts from MIP solution
                     List<Map.Entry<String, Integer>> slotCounts = new ArrayList<>();
@@ -218,16 +277,11 @@ public class AssignmentMIPSolver {
                             }
                         }
                     }
-                    // Normalize slot counts to car counts (largest-remainder rounding)
-                    widthAssignments.put(width, slotsToCarCounts(slotCounts, kw, solution.get(pattern)));
+                    widthSlotAssignments.put(width, slotCounts);
                 }
 
-                List<Integer> widths = new ArrayList<>(widthAssignments.keySet());
-                if (widths.isEmpty()) {
-                    continue;
-                }
-
-                blocks.addAll(buildBlocksFromWidthAssignments(widthAssignments, solution.get(pattern)));
+                blocks.addAll(buildBlocksFromWidthSlotAssignments(
+                        widthSlotAssignments, pattern.getPattern(), solution.get(pattern)));
 
                 result.put(pattern, blocks);
             }
@@ -244,45 +298,6 @@ public class AssignmentMIPSolver {
 
     private String demandKey(int width, String messageText) {
         return width + "_" + messageText;
-    }
-
-    /**
-     * Converts slot-level MIP assignments to car-level counts using largest-remainder rounding.
-     * Ensures the returned counts sum to targetCars.
-     */
-    private static List<Map.Entry<String, Integer>> slotsToCarCounts(
-            List<Map.Entry<String, Integer>> slotCounts, int kw, int targetCars) {
-        if (slotCounts.isEmpty() || kw <= 0) return slotCounts;
-
-        // Compute floor car counts and fractional remainders
-        int[] floors = new int[slotCounts.size()];
-        double[] remainders = new double[slotCounts.size()];
-        int floorSum = 0;
-        for (int i = 0; i < slotCounts.size(); i++) {
-            double floatCars = (double) slotCounts.get(i).getValue() / kw;
-            floors[i] = (int) floatCars;
-            remainders[i] = floatCars - floors[i];
-            floorSum += floors[i];
-        }
-
-        // Distribute remaining cars by largest remainder
-        int remaining = targetCars - floorSum;
-        if (remaining > 0) {
-            Integer[] idx = new Integer[slotCounts.size()];
-            for (int i = 0; i < idx.length; i++) idx[i] = i;
-            java.util.Arrays.sort(idx, (a, b) -> Double.compare(remainders[b], remainders[a]));
-            for (int i = 0; i < Math.min(remaining, idx.length); i++) {
-                floors[idx[i]]++;
-            }
-        }
-
-        List<Map.Entry<String, Integer>> result = new ArrayList<>();
-        for (int i = 0; i < slotCounts.size(); i++) {
-            if (floors[i] > 0) {
-                result.add(Map.entry(slotCounts.get(i).getKey(), floors[i]));
-            }
-        }
-        return result;
     }
 
     static List<AssignmentBlock> buildBlocksFromWidthAssignments(
@@ -356,6 +371,76 @@ public class AssignmentMIPSolver {
         return mergeAdjacentBlocks(rawBlocks);
     }
 
+    static List<AssignmentBlock> buildBlocksFromWidthSlotAssignments(
+            Map<Integer, List<Map.Entry<String, Integer>>> widthSlotAssignments,
+            Map<Integer, Integer> pattern,
+            int usage) {
+        if (widthSlotAssignments == null || widthSlotAssignments.isEmpty()
+                || pattern == null || pattern.isEmpty() || usage <= 0) {
+            return Collections.emptyList();
+        }
+
+        Map<Integer, List<List<String>>> rollMessagesByWidth = new LinkedHashMap<>();
+        for (Map.Entry<Integer, Integer> cut : pattern.entrySet()) {
+            int width = cut.getKey();
+            int slotsPerRoll = cut.getValue();
+            int totalSlots = usage * slotsPerRoll;
+            List<String> flatMessages = materializeSlotMessages(
+                    widthSlotAssignments.getOrDefault(width, Collections.emptyList()),
+                    totalSlots);
+
+            List<List<String>> rollMessages = new ArrayList<>();
+            for (int roll = 0; roll < usage; roll++) {
+                int start = roll * slotsPerRoll;
+                int end = Math.min(start + slotsPerRoll, flatMessages.size());
+                List<String> messages = new ArrayList<>(flatMessages.subList(start, end));
+                while (messages.size() < slotsPerRoll) {
+                    messages.add(messages.isEmpty() ? "" : messages.get(messages.size() - 1));
+                }
+                messages.sort(String::compareTo);
+                rollMessages.add(List.copyOf(messages));
+            }
+            rollMessagesByWidth.put(width, rollMessages);
+        }
+
+        List<AssignmentBlock> rawBlocks = new ArrayList<>();
+        for (int roll = 0; roll < usage; roll++) {
+            Map<Integer, List<String>> stationConfig = new LinkedHashMap<>();
+            for (int width : pattern.keySet()) {
+                stationConfig.put(width, rollMessagesByWidth.get(width).get(roll));
+            }
+            rawBlocks.add(AssignmentBlock.fromStationConfig(stationConfig, 1));
+        }
+
+        return mergeAdjacentBlocks(rawBlocks);
+    }
+
+    private static List<String> materializeSlotMessages(
+            List<Map.Entry<String, Integer>> slotCounts,
+            int totalSlots) {
+        List<Map.Entry<String, Integer>> assignments = new ArrayList<>(slotCounts);
+        assignments.removeIf(assignment -> assignment.getValue() == null || assignment.getValue() <= 0);
+        assignments.sort(Comparator
+                .comparingInt((Map.Entry<String, Integer> assignment) -> assignment.getValue()).reversed()
+                .thenComparing(Map.Entry::getKey));
+
+        List<String> messages = new ArrayList<>(Math.max(0, totalSlots));
+        for (Map.Entry<String, Integer> assignment : assignments) {
+            for (int slot = 0; slot < assignment.getValue() && messages.size() < totalSlots; slot++) {
+                messages.add(assignment.getKey());
+            }
+            if (messages.size() >= totalSlots) {
+                break;
+            }
+        }
+
+        String fallback = messages.isEmpty() ? "" : messages.get(messages.size() - 1);
+        while (messages.size() < totalSlots) {
+            messages.add(fallback);
+        }
+        return messages;
+    }
+
     private static String findMessageAt(List<AssignmentSegment> segments, int rollIndex) {
         for (AssignmentSegment segment : segments) {
             if (rollIndex >= segment.start() && rollIndex < segment.end()) {
@@ -374,8 +459,9 @@ public class AssignmentMIPSolver {
         AssignmentBlock current = rawBlocks.get(0);
         for (int index = 1; index < rawBlocks.size(); index++) {
             AssignmentBlock next = rawBlocks.get(index);
-            if (current.getConfig().equals(next.getConfig())) {
-                current = new AssignmentBlock(current.getConfig(), current.getCount() + next.getCount());
+            if (current.getStationConfig().equals(next.getStationConfig())) {
+                current = new AssignmentBlock(
+                        current.getConfig(), current.getStationConfig(), current.getCount() + next.getCount());
             } else {
                 merged.add(current);
                 current = next;

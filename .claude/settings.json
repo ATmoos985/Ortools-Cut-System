@@ -24,7 +24,20 @@
       "Bash(node patch_timeout2.js)",
       "Bash(sed -n '147,152p' src/main/java/test/demo/apsmodule/generator/NewSolver/mip/LegacyOrderPatternSelectionSolver.java)",
       "Bash(sed -n '289,297p' src/main/java/test/demo/apsmodule/generator/NewSolver/mip/LegacyOrderPatternSelectionSolver.java)",
-      "Bash(sed -n '358,367p' src/main/java/test/demo/apsmodule/generator/NewSolver/mip/LegacyOrderPatternSelectionSolver.java)"
+      "Bash(sed -n '358,367p' src/main/java/test/demo/apsmodule/generator/NewSolver/mip/LegacyOrderPatternSelectionSolver.java)",
+      "Bash(iconv -f UTF-8 -t UTF-8 \"d:/BigBase/Solartron-Cut/src/main/java/test/demo/apsmodule/service/SolverOrderItem.java\")",
+      "Bash(xxd \"/d/BigBase/Solartron-Cut/src/main/java/test/demo/apsmodule/generator/NewSolver/output/InstructionConverter.java\")",
+      "Read(//e/Note/Base/Moss/Ami/Ami/6./xe5/xb7/xa5/xe4/xbd/x9c/1. /xe9/xa1/xb9/xe7/x9b/xae/xe8/xae/xb0/xe5/xbd/x95/4. /xe9/x95/xbf/xe9/x98/xb3/xe7/xa7/x91/xe6/x8a/x80/5. /xe6/x90/xad/xe5/x88/x87/xe6/x96/xb9/xe6/xa1/x88/3. /xe6/x90/xad/xe5/x88/x87/xe9/x80/xbb/xe8/xbe/x91-system/xe5/xba/x8f/xe5/x8f/xb7/xe7/xbb/x84/xe4/xbc/x98/xe5/x8c/x96/xe8/xbf/x9b/xe5/xb1/x95/xe4/xb8/x8e/xe5/xbd/x93/xe5/x89/x8d/xe6/x96/xb9/xe5/x90/**)",
+      "Bash(node patch_phase2.js)",
+      "Bash(sed -n '245,252p')",
+      "Bash(sed -n '498,505p' \"d:/BigBase/Solartron-Cut/src/main/java/test/demo/apsmodule/generator/NewSolver/mip/Phase2SequenceGroupSolver.java\")",
+      "Bash(node patch_phase2_dead.js)",
+      "Bash(git checkout *)",
+      "Bash(node patch_phase2_methods.js)",
+      "Bash(rm patch_phase2_methods.js patch_phase2_dead.js)",
+      "Bash(echo \"exit: $?\")",
+      "Bash(node patch_phase2_perpattern.js)",
+      "Bash(node patch_phase2_perpattern2.js)"
     ]
   }
 }

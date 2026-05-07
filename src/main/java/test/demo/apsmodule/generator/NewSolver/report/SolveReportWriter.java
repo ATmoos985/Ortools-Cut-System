@@ -82,6 +82,7 @@ public class SolveReportWriter implements Closeable {
     }
 
     public void writeGroupResult(List<CandidateRow> candidates,
+            List<SequenceCandidateRow> sequenceCandidates,
             String selectedName,
             Map<PatternCandidate, Integer> selectedSolution,
             int selectedSeqGroups,
@@ -106,6 +107,24 @@ public class SolveReportWriter implements Closeable {
                     marker);
         }
         writeln("");
+
+        if (sequenceCandidates != null && !sequenceCandidates.isEmpty()) {
+            writeln("Sequence assignment candidate comparison:");
+            writeln("  %-16s %-22s %10s %10s",
+                    "pattern_plan", "assignment_plan", "seq_groups", "instructions");
+            writeln("  %-16s %-22s %10s %10s",
+                    "----------------", "----------------------", "----------", "------------");
+            for (SequenceCandidateRow row : sequenceCandidates) {
+                String marker = row.patternPlan().equals(selectedName) && row.selected() ? "  <- selected" : "";
+                writeln("  %-16s %-22s %10d %10d%s",
+                        row.patternPlan(),
+                        row.assignmentPlan(),
+                        row.seqGroups(),
+                        row.instructions(),
+                        marker);
+            }
+            writeln("");
+        }
 
         if (selectedSolution != null && !selectedSolution.isEmpty()) {
             writeln("Selected plan: %s", selectedName);
@@ -232,5 +251,13 @@ public class SolveReportWriter implements Closeable {
             }
             return 100.0 * (totalWidth * rolls - waste) / (double) (totalWidth * rolls);
         }
+    }
+
+    public record SequenceCandidateRow(
+            String patternPlan,
+            String assignmentPlan,
+            int seqGroups,
+            int instructions,
+            boolean selected) {
     }
 }

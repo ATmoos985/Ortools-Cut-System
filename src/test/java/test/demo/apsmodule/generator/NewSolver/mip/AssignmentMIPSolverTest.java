@@ -43,4 +43,22 @@ class AssignmentMIPSolverTest {
         assertEquals(1, materializedCounts.get("1200|X"));
         assertEquals(2, materializedCounts.get("1200|Y"));
     }
+
+    @Test
+    void buildBlocksFromWidthSlotAssignmentsPreservesDuplicateWidthMessages() {
+        Map<Integer, List<Map.Entry<String, Integer>>> widthSlotAssignments = new LinkedHashMap<>();
+        widthSlotAssignments.put(1000, List.of(
+                Map.entry("A", 1),
+                Map.entry("B", 1)));
+
+        List<AssignmentMIPSolver.AssignmentBlock> blocks =
+                AssignmentMIPSolver.buildBlocksFromWidthSlotAssignments(
+                        widthSlotAssignments,
+                        Map.of(1000, 2),
+                        1);
+
+        assertEquals(1, blocks.size());
+        assertEquals(List.of("A", "B"), blocks.get(0).getStationConfig().get(1000));
+        assertEquals(1, blocks.get(0).getCount());
+    }
 }

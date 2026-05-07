@@ -9,6 +9,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import test.demo.apsmodule.generator.NewSolver.config.SolverParameters;
 import test.demo.apsmodule.generator.NewSolver.mip.AssignmentMIPSolver;
+import test.demo.apsmodule.generator.NewSolver.mip.Phase2SequenceGroupSolver;
 import test.demo.apsmodule.generator.NewSolver.model.PatternCandidate;
 import test.demo.apsmodule.service.CuttingInstruction;
 import test.demo.apsmodule.service.SolverOrderItem;
@@ -77,7 +78,13 @@ public class InstructionConverter {
             String groupKey,
             List<SolverOrderItem> groupItems,
             Map<Integer, Integer> demands) {
+        return convertWithDetails(solution, groupKey, groupItems, demands).instructions();
+    }
 
+    public ConversionResult convertWithDetails(Map<PatternCandidate, Integer> solution,
+            String groupKey,
+            List<SolverOrderItem> groupItems,
+            Map<Integer, Integer> demands) {
         Map<PatternCandidate, List<AssignmentMIPSolver.AssignmentBlock>> mipAssignment = null;
         try {
             mipAssignment = solveAssignmentWithMip(solution, groupItems);
@@ -90,6 +97,22 @@ public class InstructionConverter {
             List<CuttingInstruction> mipInstructions = buildFromMIPAssignment(solution, groupKey, groupItems, mipAssignment);
             addCandidate(candidates, "stage5-mip", mipInstructions);
             addPostProcessedCandidate(candidates, "stage5-mip-post", mipInstructions);
+        }
+
+        try {
+            log.info("Evaluating Phase2 sequence-group candidate");
+            Phase2SequenceGroupSolver.SolveResult phase2Result =
+                    solveSequenceGroupsWithPhase2(solution, groupItems, mipAssignment);
+            if (phase2Result != null && !phase2Result.solution().isEmpty() && !phase2Result.assignments().isEmpty()) {
+                List<CuttingInstruction> phase2Instructions = buildFromMIPAssignment(
+                        phase2Result.solution(), groupKey, groupItems, phase2Result.assignments());
+                addCandidate(candidates, "phase2-cg", phase2Instructions);
+                addPostProcessedCandidate(candidates, "phase2-cg-post", phase2Instructions);
+            } else {
+                log.info("Phase2 sequence-group candidate produced no usable plan");
+            }
+        } catch (Exception e) {
+            log.warn("Phase2 sequence-group candidate failed, other candidates will still be evaluated", e);
         }
 
         log.info("Evaluating greedy assignment candidate");
@@ -105,13 +128,17 @@ public class InstructionConverter {
         addPostProcessedCandidate(candidates, "greedy-reuse-post", reuseGreedyInstructions);
 
         if (candidates.isEmpty()) {
-            return new ArrayList<>();
+            return new ConversionResult(new ArrayList<>(), "none", 0, List.of());
         }
 
         ScoredInstructionPlan bestPlan = selectBestCandidate(candidates);
         log.info("Sequence-group selection: winner={} groups={} candidates={}",
                 bestPlan.name(), bestPlan.sequenceGroupCount(), summarizeCandidates(candidates));
-        return bestPlan.instructions();
+        return new ConversionResult(
+                bestPlan.instructions(),
+                bestPlan.name(),
+                bestPlan.sequenceGroupCount(),
+                buildSequenceCandidateRows(candidates, bestPlan.name()));
     }
 
     protected Map<PatternCandidate, List<AssignmentMIPSolver.AssignmentBlock>> solveAssignmentWithMip(
@@ -119,6 +146,23 @@ public class InstructionConverter {
             List<SolverOrderItem> groupItems) {
         AssignmentMIPSolver assignmentSolver = new AssignmentMIPSolver(params);
         return assignmentSolver.solve(solution, groupItems);
+    }
+
+    protected Phase2SequenceGroupSolver.SolveResult solveSequenceGroupsWithPhase2(
+            Map<PatternCandidate, Integer> solution,
+            List<SolverOrderItem> groupItems) {
+        return solveSequenceGroupsWithPhase2(solution, groupItems, null);
+    }
+
+    protected Phase2SequenceGroupSolver.SolveResult solveSequenceGroupsWithPhase2(
+            Map<PatternCandidate, Integer> solution,
+            List<SolverOrderItem> groupItems,
+            Map<PatternCandidate, List<AssignmentMIPSolver.AssignmentBlock>> seedAssignments) {
+        if (!loadOrTools()) {
+            return null;
+        }
+        Phase2SequenceGroupSolver phase2Solver = new Phase2SequenceGroupSolver(params);
+        return phase2Solver.solveWithSolution(solution, groupItems, seedAssignments);
     }
 
     protected void optimizeSequenceGroups(List<CuttingInstruction> instructions) {
@@ -157,13 +201,17 @@ public class InstructionConverter {
 
             if (blocks != null) {
                 for (AssignmentMIPSolver.AssignmentBlock block : blocks) {
-                    Map<Integer, String> config = block.getConfig();
+                    Map<Integer, List<String>> stationConfig = block.getStationConfig();
+                    Map<Integer, String> fallbackConfig = block.getConfig();
                     for (int roll = 0; roll < block.getCount(); roll++) {
                         for (Map.Entry<Integer, Integer> subRoll : pattern.getPattern().entrySet()) {
                             int width = subRoll.getKey();
                             int stationCount = subRoll.getValue();
-                            String messageText = config.getOrDefault(width, "UNKNOWN");
                             for (int station = 0; station < stationCount; station++) {
+                                String messageText = messageAtStation(
+                                        stationConfig.get(width),
+                                        station,
+                                        fallbackConfig.getOrDefault(width, "UNKNOWN"));
                                 assignments.add(new StationAssignment(width, messageText));
                             }
                         }
@@ -181,6 +229,16 @@ public class InstructionConverter {
         compactInstructionRollOrder(instructions);
         reorderInstructionsForSequenceGroups(instructions);
         return instructions;
+    }
+
+    private String messageAtStation(List<String> messages, int station, String fallback) {
+        if (messages == null || messages.isEmpty()) {
+            return fallback;
+        }
+        if (station < messages.size()) {
+            return messages.get(station);
+        }
+        return messages.get(messages.size() - 1);
     }
 
     private List<CuttingInstruction> buildFromGreedyAssignment(
@@ -1235,14 +1293,30 @@ public class InstructionConverter {
                 .collect(Collectors.joining(", "));
     }
 
+    private List<SequenceCandidateRow> buildSequenceCandidateRows(
+            List<ScoredInstructionPlan> candidates,
+            String selectedName) {
+        return candidates.stream()
+                .sorted(Comparator.comparingInt((ScoredInstructionPlan candidate) -> candidatePreference(candidate.name()))
+                        .thenComparingInt(ScoredInstructionPlan::sequenceGroupCount))
+                .map(candidate -> new SequenceCandidateRow(
+                        candidate.name(),
+                        candidate.sequenceGroupCount(),
+                        candidate.instructions().size(),
+                        candidate.name().equals(selectedName)))
+                .toList();
+    }
+
     private int candidatePreference(String name) {
         return switch (name) {
             case "stage5-mip" -> 0;
             case "stage5-mip-post" -> 1;
-            case "greedy" -> 2;
-            case "greedy-post" -> 3;
-            case "greedy-reuse" -> 4;
-            case "greedy-reuse-post" -> 5;
+            case "phase2-cg" -> 2;
+            case "phase2-cg-post" -> 3;
+            case "greedy" -> 4;
+            case "greedy-post" -> 5;
+            case "greedy-reuse" -> 6;
+            case "greedy-reuse-post" -> 7;
             default -> Integer.MAX_VALUE;
         };
     }
@@ -1255,6 +1329,20 @@ public class InstructionConverter {
             String name,
             List<CuttingInstruction> instructions,
             int sequenceGroupCount) {
+    }
+
+    public record ConversionResult(
+            List<CuttingInstruction> instructions,
+            String selectedName,
+            int selectedSequenceGroups,
+            List<SequenceCandidateRow> candidateRows) {
+    }
+
+    public record SequenceCandidateRow(
+            String name,
+            int sequenceGroupCount,
+            int instructions,
+            boolean selected) {
     }
 
     private record MessageCount(String messageText, int count) {

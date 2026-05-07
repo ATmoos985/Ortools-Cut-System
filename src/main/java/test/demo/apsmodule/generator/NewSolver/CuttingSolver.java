@@ -119,21 +119,33 @@ public class CuttingSolver implements CuttingSolverAlgorithm {
 
                 GroupSolvePlan bestPlan = null;
                 List<SolveReportWriter.CandidateRow> reportRows = new ArrayList<>();
+                List<SolveReportWriter.SequenceCandidateRow> sequenceReportRows = new ArrayList<>();
                 for (int candidateIndex = 0; candidateIndex < solveCandidates.size(); candidateIndex++) {
                     MultiStageMIPSolver.SolveCandidate solveCandidate = solveCandidates.get(candidateIndex);
                     SolverResult result = solveCandidate.result();
                     printSolutionSummary(result, demands);
 
-                    List<CuttingInstruction> instructions = converter.convert(
+                    InstructionConverter.ConversionResult conversion = converter.convertWithDetails(
                             result.getSolution(), groupKey, groupItems, demands);
+                    List<CuttingInstruction> instructions = conversion.instructions();
                     int sequenceGroups = SequenceGroupPostProcessor.countTotalGroups(instructions);
 
-                    log.info("Pattern candidate {}: patterns={}, waste={}mm, over={}, groups={}",
+                    for (InstructionConverter.SequenceCandidateRow row : conversion.candidateRows()) {
+                        sequenceReportRows.add(new SolveReportWriter.SequenceCandidateRow(
+                                solveCandidate.name(),
+                                row.name(),
+                                row.sequenceGroupCount(),
+                                row.instructions(),
+                                row.selected()));
+                    }
+
+                    log.info("Pattern candidate {}: patterns={}, waste={}mm, over={}, groups={}, assignmentWinner={}",
                             solveCandidate.name(),
                             result.getPatternCount(),
                             result.getTotalWaste(),
                             result.getTotalOverProduction(),
-                            sequenceGroups);
+                            sequenceGroups,
+                            conversion.selectedName());
 
                     reportRows.add(new SolveReportWriter.CandidateRow(
                             solveCandidate.name(),
@@ -146,6 +158,7 @@ public class CuttingSolver implements CuttingSolverAlgorithm {
                             result,
                             instructions,
                             sequenceGroups,
+                            conversion.selectedName(),
                             candidateIndex);
                     if (bestPlan == null || isBetterPlan(plan, bestPlan)) {
                         bestPlan = plan;
@@ -161,15 +174,17 @@ public class CuttingSolver implements CuttingSolverAlgorithm {
                     continue;
                 }
 
-                log.info("Selected pattern candidate for group {}: {} (groups={}, patterns={}, waste={}mm)",
+                log.info("Selected pattern candidate for group {}: {} / {} (groups={}, patterns={}, waste={}mm)",
                         groupKey,
                         bestPlan.name(),
+                        bestPlan.sequenceCandidateName(),
                         bestPlan.sequenceGroupCount(),
                         bestPlan.result().getPatternCount(),
                         bestPlan.result().getTotalWaste());
 
                 report.writeGroupResult(
                         reportRows,
+                        sequenceReportRows,
                         bestPlan.name(),
                         bestPlan.result().getSolution(),
                         bestPlan.sequenceGroupCount(),
@@ -256,6 +271,7 @@ public class CuttingSolver implements CuttingSolverAlgorithm {
             SolverResult result,
             List<CuttingInstruction> instructions,
             int sequenceGroupCount,
+            String sequenceCandidateName,
             int order) {
     }
 }
