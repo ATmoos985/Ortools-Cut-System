@@ -44,6 +44,7 @@ public class Phase2SequenceGroupSolver {
     private static final double SLACK_PENALTY = 10_000.0;
     private static final double ROLL_TIE_BREAKER = 1e-6;
     private static final double WASTE_TIE_BREAKER = 1e-9;
+    private static final double PARITY_PENALTY = 0.3;
 
     private final SolverParameters params;
 
@@ -652,9 +653,13 @@ public class Phase2SequenceGroupSolver {
 
             List<MPVariable> nVars = new java.util.ArrayList<>();
             List<MPVariable> yVars = new java.util.ArrayList<>();
+            List<MPVariable> kHalfVars = new java.util.ArrayList<>();
+            List<MPVariable> r2Vars = new java.util.ArrayList<>();
             for (int i = 0; i < cols.size(); i++) {
                 nVars.add(solver.makeIntVar(0, usage, "n" + i));
                 yVars.add(solver.makeBoolVar("y" + i));
+                kHalfVars.add(solver.makeIntVar(0, usage / 2, "kh" + i));
+                r2Vars.add(solver.makeBoolVar("r2" + i));
             }
 
             // Exact demand constraints from Stage5 allocation
@@ -678,11 +683,20 @@ public class Phase2SequenceGroupSolver {
                 link.setCoefficient(yVars.get(i), -usage);
             }
 
-            // Objective: minimize active configs (sequence groups for this pattern)
+            // Parity: n[col] = 2*kHalf[col] + r2[col]  (r2=1 means odd-car group)
+            for (int i = 0; i < cols.size(); i++) {
+                MPConstraint pc = solver.makeConstraint(0, 0, "par" + i);
+                pc.setCoefficient(nVars.get(i), 1.0);
+                pc.setCoefficient(kHalfVars.get(i), -2.0);
+                pc.setCoefficient(r2Vars.get(i), -1.0);
+            }
+
+            // Objective: minimize active configs + parity penalty
             MPObjective obj = solver.objective();
             for (int i = 0; i < cols.size(); i++) {
                 obj.setCoefficient(yVars.get(i), 1.0);
                 obj.setCoefficient(nVars.get(i), ROLL_TIE_BREAKER);
+                obj.setCoefficient(r2Vars.get(i), PARITY_PENALTY);
             }
             obj.setMinimization();
 

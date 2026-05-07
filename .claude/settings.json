@@ -38,7 +38,12 @@
       "Bash(echo \"exit: $?\")",
       "Bash(node patch_phase2_perpattern.js)",
       "Bash(node patch_phase2_perpattern2.js)",
-      "Bash(mvn compile *)"
+      "Bash(mvn compile *)",
+      "Bash(node \"d:/BigBase/patch_phase2_parity.js\")"
+    ],
+    "additionalDirectories": [
+      "E:\\Note\\Base\\Moss\\Ami\\Ami\\6.工作\\1. 项目记录\\4. 长阳科技\\5. 搭切方案\\0. 搭切方案-new",
+      "d:\\BigBase"
     ]
   }
 }
