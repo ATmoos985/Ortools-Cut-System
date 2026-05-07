@@ -37,7 +37,8 @@
       "Bash(rm patch_phase2_methods.js patch_phase2_dead.js)",
       "Bash(echo \"exit: $?\")",
       "Bash(node patch_phase2_perpattern.js)",
-      "Bash(node patch_phase2_perpattern2.js)"
+      "Bash(node patch_phase2_perpattern2.js)",
+      "Bash(mvn compile *)"
     ]
   }
 }

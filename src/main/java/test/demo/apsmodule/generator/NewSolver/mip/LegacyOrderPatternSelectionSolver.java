@@ -25,6 +25,8 @@ class LegacyOrderPatternSelectionSolver {
     private static final int MAX_REPAIR_ATTEMPTS = 3;
     private static final double LEGACY_SEQ_GROUP_ALPHA = 1.0;
     private static final double LEGACY_SEQ_GROUP_BETA = 0.0;
+    private static final int    MIN_USAGE_THRESHOLD = 4;
+    private static final double SMALL_USAGE_PENALTY = 0.02;
 
     private final SolverParameters params;
 
@@ -355,7 +357,7 @@ class LegacyOrderPatternSelectionSolver {
         }
     }
 
-    private Map<PatternCandidate, Integer> solveMIPStage4(List<PatternCandidate> patterns,
+    Map<PatternCandidate, Integer> solveMIPStage4(List<PatternCandidate> patterns,
             Map<Integer, Integer> demands,
             Set<Integer> allowOverSet,
             int maxTotalOver,
@@ -373,9 +375,11 @@ class LegacyOrderPatternSelectionSolver {
 
             List<MPVariable> xVars = new ArrayList<>();
             List<MPVariable> yVars = new ArrayList<>();
+            List<MPVariable> sVars = new ArrayList<>();
             for (int i = 0; i < patterns.size(); i++) {
                 xVars.add(solver.makeIntVar(0, totalDemand + params.getTotalOverCap(), "x_" + i));
                 yVars.add(solver.makeBoolVar("y_" + i));
+                sVars.add(solver.makeNumVar(0, MIN_USAGE_THRESHOLD, "s_" + i));
             }
 
             Map<Integer, MPVariable> overVars = new LinkedHashMap<>();
@@ -420,6 +424,13 @@ class LegacyOrderPatternSelectionSolver {
                 link.setCoefficient(yVars.get(i), -bigM);
             }
 
+            for (int i = 0; i < patterns.size(); i++) {
+                MPConstraint minUse = solver.makeConstraint(0, MPSolver.infinity(), "minuse_" + i);
+                minUse.setCoefficient(sVars.get(i), 1.0);
+                minUse.setCoefficient(xVars.get(i), 1.0);
+                minUse.setCoefficient(yVars.get(i), -MIN_USAGE_THRESHOLD);
+            }
+
             int maxWidthCount = patterns.stream()
                     .mapToInt(PatternCandidate::getWidthCount)
                     .max()
@@ -430,6 +441,7 @@ class LegacyOrderPatternSelectionSolver {
                 objective.setCoefficient(yVars.get(i), LEGACY_SEQ_GROUP_ALPHA);
                 double groupCost = (double) patterns.get(i).getWidthCount() / maxWidthCount;
                 objective.setCoefficient(xVars.get(i), LEGACY_SEQ_GROUP_BETA * groupCost);
+                objective.setCoefficient(sVars.get(i), SMALL_USAGE_PENALTY);
             }
             objective.setMinimization();
 

@@ -140,16 +140,15 @@ public class MultiStageMIPSolver {
         }
 
         log.warn("Legacy-order pattern selection failed, falling back to waste-first pattern selection");
-        return solveFinalMIPWithRepair(patterns, demands, allowOverSet, params.getTopK());
+        return solveFinalMIPWithRepair(patterns, demands, allowOverSet, params.getTopK(), deadlineMs);
     }
 
     private List<NamedSolution> solveFinalMIPWithRepair(
             List<PatternCandidate> patterns,
             Map<Integer, Integer> demands,
             Set<Integer> allowOverSet,
-            int currentTopK) {
-
-        long deadlineMs = System.currentTimeMillis() + params.getTimeoutMs();
+            int currentTopK,
+            long deadlineMs) {
         Set<String> seen = patterns.stream()
                 .map(PatternCandidate::signature)
                 .collect(Collectors.toCollection(HashSet::new));
@@ -248,6 +247,26 @@ public class MultiStageMIPSolver {
                 addSolutionCandidate(solutions, name, diverse);
                 log.info("Diversity candidate {}: patterns={}, waste={}mm",
                         name, diverse.size(), calculateTotalWaste(diverse));
+                // Refine with Stage4 to reduce single/double-car patterns
+                long remainAfterDiverse = deadlineMs - System.currentTimeMillis();
+                long refineBudget = Math.min(5_000L, Math.max(0, remainAfterDiverse - 8_000L));
+                if (refineBudget > 1_500L) {
+                    try {
+                        LegacyOrderPatternSelectionSolver refiner = new LegacyOrderPatternSelectionSolver(params);
+                        List<PatternCandidate> diversePats = new ArrayList<>(diverse.keySet());
+                        int totalDemandLocal = demands.values().stream().mapToInt(Integer::intValue).sum();
+                        int maxRolls = totalDemandLocal + params.getTotalOverCap();
+                        Map<PatternCandidate, Integer> refined = refiner.solveMIPStage4(
+                                diversePats, demands, allowOverSet, maxTotalOver, maxRolls, bestWaste, refineBudget);
+                        if (refined != null && !refined.isEmpty()) {
+                            addSolutionCandidate(solutions, name + "-s4", refined);
+                            log.info("Stage4 refined {}: patterns={}, waste={}mm",
+                                    name, refined.size(), calculateTotalWaste(refined));
+                        }
+                    } catch (Exception ex) {
+                        log.warn("Stage4 refinement of {} failed: {}", name, ex.getMessage());
+                    }
+                }
             } else {
                 log.info("Could not find diversity candidate {}, stopping", k);
                 break;

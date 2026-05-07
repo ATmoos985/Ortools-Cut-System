@@ -91,19 +91,20 @@ public class SolveReportWriter implements Closeable {
         solvedGroups++;
 
         writeln("Candidate comparison:");
-        writeln("  %-22s %10s %10s %10s %10s %10s",
-                "name", "waste_mm", "util_pct", "patterns", "rolls", "seq_groups");
-        writeln("  %-22s %10s %10s %10s %10s %10s",
-                "----------------------", "----------", "--------", "--------", "-----", "----------");
+        writeln("  %-22s %10s %10s %10s %10s %10s %6s",
+                "name", "waste_mm", "util_pct", "patterns", "rolls", "seq_groups", "tiny");
+        writeln("  %-22s %10s %10s %10s %10s %10s %6s",
+                "----------------------", "----------", "--------", "--------", "-----", "----------", "------");
         for (CandidateRow row : candidates) {
             String marker = row.name().equals(selectedName) ? "  <- selected" : "";
-            writeln("  %-22s %10d %9.2f%% %10d %10d %10d%s",
+            writeln("  %-22s %10d %9.2f%% %10d %10d %10d %6d%s",
                     row.name(),
                     row.waste(),
                     row.utilization(),
                     row.patterns(),
                     row.rolls(),
                     row.seqGroups(),
+                    row.tinyPatterns(),
                     marker);
         }
         writeln("");
@@ -145,6 +146,13 @@ public class SolveReportWriter implements Closeable {
                                 pattern.getRealWaste(totalWidth),
                                 formatPattern(pattern));
                     });
+            long tiny1 = selectedSolution.values().stream().filter(v -> v == 1).count();
+            long tiny2 = selectedSolution.values().stream().filter(v -> v == 2).count();
+            long mid3  = selectedSolution.values().stream().filter(v -> v == 3).count();
+            long mid49 = selectedSolution.values().stream().filter(v -> v >= 4 && v <= 9).count();
+            long big   = selectedSolution.values().stream().filter(v -> v >= 10).count();
+            writeln("Pattern usage distribution:  1-car:%-3d  2-car:%-3d  3-car:%-3d  4-9-car:%-3d  >=10-car:%d",
+                    tiny1, tiny2, mid3, mid49, big);
         }
         writeln("");
 
@@ -234,7 +242,8 @@ public class SolveReportWriter implements Closeable {
             int patterns,
             int rolls,
             int seqGroups,
-            int totalWidth) {
+            int totalWidth,
+            int tinyPatterns) {
 
         public CandidateRow(String name, SolverResult result, int seqGroups, int totalWidth) {
             this(name,
@@ -242,7 +251,8 @@ public class SolveReportWriter implements Closeable {
                     result.getPatternCount(),
                     result.getTotalRolls(),
                     seqGroups,
-                    totalWidth);
+                    totalWidth,
+                    (int) result.getSolution().values().stream().filter(v -> v <= 2).count());
         }
 
         public double utilization() {
