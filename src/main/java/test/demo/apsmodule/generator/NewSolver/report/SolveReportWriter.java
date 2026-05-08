@@ -87,7 +87,8 @@ public class SolveReportWriter implements Closeable {
             Map<PatternCandidate, Integer> selectedSolution,
             int selectedSeqGroups,
             int totalWidth,
-            long groupElapsedMs) {
+            long groupElapsedMs,
+            Map<Integer, Integer> demands) {
         solvedGroups++;
 
         writeln("Candidate comparison:");
@@ -153,6 +154,34 @@ public class SolveReportWriter implements Closeable {
             long big   = selectedSolution.values().stream().filter(v -> v >= 10).count();
             writeln("Pattern usage distribution:  1-car:%-3d  2-car:%-3d  3-car:%-3d  4-9-car:%-3d  >=10-car:%d",
                     tiny1, tiny2, mid3, mid49, big);
+
+            // 超产明细
+            if (demands != null && !demands.isEmpty()) {
+                Map<Integer, Integer> produced = new java.util.TreeMap<>();
+                for (Map.Entry<PatternCandidate, Integer> entry : selectedSolution.entrySet()) {
+                    for (Map.Entry<Integer, Integer> cut : entry.getKey().getPattern().entrySet()) {
+                        produced.merge(cut.getKey(), cut.getValue() * entry.getValue(), Integer::sum);
+                    }
+                }
+                int totalOver = 0;
+                StringBuilder overDetails = new StringBuilder();
+                for (Map.Entry<Integer, Integer> d : demands.entrySet().stream()
+                        .sorted(Map.Entry.comparingByKey()).toList()) {
+                    int p = produced.getOrDefault(d.getKey(), 0);
+                    int over = p - d.getValue();
+                    if (over > 0) {
+                        totalOver += over;
+                        overDetails.append(String.format("  %4dmm: demand=%d produced=%d [over+%d]%n",
+                                d.getKey(), d.getValue(), p, over));
+                    }
+                }
+                if (totalOver > 0) {
+                    writeln("Over-production details (total over=%d):", totalOver);
+                    writer.print(overDetails);
+                } else {
+                    writeln("Over-production: none (exact match)");
+                }
+            }
         }
         writeln("");
 

@@ -189,7 +189,8 @@ public class CuttingSolver implements CuttingSolverAlgorithm {
                         bestPlan.result().getSolution(),
                         bestPlan.sequenceGroupCount(),
                         params.getTotalWidth(),
-                        System.currentTimeMillis() - groupStart);
+                        System.currentTimeMillis() - groupStart,
+                        demands);
 
                 allInstructions.addAll(bestPlan.instructions());
                 log.debug("Generated instructions: {}", bestPlan.instructions().size());
@@ -247,11 +248,11 @@ public class CuttingSolver implements CuttingSolverAlgorithm {
     }
 
     private boolean isBetterPlan(GroupSolvePlan candidate, GroupSolvePlan currentBest) {
-        // Priority 1: utilization — lower waste is strictly better
-        if (candidate.result().getTotalWaste() != currentBest.result().getTotalWaste()) {
-            return candidate.result().getTotalWaste() < currentBest.result().getTotalWaste();
+        // Priority 1: rolls — fewer rolls = higher yield (less material consumed)
+        if (candidate.result().getTotalRolls() != currentBest.result().getTotalRolls()) {
+            return candidate.result().getTotalRolls() < currentBest.result().getTotalRolls();
         }
-        // Priority 2: sequence groups — fewer is better
+        // Priority 2: sequence groups — fewer is better for production efficiency
         if (candidate.sequenceGroupCount() != currentBest.sequenceGroupCount()) {
             return candidate.sequenceGroupCount() < currentBest.sequenceGroupCount();
         }
@@ -259,7 +260,11 @@ public class CuttingSolver implements CuttingSolverAlgorithm {
         if (candidate.result().getPatternCount() != currentBest.result().getPatternCount()) {
             return candidate.result().getPatternCount() < currentBest.result().getPatternCount();
         }
-        // Tiebreak: over-production, then candidate order
+        // Priority 4: waste — lower waste is better (tie-break within same roll count)
+        if (candidate.result().getTotalWaste() != currentBest.result().getTotalWaste()) {
+            return candidate.result().getTotalWaste() < currentBest.result().getTotalWaste();
+        }
+        // Priority 5: over-production, then candidate order
         if (candidate.result().getTotalOverProduction() != currentBest.result().getTotalOverProduction()) {
             return candidate.result().getTotalOverProduction() < currentBest.result().getTotalOverProduction();
         }

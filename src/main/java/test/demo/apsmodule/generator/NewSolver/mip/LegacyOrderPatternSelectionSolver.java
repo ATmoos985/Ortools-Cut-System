@@ -106,6 +106,7 @@ class LegacyOrderPatternSelectionSolver {
         }
 
         int optimalOver = Arrays.stream(stage1Result).sum();
+        log.info("Legacy Stage1 completed: optimalOver={}", optimalOver);
         remaining = Math.max(5000, deadlineMs - System.currentTimeMillis());
         long stage2Time = Math.max(5000, remaining * 55 / 100);
         Map<PatternCandidate, Integer> stage2Solution = solveMIPStage2(
@@ -115,22 +116,40 @@ class LegacyOrderPatternSelectionSolver {
         }
 
         int totalRolls = stage2Solution.values().stream().mapToInt(Integer::intValue).sum();
+        int stage2Patterns = stage2Solution.size();
+        int stage2Waste = calculateTotalWaste(stage2Solution);
+        log.info("Legacy Stage2 completed: rolls={}, patterns={}, waste={}mm", totalRolls, stage2Patterns, stage2Waste);
+
         remaining = Math.max(3000, deadlineMs - System.currentTimeMillis());
         long stage3Time = Math.max(3000, remaining * 60 / 100);
         Map<PatternCandidate, Integer> stage3Solution = solveMIPStage3(
                 patterns, demands, allowOverSet, optimalOver, totalRolls, stage3Time);
         if (stage3Solution == null || stage3Solution.isEmpty()) {
+            log.info("Legacy Stage3 failed, using Stage2 solution");
             stage3Solution = stage2Solution;
         }
 
         int totalWaste = calculateTotalWaste(stage3Solution);
+        int stage3Rolls = stage3Solution.values().stream().mapToInt(Integer::intValue).sum();
+        int stage3Patterns = stage3Solution.size();
+        log.info("Legacy Stage3 completed: rolls={}, patterns={}, waste={}mm", stage3Rolls, stage3Patterns, totalWaste);
+
+        int wasteSlack = Math.max(200, (int) (totalWaste * 0.05));
+        log.info("Legacy Stage4 constraints: maxRolls={}, maxWaste={}, wasteSlack={}, wasteCap={}",
+                stage3Rolls, totalWaste, wasteSlack, totalWaste + wasteSlack);
+
         remaining = Math.max(2000, deadlineMs - System.currentTimeMillis());
         long stage4Time = Math.min(remaining, 20_000L);
         Map<PatternCandidate, Integer> stage4Solution = solveMIPStage4(
-                patterns, demands, allowOverSet, optimalOver, totalRolls, totalWaste, stage4Time);
+                patterns, demands, allowOverSet, optimalOver, stage3Rolls, totalWaste, stage4Time);
         if (stage4Solution == null || stage4Solution.isEmpty()) {
+            log.info("Legacy Stage4 failed, using Stage3 solution");
             return stage3Solution;
         }
+        int stage4Rolls = stage4Solution.values().stream().mapToInt(Integer::intValue).sum();
+        int stage4Patterns = stage4Solution.size();
+        int stage4Waste = calculateTotalWaste(stage4Solution);
+        log.info("Legacy Stage4 completed: rolls={}, patterns={}, waste={}mm", stage4Rolls, stage4Patterns, stage4Waste);
         return stage4Solution;
     }
 
@@ -412,7 +431,7 @@ class LegacyOrderPatternSelectionSolver {
                 rollsCap.setCoefficient(xVar, 1);
             }
 
-            int wasteSlack = Math.max(200, (int) (maxTotalWaste * 0.02));
+            int wasteSlack = Math.max(200, (int) (maxTotalWaste * 0.05));
             MPConstraint wasteCap = solver.makeConstraint(0, maxTotalWaste + wasteSlack, "wasteCap");
             for (int i = 0; i < patterns.size(); i++) {
                 wasteCap.setCoefficient(xVars.get(i), patterns.get(i).getRealWaste(params.getTotalWidth()));

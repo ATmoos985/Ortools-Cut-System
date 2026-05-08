@@ -34,7 +34,7 @@ public class MultiStageMIPSolver {
 
     private static final Logger log = LoggerFactory.getLogger(MultiStageMIPSolver.class);
     private static final int MAX_SOLVE_ATTEMPTS = 3;
-    private static final double WASTE_PROTECTION_RATIO = 0.02;
+    private static final double WASTE_PROTECTION_RATIO = 0.05;
     private static final int MIN_WASTE_PROTECTION_MM = 200;
 
     private final SolverParameters params;
@@ -232,7 +232,7 @@ public class MultiStageMIPSolver {
         List<NamedSolution> solutions = new ArrayList<>();
         addSolutionCandidate(solutions, "best-waste", primarySolution);
 
-        for (int k = 1; k < 3; k++) {
+        for (int k = 1; k < 5; k++) {
             long remaining = deadlineMs - System.currentTimeMillis();
             if (remaining < 3000) {
                 log.info("Stopping diversity search: only {}ms remaining", remaining);
@@ -247,25 +247,35 @@ public class MultiStageMIPSolver {
                 addSolutionCandidate(solutions, name, diverse);
                 log.info("Diversity candidate {}: patterns={}, waste={}mm",
                         name, diverse.size(), calculateTotalWaste(diverse));
-                // Refine with Stage4 to reduce single/double-car patterns
+                // Refine with Stage4 to reduce single/double-car patterns.
+                // This is a critical step — Stage4 refine typically reduces patterns by 10-15,
+                // which directly improves sequence group count.
                 long remainAfterDiverse = deadlineMs - System.currentTimeMillis();
-                long refineBudget = Math.min(5_000L, Math.max(0, remainAfterDiverse - 8_000L));
+                long refineBudget = Math.min(10_000L, Math.max(0, remainAfterDiverse - 5_000L));
                 if (refineBudget > 1_500L) {
                     try {
                         LegacyOrderPatternSelectionSolver refiner = new LegacyOrderPatternSelectionSolver(params);
                         List<PatternCandidate> diversePats = new ArrayList<>(diverse.keySet());
-                        int totalDemandLocal = demands.values().stream().mapToInt(Integer::intValue).sum();
-                        int maxRolls = totalDemandLocal + params.getTotalOverCap();
+                        // Lock maxRolls to the diverse solution's actual rolls — must not increase roll count
+                        int diverseRolls = diverse.values().stream().mapToInt(Integer::intValue).sum();
+                        int diverseWaste = calculateTotalWaste(diverse);
+                        log.info("Stage4 refine {}: budget={}ms, maxRolls={}, maxWaste={}",
+                                name, refineBudget, diverseRolls, diverseWaste);
                         Map<PatternCandidate, Integer> refined = refiner.solveMIPStage4(
-                                diversePats, demands, allowOverSet, maxTotalOver, maxRolls, bestWaste, refineBudget);
+                                diversePats, demands, allowOverSet, maxTotalOver, diverseRolls, diverseWaste, refineBudget);
                         if (refined != null && !refined.isEmpty()) {
                             addSolutionCandidate(solutions, name + "-s4", refined);
-                            log.info("Stage4 refined {}: patterns={}, waste={}mm",
-                                    name, refined.size(), calculateTotalWaste(refined));
+                            int refinedRolls = refined.values().stream().mapToInt(Integer::intValue).sum();
+                            log.info("Stage4 refined {}: patterns={}, rolls={}, waste={}mm",
+                                    name, refined.size(), refinedRolls, calculateTotalWaste(refined));
+                        } else {
+                            log.info("Stage4 refine {} returned empty", name);
                         }
                     } catch (Exception ex) {
                         log.warn("Stage4 refinement of {} failed: {}", name, ex.getMessage());
                     }
+                } else {
+                    log.info("Skipping Stage4 refine for {}: budget={}ms (need >1500ms)", name, refineBudget);
                 }
             } else {
                 log.info("Could not find diversity candidate {}, stopping", k);
@@ -321,8 +331,9 @@ public class MultiStageMIPSolver {
             MPConstraint rollsCap = solver.makeConstraint(0, maxTotalRolls, "rollsCap");
             for (MPVariable xVar : xVars) rollsCap.setCoefficient(xVar, 1);
 
-            // Hard waste bound — ensures same utilization as primary solution
-            MPConstraint wasteCap = solver.makeConstraint(0, maxWaste, "wasteCap");
+            // Waste bound with protection band — allows slightly worse waste for better pattern diversity
+            int wasteSlack = Math.max(MIN_WASTE_PROTECTION_MM, (int) (maxWaste * WASTE_PROTECTION_RATIO));
+            MPConstraint wasteCap = solver.makeConstraint(0, maxWaste + wasteSlack, "wasteCap");
             for (int i = 0; i < patterns.size(); i++) {
                 wasteCap.setCoefficient(xVars.get(i), patterns.get(i).getRealWaste(params.getTotalWidth()));
             }
