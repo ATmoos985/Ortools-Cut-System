@@ -264,6 +264,14 @@ public class PatternGenerator {
         // ========== 策略4：Seed模式生成（确保每个宽度有系数=1的模式，解决GCD问题）==========
         generateSeedPatterns(patterns, seen, demands, widths);
 
+        int rawSize = patterns.size();
+        int maxPatterns = params.getMaxPatterns();
+        if (rawSize > maxPatterns) {
+            patterns.sort(Comparator.comparingInt(PatternCandidate::getWaste));
+            patterns = new ArrayList<>(patterns.subList(0, maxPatterns));
+            log.info("初始模式池截断: {} -> {} (按废边升序保留最优)", rawSize, patterns.size());
+        }
+
         log.info("初始模式池总数: " + patterns.size());
         return patterns;
     }

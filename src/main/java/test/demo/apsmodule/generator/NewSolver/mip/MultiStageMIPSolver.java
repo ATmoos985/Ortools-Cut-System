@@ -34,7 +34,7 @@ public class MultiStageMIPSolver {
 
     private static final Logger log = LoggerFactory.getLogger(MultiStageMIPSolver.class);
     private static final int MAX_SOLVE_ATTEMPTS = 3;
-    private static final double WASTE_PROTECTION_RATIO = 0.05;
+    private static final double WASTE_PROTECTION_RATIO = 0.10;
     private static final int MIN_WASTE_PROTECTION_MM = 200;
 
     private final SolverParameters params;
@@ -238,7 +238,7 @@ public class MultiStageMIPSolver {
                 log.info("Stopping diversity search: only {}ms remaining", remaining);
                 break;
             }
-            long diverseTime = Math.min(remaining / 2, params.getStage4TimeLimit());
+            long diverseTime = Math.min(remaining / 2, params.getStage4TimeLimit() * 2L);
             Map<PatternCandidate, Integer> diverse = solveMIPDiverseAlternative(
                     patterns, demands, allowOverSet, maxTotalOver, bestWaste, solutions, diverseTime, alignmentScores);
 
@@ -251,7 +251,7 @@ public class MultiStageMIPSolver {
                 // This is a critical step — Stage4 refine typically reduces patterns by 10-15,
                 // which directly improves sequence group count.
                 long remainAfterDiverse = deadlineMs - System.currentTimeMillis();
-                long refineBudget = Math.min(10_000L, Math.max(0, remainAfterDiverse - 5_000L));
+                long refineBudget = Math.min(15_000L, Math.max(0, remainAfterDiverse - 5_000L));
                 if (refineBudget > 1_500L) {
                     try {
                         LegacyOrderPatternSelectionSolver refiner = new LegacyOrderPatternSelectionSolver(params);

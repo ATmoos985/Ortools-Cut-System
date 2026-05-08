@@ -35,7 +35,7 @@ const defaultSettings: SettingsState = {
     },
     algorithmParams: {
         maxIterations: 300,
-        timeoutMs: 120000,
+        timeoutMs: 240000,
     },
 };
 

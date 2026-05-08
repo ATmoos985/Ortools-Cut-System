@@ -47,7 +47,7 @@ const defaultConfig: ConfigState = {
     newSolverTotalWidth: 4600,
     newSolverTopK: 3,
     newSolverMaxIterations: 300,
-    newSolverTimeLimit: 120000,
+    newSolverTimeLimit: 240000,
 };
 
 // Default business data

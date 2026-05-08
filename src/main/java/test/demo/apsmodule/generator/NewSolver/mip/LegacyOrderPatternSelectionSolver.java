@@ -139,7 +139,7 @@ class LegacyOrderPatternSelectionSolver {
                 stage3Rolls, totalWaste, wasteSlack, totalWaste + wasteSlack);
 
         remaining = Math.max(2000, deadlineMs - System.currentTimeMillis());
-        long stage4Time = Math.min(remaining, 20_000L);
+        long stage4Time = Math.min(remaining, 40_000L);
         Map<PatternCandidate, Integer> stage4Solution = solveMIPStage4(
                 patterns, demands, allowOverSet, optimalOver, stage3Rolls, totalWaste, stage4Time);
         if (stage4Solution == null || stage4Solution.isEmpty()) {
