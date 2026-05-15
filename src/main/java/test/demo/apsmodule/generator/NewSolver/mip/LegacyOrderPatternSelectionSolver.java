@@ -140,8 +140,9 @@ class LegacyOrderPatternSelectionSolver {
 
         remaining = Math.max(2000, deadlineMs - System.currentTimeMillis());
         long stage4Time = Math.min(remaining, 40_000L);
+        List<PatternCandidate> stage3SelectedPatterns = new ArrayList<>(stage3Solution.keySet());
         Map<PatternCandidate, Integer> stage4Solution = solveMIPStage4(
-                patterns, demands, allowOverSet, optimalOver, stage3Rolls, totalWaste, stage4Time);
+                stage3SelectedPatterns, demands, allowOverSet, optimalOver, stage3Rolls, totalWaste, stage4Time);
         if (stage4Solution == null || stage4Solution.isEmpty()) {
             log.info("Legacy Stage4 failed, using Stage3 solution");
             return stage3Solution;

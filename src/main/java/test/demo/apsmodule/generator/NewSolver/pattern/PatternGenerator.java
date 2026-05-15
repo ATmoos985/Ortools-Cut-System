@@ -262,14 +262,25 @@ public class PatternGenerator {
         }
 
         // ========== 策略4：Seed模式生成（确保每个宽度有系数=1的模式，解决GCD问题）==========
+        int seedStartIndex = patterns.size();
         generateSeedPatterns(patterns, seen, demands, widths);
 
         int rawSize = patterns.size();
         int maxPatterns = params.getMaxPatterns();
         if (rawSize > maxPatterns) {
-            patterns.sort(Comparator.comparingInt(PatternCandidate::getWaste));
-            patterns = new ArrayList<>(patterns.subList(0, maxPatterns));
-            log.info("初始模式池截断: {} -> {} (按废边升序保留最优)", rawSize, patterns.size());
+            List<PatternCandidate> nonSeeds = new ArrayList<>(patterns.subList(0, seedStartIndex));
+            List<PatternCandidate> seeds = new ArrayList<>(patterns.subList(seedStartIndex, rawSize));
+            
+            nonSeeds.sort(Comparator.comparingInt(PatternCandidate::getWaste));
+            
+            patterns = new ArrayList<>();
+            patterns.addAll(seeds); // 强制保留所有 Seed 模式（防止因为废边稍大被剔除，导致无法凑齐 0 超产的尾数）
+            int remainingSlots = maxPatterns - seeds.size();
+            if (remainingSlots > 0) {
+                patterns.addAll(nonSeeds.subList(0, Math.min(remainingSlots, nonSeeds.size())));
+            }
+            log.info("初始模式池截断: {} -> {} (强制保留 {} 个 Seed 模式防止超产，其余按废边升序保留最优)", 
+                    rawSize, patterns.size(), seeds.size());
         }
 
         log.info("初始模式池总数: " + patterns.size());
