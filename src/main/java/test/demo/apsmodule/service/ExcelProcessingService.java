@@ -30,6 +30,10 @@ public class ExcelProcessingService {
     public List<ExcelImportService.OrderItem> parseExcelFile(MultipartFile file) throws IOException {
         return excelImportService.parseExcelFile(file);
     }
+
+    public ExcelImportService.ParseResult parseExcelFileWithSource(MultipartFile file) throws IOException {
+        return excelImportService.parseExcelFileWithSource(file);
+    }
     
     /**
      * 导出优化结果为Excel文件

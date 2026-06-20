@@ -37,12 +37,15 @@ public class CuttingImportController {
         try {
             Map<String, Object> result = new HashMap<>();
 
-            List<ExcelImportService.OrderItem> orderItems = excelProcessingService.parseExcelFile(file);
+            ExcelImportService.ParseResult parseResult = excelProcessingService.parseExcelFileWithSource(file);
+            List<ExcelImportService.OrderItem> orderItems = parseResult.getOrderItems();
 
             result.put("success", true);
             result.put("message", "Excel文件解析成功");
             result.put("orderItems", orderItems);
             result.put("totalItems", orderItems.size());
+            result.put("templateType", parseResult.getTemplateType());
+            result.put("templateSource", parseResult.getTemplateSource());
 
             return ResponseEntity.ok(result);
 
@@ -76,6 +79,8 @@ public class CuttingImportController {
             result.put("success", true);
             result.put("message", "数据验证完成");
             result.put("validationResult", validationResult);
+            result.put("templateType", parseResult.get("templateType"));
+            result.put("templateSource", parseResult.get("templateSource"));
 
             return ResponseEntity.ok(result);
 

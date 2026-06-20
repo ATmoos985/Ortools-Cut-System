@@ -1,8 +1,8 @@
-import { DiagnosisResult, OptimizationResult, OrderItem, PreviewData, DataValidationResult } from "../types";
+import { DiagnosisResult, OptimizationResult, OrderItem, PreviewData, DataValidationResult, ParseExcelResponse } from "../types";
 
 const API_BASE = '/api/cutting';
 
-export const parseExcel = async (file: File): Promise<{ success: boolean; orderItems: OrderItem[]; message?: string }> => {
+export const parseExcel = async (file: File): Promise<ParseExcelResponse> => {
   const formData = new FormData();
   formData.append('file', file);
   const response = await fetch(`${API_BASE}/parse-excel`, { method: 'POST', body: formData });

@@ -25,6 +25,7 @@ interface ConfigState {
 interface BusinessState {
     orderItems: OrderItem[];
     fileName: string | null;
+    importSource: string | null;
     diagnosis: DiagnosisResult | null;
     optimizationResult: OptimizationResult | null;
     selectedGroupKey: string | null;
@@ -54,6 +55,7 @@ const defaultConfig: ConfigState = {
 const defaultBusinessData: BusinessState = {
     orderItems: [],
     fileName: null,
+    importSource: null,
     diagnosis: null,
     optimizationResult: null,
     selectedGroupKey: null,
@@ -69,6 +71,7 @@ const defaultState: AppState = {
 interface AppContextType extends AppState {
     setOrderItems: (items: OrderItem[]) => void;
     setFileName: (name: string | null) => void;
+    setImportSource: (source: string | null) => void;
     setMode: (mode: 'fixed' | 'flexible' | 'newsolver') => void;
     setFixedWidth: (width: number) => void;
     setTotalWidth: (width: number) => void;
@@ -151,6 +154,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
     const setFileName = (name: string | null) =>
         setState(prev => ({ ...prev, fileName: name }));
 
+    const setImportSource = (source: string | null) =>
+        setState(prev => ({ ...prev, importSource: source }));
+
     const setMode = (mode: 'fixed' | 'flexible' | 'newsolver') =>
         setState(prev => ({ ...prev, mode }));
 
@@ -215,6 +221,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         markRefreshAlertShown,
         setOrderItems,
         setFileName,
+        setImportSource,
         setMode,
         setFixedWidth,
         setTotalWidth,

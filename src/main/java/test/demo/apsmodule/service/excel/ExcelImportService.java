@@ -18,6 +18,41 @@ import org.slf4j.LoggerFactory;
 public class ExcelImportService {
 
     private static final Logger log = LoggerFactory.getLogger(ExcelImportService.class);
+    private static final String TEMPLATE_TYPE_APS = "aps";
+    private static final String TEMPLATE_SOURCE_APS = "APS模板";
+    private static final String TEMPLATE_TYPE_OFFLINE = "offline";
+    private static final String TEMPLATE_SOURCE_OFFLINE = "线下模板";
+    private static final String[] CANONICAL_FIELDS = {
+            "消息文本", "宽度mm", "卷数", "长度m", "表面处理",
+            "导入日期", "导入时间", "委托日期", "业务员", "客户编码",
+            "客户名称", "物料编码", "物料描述", "厚度µm", "需求量",
+            "单位", "电晕", "润湿张力", "机型", "涂布类型",
+            "出货型号", "交货日期"
+    };
+
+    public static class ParseResult {
+        private final List<OrderItem> orderItems;
+        private final String templateType;
+        private final String templateSource;
+
+        public ParseResult(List<OrderItem> orderItems, String templateType, String templateSource) {
+            this.orderItems = orderItems;
+            this.templateType = templateType;
+            this.templateSource = templateSource;
+        }
+
+        public List<OrderItem> getOrderItems() {
+            return orderItems;
+        }
+
+        public String getTemplateType() {
+            return templateType;
+        }
+
+        public String getTemplateSource() {
+            return templateSource;
+        }
+    }
 
     /**
      * 订单项数据类
@@ -287,15 +322,19 @@ public class ExcelImportService {
      * 解析Excel文件（支持Excel和CSV）
      */
     public List<OrderItem> parseExcelFile(MultipartFile file) throws IOException {
+        return parseExcelFileWithSource(file).getOrderItems();
+    }
+
+    public ParseResult parseExcelFileWithSource(MultipartFile file) throws IOException {
         String fileName = file.getOriginalFilename();
         if (fileName == null) {
             throw new IOException("文件名不能为空");
         }
 
         if (fileName.toLowerCase().endsWith(".csv")) {
-            return parseCsvFile(file);
+            return new ParseResult(parseCsvFile(file), TEMPLATE_TYPE_OFFLINE, TEMPLATE_SOURCE_OFFLINE);
         } else {
-            return parseExcelWorkbook(file);
+            return parseExcelWorkbookWithSource(file);
         }
     }
 
@@ -382,7 +421,13 @@ public class ExcelImportService {
      * 解析Excel工作簿 - 使用字段名识别
      */
     private List<OrderItem> parseExcelWorkbook(MultipartFile file) throws IOException {
+        return parseExcelWorkbookWithSource(file).getOrderItems();
+    }
+
+    private ParseResult parseExcelWorkbookWithSource(MultipartFile file) throws IOException {
         List<OrderItem> orderItems = new ArrayList<>();
+        String templateType = TEMPLATE_TYPE_OFFLINE;
+        String templateSource = TEMPLATE_SOURCE_OFFLINE;
 
         try (Workbook workbook = WorkbookFactory.create(file.getInputStream())) {
             Sheet sheet = workbook.getSheetAt(0);
@@ -394,14 +439,19 @@ public class ExcelImportService {
             }
 
             Map<String, Integer> columnIndexMap = buildColumnIndexMap(headerRow);
+            if (isApsTemplate(sheet, columnIndexMap)) {
+                templateType = TEMPLATE_TYPE_APS;
+                templateSource = TEMPLATE_SOURCE_APS;
+            }
             log.info("字段映射: " + columnIndexMap);
+            log.info("识别导入来源: " + templateSource + " (" + templateType + ")");
 
             // 🔥 特别检查关键列的映射
             log.info("========== 关键列映射检查 ==========");
-            log.info("长度m列索引: " + columnIndexMap.get("长度m"));
-            log.info("宽度mm列索引: " + columnIndexMap.get("宽度mm"));
-            log.info("卷数列索引: " + columnIndexMap.get("卷数"));
-            log.info("表面处理列索引: " + columnIndexMap.get("表面处理"));
+            log.info("长度m列索引: " + findColumnIndex(columnIndexMap, "长度m"));
+            log.info("宽度mm列索引: " + findColumnIndex(columnIndexMap, "宽度mm"));
+            log.info("卷数列索引: " + findColumnIndex(columnIndexMap, "卷数"));
+            log.info("表面处理列索引: " + findColumnIndex(columnIndexMap, "表面处理"));
 
             // 打印标题行的所有列
             log.info("========== 标题行所有列 ==========");
@@ -440,6 +490,7 @@ public class ExcelImportService {
         log.info("Excel解析完成，共解析到 " + orderItems.size() + " 个订单项");
         log.info("Excel文件导入成功！");
         log.info("导入文件: " + file.getOriginalFilename());
+        log.info("导入来源: " + templateSource);
         log.info("解析结果: " + orderItems.size() + " 个订单项");
 
         // 按分组键分组显示
@@ -482,7 +533,7 @@ public class ExcelImportService {
             }
         }
 
-        return orderItems;
+        return new ParseResult(orderItems, templateType, templateSource);
     }
 
     /**
@@ -499,6 +550,54 @@ public class ExcelImportService {
         }
 
         return columnIndexMap;
+    }
+
+    private Map<String, Integer> buildCanonicalColumnIndexMap(Map<String, Integer> rawColumnIndexMap) {
+        Map<String, Integer> canonical = new HashMap<>(rawColumnIndexMap);
+        for (String fieldName : CANONICAL_FIELDS) {
+            Integer columnIndex = findColumnIndex(rawColumnIndexMap, fieldName);
+            if (columnIndex != null) {
+                canonical.put(fieldName, columnIndex);
+            }
+        }
+        return canonical;
+    }
+
+    private boolean isApsTemplate(Sheet sheet, Map<String, Integer> columnIndexMap) {
+        if ("分卷收集明细".equals(sheet.getSheetName())) {
+            return true;
+        }
+
+        int uniqueMatches = 0;
+        String[] apsUniqueHeaders = {
+                "业务员编号", "业务员姓名", "最终数量", "最终期望交期",
+                "来源销售分卷ID", "分卷收集订单号"
+        };
+        for (String header : apsUniqueHeaders) {
+            if (hasNormalizedHeader(columnIndexMap, header)) {
+                uniqueMatches++;
+            }
+        }
+
+        int coreMatches = 0;
+        String[] apsCoreHeaders = { "宽度mm", "长度m", "卷数" };
+        for (String header : apsCoreHeaders) {
+            if (hasNormalizedHeader(columnIndexMap, header)) {
+                coreMatches++;
+            }
+        }
+
+        return uniqueMatches >= 2 && coreMatches == apsCoreHeaders.length;
+    }
+
+    private boolean hasNormalizedHeader(Map<String, Integer> columnIndexMap, String headerName) {
+        String normalizedHeaderName = normalizeHeaderName(headerName);
+        for (String actualHeader : columnIndexMap.keySet()) {
+            if (normalizeHeaderName(actualHeader).equals(normalizedHeaderName)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**
@@ -723,20 +822,34 @@ public class ExcelImportService {
             return columnIndexMap.get(columnName);
         }
 
+        String normalizedColumnName = normalizeHeaderName(columnName);
+        for (Map.Entry<String, Integer> entry : columnIndexMap.entrySet()) {
+            if (normalizeHeaderName(entry.getKey()).equals(normalizedColumnName)) {
+                log.info("规范化字段映射: " + columnName + " -> " + entry.getKey() + " (列" + entry.getValue() + ")");
+                return entry.getValue();
+            }
+        }
+
         // 2. 定义字段映射规则
         Map<String, String[]> fieldMappings = new HashMap<>();
-        fieldMappings.put("厚度µm", new String[] { "厚度µm", "厚度um", "厚度", "厚度μm", "厚度?m" });
-        fieldMappings.put("消息文本", new String[] { "消息文本", "消息", "文本" });
-        fieldMappings.put("宽度mm", new String[] { "宽度mm", "宽度", "宽度(mm)" });
-        fieldMappings.put("卷数", new String[] { "卷数", "数量", "卷" });
-        fieldMappings.put("长度m", new String[] { "长度m", "长度", "长度(m)" });
+        fieldMappings.put("厚度µm", new String[] { "厚度µm", "厚度um", "厚度", "厚度μm", "厚度?m", "厚度(μm)", "*厚度(μm)" });
+        fieldMappings.put("消息文本", new String[] { "消息文本", "消息", "文本", "来源销售分卷ID", "分卷收集订单号" });
+        fieldMappings.put("宽度mm", new String[] { "宽度mm", "宽度", "宽度(mm)", "*宽度(mm)" });
+        fieldMappings.put("卷数", new String[] { "卷数", "数量", "卷", "*卷数" });
+        fieldMappings.put("长度m", new String[] { "长度m", "长度", "长度(m)", "*长度(m)" });
         fieldMappings.put("表面处理", new String[] { "表面处理", "表面", "处理" });
-        fieldMappings.put("业务员", new String[] { "业务员", "销售员", "负责人" });
-        fieldMappings.put("交货日期", new String[] { "交货日期", "交货", "日期", "交期" });
+        fieldMappings.put("业务员", new String[] { "业务员", "业务员姓名", "*业务员姓名", "销售员", "负责人" });
+        fieldMappings.put("交货日期", new String[] { "交货日期", "最终期望交期", "*最终期望交期", "交货", "日期", "交期" });
         fieldMappings.put("客户名称", new String[] { "客户名称", "客户", "客户名" });
-        fieldMappings.put("物料描述", new String[] { "物料描述", "描述", "物料" });
+        fieldMappings.put("客户编码", new String[] { "客户编码", "客户编号" });
+        fieldMappings.put("物料编码", new String[] { "物料编码", "物料编号", "*物料编号" });
+        fieldMappings.put("物料描述", new String[] { "物料描述", "物料名称", "描述", "物料" });
+        fieldMappings.put("需求量", new String[] { "需求量", "最终数量", "*最终数量" });
         fieldMappings.put("导入日期", new String[] { "导入日期", "导入", "日期" });
         fieldMappings.put("委托日期", new String[] { "委托日期", "委托", "委托日" });
+        fieldMappings.put("单位", new String[] { "单位" });
+        fieldMappings.put("涂布类型", new String[] { "涂布类型" });
+        fieldMappings.put("出货型号", new String[] { "出货型号" });
 
         // 3. 使用映射规则查找
         String[] possibleNames = fieldMappings.get(columnName);
@@ -746,6 +859,14 @@ public class ExcelImportService {
                     log.info("字段映射: " + columnName + " -> " + possibleName + " (列"
                             + columnIndexMap.get(possibleName) + ")");
                     return columnIndexMap.get(possibleName);
+                }
+                String normalizedPossibleName = normalizeHeaderName(possibleName);
+                for (Map.Entry<String, Integer> entry : columnIndexMap.entrySet()) {
+                    if (normalizeHeaderName(entry.getKey()).equals(normalizedPossibleName)) {
+                        log.info("字段映射: " + columnName + " -> " + entry.getKey() + " (列"
+                                + entry.getValue() + ")");
+                        return entry.getValue();
+                    }
                 }
             }
         }
@@ -761,6 +882,16 @@ public class ExcelImportService {
 
         log.info("未找到字段: " + columnName + ", 可用字段: " + columnIndexMap.keySet());
         return null;
+    }
+
+    private String normalizeHeaderName(String headerName) {
+        if (headerName == null) {
+            return "";
+        }
+        return headerName
+                .replace("μ", "µ")
+                .replaceAll("[\\s*（）()_-]", "")
+                .trim();
     }
 
     /**
@@ -843,6 +974,8 @@ public class ExcelImportService {
             Map<String, Object> result = new HashMap<>();
             result.put("orderItems", orderItems);
             result.put("columnMapping", new HashMap<String, Integer>());
+            result.put("templateType", TEMPLATE_TYPE_OFFLINE);
+            result.put("templateSource", TEMPLATE_SOURCE_OFFLINE);
             return result;
         } else {
             return parseExcelWorkbookWithMapping(file);
@@ -855,6 +988,8 @@ public class ExcelImportService {
     private Map<String, Object> parseExcelWorkbookWithMapping(MultipartFile file) throws IOException {
         List<OrderItem> orderItems = new ArrayList<>();
         Map<String, Integer> columnMapping = new HashMap<>();
+        String templateType = TEMPLATE_TYPE_OFFLINE;
+        String templateSource = TEMPLATE_SOURCE_OFFLINE;
 
         try (Workbook workbook = WorkbookFactory.create(file.getInputStream())) {
             Sheet sheet = workbook.getSheetAt(0);
@@ -866,7 +1001,12 @@ public class ExcelImportService {
             }
 
             columnMapping = buildColumnIndexMap(headerRow);
+            if (isApsTemplate(sheet, columnMapping)) {
+                templateType = TEMPLATE_TYPE_APS;
+                templateSource = TEMPLATE_SOURCE_APS;
+            }
             log.info("字段映射: " + columnMapping);
+            log.info("识别导入来源: " + templateSource + " (" + templateType + ")");
 
             // 从第二行开始读取数据
             for (int i = 1; i <= sheet.getLastRowNum(); i++) {
@@ -898,7 +1038,10 @@ public class ExcelImportService {
 
         Map<String, Object> result = new HashMap<>();
         result.put("orderItems", orderItems);
-        result.put("columnMapping", columnMapping);
+        result.put("columnMapping", buildCanonicalColumnIndexMap(columnMapping));
+        result.put("originalColumnMapping", columnMapping);
+        result.put("templateType", templateType);
+        result.put("templateSource", templateSource);
         return result;
     }
 }

@@ -18,6 +18,7 @@ export default function Home() {
     const {
         orderItems, setOrderItems,
         fileName, setFileName,
+        importSource, setImportSource,
         mode, setMode,
         fixedWidth, setFixedWidth,
         totalWidth, setTotalWidth,
@@ -93,11 +94,13 @@ export default function Home() {
 
         if (selectedFile) {
             setFileName(selectedFile.name);
+            setImportSource(null);
             setLoading("正在导入数据中...");
             try {
                 const res = await api.parseExcel(selectedFile);
                 if (res.success) {
                     setOrderItems(res.orderItems);
+                    setImportSource(res.templateSource || '线下模板');
                     setDiagnosis(null);
                     setOptimizationResult(null);
                     // Auto diagnose on upload
@@ -461,6 +464,11 @@ export default function Home() {
                             <p className="font-medium text-slate-700">
                                 {fileName ? fileName : "点击或拖拽上传 Excel"}
                             </p>
+                            {fileName && importSource && (
+                                <p className="text-xs text-blue-600 bg-blue-100 border border-blue-200 rounded-full px-3 py-1 inline-flex mt-2">
+                                    来源：{importSource}
+                                </p>
+                            )}
                             {!fileName && <p className="text-xs text-slate-400 mt-2">支持 .xlsx, .xls 格式</p>}
                             <input type="file" id="fileInput" accept=".xlsx,.xls,.csv" className="hidden" onChange={handleFileDrop} />
                         </div>
@@ -674,9 +682,16 @@ export default function Home() {
                                         <h3 className="font-bold text-slate-800 flex items-center gap-2">
                                             <FileSpreadsheet className="w-5 h-5 text-emerald-500" /> 订单明细预览
                                         </h3>
-                                        <span className="text-xs text-slate-500 bg-slate-100 px-2 py-1 rounded">
-                                            共 {orderItems.length} 条记录
-                                        </span>
+                                        <div className="flex items-center gap-2">
+                                            {importSource && (
+                                                <span className="text-xs text-blue-600 bg-blue-50 px-2 py-1 rounded border border-blue-100">
+                                                    来源：{importSource}
+                                                </span>
+                                            )}
+                                            <span className="text-xs text-slate-500 bg-slate-100 px-2 py-1 rounded">
+                                                共 {orderItems.length} 条记录
+                                            </span>
+                                        </div>
                                     </div>
                                     <div className="overflow-x-auto max-h-[400px] overflow-y-auto">
                                         <table className="w-full text-sm">
@@ -840,9 +855,16 @@ export default function Home() {
                                                 <h3 className="font-bold text-slate-800 flex items-center gap-2">
                                                     <FileSpreadsheet className="w-5 h-5 text-emerald-500" /> 订单明细预览
                                                 </h3>
-                                                <span className="text-xs text-slate-500 bg-slate-100 px-2 py-1 rounded">
-                                                    共 {orderItems.length} 条记录
-                                                </span>
+                                                <div className="flex items-center gap-2">
+                                                    {importSource && (
+                                                        <span className="text-xs text-blue-600 bg-blue-50 px-2 py-1 rounded border border-blue-100">
+                                                            来源：{importSource}
+                                                        </span>
+                                                    )}
+                                                    <span className="text-xs text-slate-500 bg-slate-100 px-2 py-1 rounded">
+                                                        共 {orderItems.length} 条记录
+                                                    </span>
+                                                </div>
                                             </div>
                                             <div className="overflow-x-auto max-h-[400px] overflow-y-auto">
                                                 <table className="w-full text-sm">

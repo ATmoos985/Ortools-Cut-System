@@ -5,6 +5,15 @@ export interface OrderItem {
   [key: string]: any;
 }
 
+export interface ParseExcelResponse {
+  success: boolean;
+  orderItems: OrderItem[];
+  totalItems?: number;
+  templateType?: string;
+  templateSource?: string;
+  message?: string;
+}
+
 export interface Preset {
   name: string;
   minWidth: number;
