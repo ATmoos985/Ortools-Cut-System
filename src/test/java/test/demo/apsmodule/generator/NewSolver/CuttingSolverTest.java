@@ -94,9 +94,9 @@ class CuttingSolverTest {
     private static Object groupSolvePlan(String name, SolverResult result, int groups, int order) throws Exception {
         Class<?> planClass = Class.forName("test.demo.apsmodule.generator.NewSolver.CuttingSolver$GroupSolvePlan");
         Constructor<?> constructor = planClass.getDeclaredConstructor(
-                String.class, SolverResult.class, List.class, int.class, int.class);
+                String.class, SolverResult.class, List.class, int.class, int.class, int.class, String.class, int.class);
         constructor.setAccessible(true);
-        return constructor.newInstance(name, result, List.of(), groups, order);
+        return constructor.newInstance(name, result, List.of(), groups, 0, 0, name, order);
     }
 
     private static SolverResult solverResult(int patternCount, int totalWaste, int totalOver, int totalRolls) {

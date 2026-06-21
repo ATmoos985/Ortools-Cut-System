@@ -28,6 +28,13 @@ public class SequenceGroupPostProcessor {
     private static final Logger log = LoggerFactory.getLogger(SequenceGroupPostProcessor.class);
     private static final long DEFAULT_TIME_BUDGET_MS = 1500L;
 
+    /** A sequence group with this many cars or fewer counts as a "small" group. */
+    public static final int SMALL_CAR_MAX_CARS = 5;
+
+    /** Aggregate sequence-group shape metrics for a full instruction list. */
+    public record GroupStats(int groups, int oddCarGroups, int smallCarGroups) {
+    }
+
     public static void optimize(List<CuttingInstruction> instructions) {
         optimize(instructions, DEFAULT_TIME_BUDGET_MS, true);
     }
@@ -160,6 +167,56 @@ public class SequenceGroupPostProcessor {
             }
         }
         return totalGroups;
+    }
+
+    /**
+     * Computes group-shape metrics across the whole instruction list: total
+     * sequence groups, how many have an odd car count, and how many are "small"
+     * (≤ {@link #SMALL_CAR_MAX_CARS} cars). Groups are counted contiguously
+     * across instruction boundaries, matching {@link #countTotalGroups}.
+     */
+    public static GroupStats computeGroupStats(List<CuttingInstruction> instructions) {
+        if (instructions == null || instructions.isEmpty()) {
+            return new GroupStats(0, 0, 0);
+        }
+
+        int groups = 0;
+        int oddCarGroups = 0;
+        int smallCarGroups = 0;
+        List<StationAssignment> previousRoll = null;
+        int currentRun = 0;
+
+        for (CuttingInstruction instruction : instructions) {
+            if (instruction == null || instruction.getStationAssignments() == null
+                    || instruction.getStationAssignments().isEmpty()) {
+                continue;
+            }
+            if (instruction.getSubRolls() == null || instruction.getSubRolls().isEmpty()) {
+                continue;
+            }
+
+            for (List<StationAssignment> roll : simulateRolls(instruction)) {
+                if (previousRoll == null || !isRollContentSame(previousRoll, roll)) {
+                    if (currentRun > 0) {
+                        groups++;
+                        if (currentRun % 2 != 0) oddCarGroups++;
+                        if (currentRun <= SMALL_CAR_MAX_CARS) smallCarGroups++;
+                    }
+                    currentRun = 1;
+                } else {
+                    currentRun++;
+                }
+                previousRoll = roll;
+            }
+        }
+
+        if (currentRun > 0) {
+            groups++;
+            if (currentRun % 2 != 0) oddCarGroups++;
+            if (currentRun <= SMALL_CAR_MAX_CARS) smallCarGroups++;
+        }
+
+        return new GroupStats(groups, oddCarGroups, smallCarGroups);
     }
 
     public static int countGroups(CuttingInstruction instruction) {

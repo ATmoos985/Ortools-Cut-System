@@ -94,10 +94,14 @@ public class CuttingSolver implements CuttingSolverAlgorithm {
 
                 log.info("--- Processing group: {} ({} items) ---", groupKey, groupItems.size());
 
-                Map<Integer, Integer> demands = groupItems.stream()
-                        .collect(Collectors.groupingBy(
-                                SolverOrderItem::getWidth,
-                                Collectors.summingInt(SolverOrderItem::getDemand)));
+                // Width-ascending TreeMap (NOT HashMap): a deterministic demand order
+                // is what makes the whole solve reproducible. HashMap bucket order
+                // created degenerate ties that SCIP's RNG broke differently each solve,
+                // which was the root cause of the run-to-run sequence-group swing.
+                Map<Integer, Integer> demands = new java.util.TreeMap<>();
+                for (SolverOrderItem item : groupItems) {
+                    demands.merge(item.getWidth(), item.getDemand(), Integer::sum);
+                }
 
                 Set<Integer> allowOverSet = buildAllowOverSet(demands, params);
                 report.beginGroup(groupKey, groupItems, demands, allowOverSet, totalGroups);
@@ -106,8 +110,36 @@ public class CuttingSolver implements CuttingSolverAlgorithm {
                 List<PatternCandidate> patterns = patternGenerator.generate(demands);
                 patterns = colGenSolver.solve(patterns, demands, allowOverSet);
 
-                List<MultiStageMIPSolver.SolveCandidate> solveCandidates =
-                        mipSolver.solveCandidates(patterns, demands, allowOverSet, groupItems);
+                // Multi-start over deterministic demand orders. Each order makes the
+                // selection MIP build variables in a different order -> a different
+                // deterministic pattern set. Pooling candidates across orders widens the
+                // search so the best assignment is more reliably low (a single order
+                // caps at 81; the demand-descending order reaches a set that hits 79).
+                List<MultiStageMIPSolver.SolveCandidate> solveCandidates = new ArrayList<>();
+                java.util.Set<String> seenCandidateSigs = new java.util.HashSet<>();
+                List<Map<Integer, Integer>> demandOrders = buildDemandOrders(demands);
+                for (int orderIdx = 0; orderIdx < demandOrders.size(); orderIdx++) {
+                    Map<Integer, Integer> orderedDemands = demandOrders.get(orderIdx);
+                    // Order 0 (default): full search (primary + diverse). Alternate orders:
+                    // primary only (cheap) — their diverse alternatives never beat the
+                    // primary yet would multiply the expensive B-layer assignment.
+                    List<MultiStageMIPSolver.SolveCandidate> orderCandidates;
+                    if (orderIdx == 0) {
+                        orderCandidates = mipSolver.solveCandidates(
+                                new ArrayList<>(patterns), orderedDemands, allowOverSet, groupItems);
+                    } else {
+                        MultiStageMIPSolver.SolveCandidate primary = mipSolver.solvePrimaryOnly(
+                                new ArrayList<>(patterns), orderedDemands, allowOverSet);
+                        orderCandidates = primary == null ? List.of() : List.of(primary);
+                    }
+                    for (MultiStageMIPSolver.SolveCandidate candidate : orderCandidates) {
+                        String sig = solutionSignature(candidate.result().getSolution());
+                        if (seenCandidateSigs.add(sig)) {
+                            solveCandidates.add(new MultiStageMIPSolver.SolveCandidate(
+                                    "o" + orderIdx + "-" + candidate.name(), candidate.result()));
+                        }
+                    }
+                }
                 if (solveCandidates.isEmpty()) {
                     log.warn("Solve failed for group: {}", groupKey);
                     report.writeGroupFailure(
@@ -117,6 +149,9 @@ public class CuttingSolver implements CuttingSolverAlgorithm {
                     continue;
                 }
 
+                // Full assignment (Stage5 + Phase2) on every pattern candidate. Cheap
+                // greedy screening was tried but its group ordering does not track the
+                // Stage5 result, so it dropped the genuinely best candidates.
                 GroupSolvePlan bestPlan = null;
                 List<SolveReportWriter.CandidateRow> reportRows = new ArrayList<>();
                 List<SolveReportWriter.SequenceCandidateRow> sequenceReportRows = new ArrayList<>();
@@ -128,7 +163,9 @@ public class CuttingSolver implements CuttingSolverAlgorithm {
                     InstructionConverter.ConversionResult conversion = converter.convertWithDetails(
                             result.getSolution(), groupKey, groupItems, demands);
                     List<CuttingInstruction> instructions = conversion.instructions();
-                    int sequenceGroups = SequenceGroupPostProcessor.countTotalGroups(instructions);
+                    SequenceGroupPostProcessor.GroupStats stats =
+                            SequenceGroupPostProcessor.computeGroupStats(instructions);
+                    int sequenceGroups = stats.groups();
 
                     for (InstructionConverter.SequenceCandidateRow row : conversion.candidateRows()) {
                         sequenceReportRows.add(new SolveReportWriter.SequenceCandidateRow(
@@ -139,12 +176,14 @@ public class CuttingSolver implements CuttingSolverAlgorithm {
                                 row.selected()));
                     }
 
-                    log.info("Pattern candidate {}: patterns={}, waste={}mm, over={}, groups={}, assignmentWinner={}",
+                    log.info("Pattern candidate {}: patterns={}, waste={}mm, over={}, groups={}, oddCars={}, smallCars={}, assignmentWinner={}",
                             solveCandidate.name(),
                             result.getPatternCount(),
                             result.getTotalWaste(),
                             result.getTotalOverProduction(),
                             sequenceGroups,
+                            stats.oddCarGroups(),
+                            stats.smallCarGroups(),
                             conversion.selectedName());
 
                     reportRows.add(new SolveReportWriter.CandidateRow(
@@ -158,6 +197,8 @@ public class CuttingSolver implements CuttingSolverAlgorithm {
                             result,
                             instructions,
                             sequenceGroups,
+                            stats.oddCarGroups(),
+                            stats.smallCarGroups(),
                             conversion.selectedName(),
                             candidateIndex);
                     if (bestPlan == null || isBetterPlan(plan, bestPlan)) {
@@ -220,6 +261,39 @@ public class CuttingSolver implements CuttingSolverAlgorithm {
         return allowOverSet;
     }
 
+    /**
+     * Deterministic demand orderings for multi-start. Each ordering only changes the
+     * MIP variable-creation order, yielding a different (but reproducible) pattern set.
+     */
+    private List<Map<Integer, Integer>> buildDemandOrders(Map<Integer, Integer> demands) {
+        List<Map.Entry<Integer, Integer>> entries = new ArrayList<>(demands.entrySet());
+        List<Map<Integer, Integer>> orders = new ArrayList<>();
+        orders.add(toOrderedMap(entries, Comparator.comparingInt(Map.Entry::getKey)));
+        orders.add(toOrderedMap(entries, Comparator
+                .comparingInt((Map.Entry<Integer, Integer> e) -> e.getValue()).reversed()
+                .thenComparingInt(Map.Entry::getKey)));
+        orders.add(toOrderedMap(entries, Comparator
+                .comparingInt((Map.Entry<Integer, Integer> e) -> e.getKey()).reversed()));
+        orders.add(toOrderedMap(entries, Comparator
+                .comparingInt((Map.Entry<Integer, Integer> e) -> e.getValue())
+                .thenComparingInt(Map.Entry::getKey)));
+        return orders;
+    }
+
+    private Map<Integer, Integer> toOrderedMap(List<Map.Entry<Integer, Integer>> entries,
+            Comparator<Map.Entry<Integer, Integer>> comparator) {
+        Map<Integer, Integer> ordered = new LinkedHashMap<>();
+        entries.stream().sorted(comparator).forEach(e -> ordered.put(e.getKey(), e.getValue()));
+        return ordered;
+    }
+
+    private String solutionSignature(Map<PatternCandidate, Integer> solution) {
+        return solution.entrySet().stream()
+                .map(e -> e.getKey().signature() + "x" + e.getValue())
+                .sorted()
+                .collect(Collectors.joining("|"));
+    }
+
     private void printSolutionSummary(SolverResult result, Map<Integer, Integer> demands) {
         log.info("Solution summary:");
         log.info("  Total rolls: {}", result.getTotalRolls());
@@ -256,7 +330,15 @@ public class CuttingSolver implements CuttingSolverAlgorithm {
         if (candidate.sequenceGroupCount() != currentBest.sequenceGroupCount()) {
             return candidate.sequenceGroupCount() < currentBest.sequenceGroupCount();
         }
-        // Priority 3: pattern count — fewer distinct patterns simplifies production
+        // Priority 3: odd-car groups — even car counts per group are preferred
+        if (candidate.oddCarGroups() != currentBest.oddCarGroups()) {
+            return candidate.oddCarGroups() < currentBest.oddCarGroups();
+        }
+        // Priority 4: small-car groups (≤5 cars) — fewer tiny groups is better
+        if (candidate.smallCarGroups() != currentBest.smallCarGroups()) {
+            return candidate.smallCarGroups() < currentBest.smallCarGroups();
+        }
+        // Priority 5: pattern count — fewer distinct patterns simplifies production
         if (candidate.result().getPatternCount() != currentBest.result().getPatternCount()) {
             return candidate.result().getPatternCount() < currentBest.result().getPatternCount();
         }
@@ -276,7 +358,10 @@ public class CuttingSolver implements CuttingSolverAlgorithm {
             SolverResult result,
             List<CuttingInstruction> instructions,
             int sequenceGroupCount,
+            int oddCarGroups,
+            int smallCarGroups,
             String sequenceCandidateName,
             int order) {
     }
+
 }

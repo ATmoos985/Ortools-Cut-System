@@ -23,6 +23,15 @@ class LegacyOrderPatternSelectionSolver {
 
     private static final Logger log = LoggerFactory.getLogger(LegacyOrderPatternSelectionSolver.class);
     private static final int MAX_REPAIR_ATTEMPTS = 3;
+
+    /**
+     * 固定 SCIP 随机化种子，保证相同输入 → 相同解。Legacy 既产出 primary 花型集，
+     * 又承担 diverse 候选的 Stage4 refine（最终胜出的 {@code -s4} 候选），两者都需复现。
+     */
+    private static final String SCIP_DETERMINISTIC_PARAMS =
+            "randomization/randomseedshift = 0\n"
+          + "randomization/permutationseed = 0\n"
+          + "randomization/lpseed = 0\n";
     private static final double LEGACY_SEQ_GROUP_ALPHA = 1.0;
     private static final double LEGACY_SEQ_GROUP_BETA = 0.0;
     private static final int    MIN_USAGE_THRESHOLD = 4;
@@ -606,10 +615,14 @@ class LegacyOrderPatternSelectionSolver {
 
     private MPSolver createMIPSolver() {
         MPSolver solver = MPSolver.createSolver("SCIP");
-        if (solver == null) {
-            solver = MPSolver.createSolver("CBC");
+        if (solver != null) {
+            // 仅 SCIP 接受该参数串；CBC 回退路径不应用。
+            solver.setSolverSpecificParametersAsString(SCIP_DETERMINISTIC_PARAMS);
+            // 单线程：多线程 MIP 是非确定性的经典来源（线程竞争与种子无关）。
+            try { solver.setNumThreads(1); } catch (Exception ignored) {}
+            return solver;
         }
-        return solver;
+        return MPSolver.createSolver("CBC");
     }
 
     private int gcd(int a, int b) {

@@ -13,15 +13,12 @@ import test.demo.apsmodule.service.SolverOrderItem;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
-import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
-import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
-import java.util.stream.Collectors;
 
 /**
  * Phase 2 sequence-group optimizer.
@@ -35,16 +32,29 @@ public class Phase2SequenceGroupSolver {
     private static final Logger log = LoggerFactory.getLogger(Phase2SequenceGroupSolver.class);
 
     private static final int INITIAL_TOP_MESSAGES_PER_PATTERN = 3;
-    private static final int MAX_COLUMN_GENERATION_ITERATIONS = 10;
-    private static final int PRICING_ADD_LIMIT = 20;
-    private static final int MAX_COLUMNS = 400;
-    private static final long LP_TIME_LIMIT_MS = 6_000L;
-    private static final long MIP_TIME_LIMIT_MS = 10_000L;
-    private static final double REDUCED_COST_EPSILON = 1e-4;
-    private static final double SLACK_PENALTY = 10_000.0;
+    // Global set-partition time budget. With a valid seed the model is always
+    // feasible, so a longer budget pays off; without a seed the structured pool
+    // is often infeasible (pure columns force the top message to over-produce
+    // while exact equality forbids it), so we cap the wasted spin tightly.
+    private static final long SP_TIME_LIMIT_SEEDED_MS = 5_000L;
+    private static final long SP_TIME_LIMIT_UNSEEDED_MS = 2_000L;
     private static final double ROLL_TIE_BREAKER = 1e-6;
     private static final double WASTE_TIE_BREAKER = 1e-9;
     private static final double PARITY_PENALTY = 0.3;
+
+    // Structured column pool for the primary global set-partition path.
+    // The pool is deliberately size-capped (pure-roll + remainder + seed columns)
+    // so the final MIP never explodes the way unbounded column generation did.
+    private static final int POOL_TOP_MESSAGES_PER_WIDTH = 4;
+    private static final int POOL_REMAINDER_TOP_ORDERS = 3;
+    private static final int POOL_MAX_COLUMNS_PER_PATTERN = 40;
+    private static final double SLACK_PENALTY_SP = 1e6;
+
+    /** 固定 SCIP 随机化种子，让 Phase2 装配结果在相同输入下可复现。 */
+    private static final String SCIP_DETERMINISTIC_PARAMS =
+            "randomization/randomseedshift = 0\n"
+          + "randomization/permutationseed = 0\n"
+          + "randomization/lpseed = 0\n";
 
     private final SolverParameters params;
 
@@ -85,11 +95,6 @@ public class Phase2SequenceGroupSolver {
         }
 
         long startTime = System.currentTimeMillis();
-        List<Column> columns = buildInitialColumns(data, seedAssignments);
-        if (columns.isEmpty()) {
-            log.warn("Phase2 skipped: no initial columns");
-            return null;
-        }
         SolveResult seedResult = buildSeedResult(solution, seedAssignments, data);
         if (seedResult != null) {
             int seedBlocks = seedResult.assignments().values().stream().mapToInt(List::size).sum();
@@ -98,17 +103,34 @@ public class Phase2SequenceGroupSolver {
         }
         SolveResult bestFallback = seedResult;
 
-        // Per-pattern independent solve: each pattern's assignment is optimized
-        // independently using a tiny MIP (~300ms each). This avoids the global MIP
-        // scalability problem while still minimizing sequence groups per pattern.
+        // Primary path: one-shot global set-partition over a structured, size-capped
+        // column pool. Each column is a full-roll config, so minimizing Σy directly
+        // minimizes sequence groups. Unlike per-pattern, this re-allocates demand
+        // across patterns. Pattern roll counts stay fixed, so waste/over-production
+        // are unaffected — it can only reduce groups, never regress.
+        boolean hasSeed = seedAssignments != null && !seedAssignments.isEmpty();
+        long spTimeLimit = hasSeed ? SP_TIME_LIMIT_SEEDED_MS : SP_TIME_LIMIT_UNSEEDED_MS;
+        List<Column> pool = buildStructuredColumnPool(data, seedAssignments);
+        if (!pool.isEmpty()) {
+            SolveResult global = solveGlobalSetPartition(pool, data, solution, startTime, spTimeLimit);
+            if (global != null && activeBlockCount(global) < activeBlockCount(bestFallback)) {
+                log.info("Phase2 global set-partition improved: blocks {} -> {} columns={} elapsed={}ms",
+                        activeBlockCount(bestFallback), activeBlockCount(global), pool.size(),
+                        System.currentTimeMillis() - startTime);
+                return global;
+            }
+        }
+
+        // Secondary fallback: per-pattern independent solve. Cannot re-allocate across
+        // patterns, but is a robust local improver when the global model finds nothing.
         SolveResult result = solvePerPatternIndependently(solution, seedAssignments, data, startTime);
         if (result != null && activeBlockCount(result) < activeBlockCount(bestFallback)) {
-            log.info("Phase2 per-pattern completed: blocks {} -> {} elapsed={}ms",
+            log.info("Phase2 per-pattern improved: blocks {} -> {} elapsed={}ms",
                     activeBlockCount(bestFallback), activeBlockCount(result),
                     System.currentTimeMillis() - startTime);
             return result;
         }
-        log.info("Phase2 per-pattern: no improvement over seed ({}ms), returning seed",
+        log.info("Phase2: no improvement over seed ({}ms), returning seed",
                 System.currentTimeMillis() - startTime);
         return bestFallback;
     }
@@ -155,7 +177,22 @@ public class Phase2SequenceGroupSolver {
         return new Phase2Data(patterns, demands, messagesByWidth, incumbentRolls, incumbentWaste);
     }
 
-    private List<Column> buildInitialColumns(
+    /**
+     * Builds a structured, size-capped column pool for the global set-partition MIP.
+     *
+     * <p>Three column families, none of which take the cross-width Cartesian product
+     * that made unbounded column generation explode:
+     * <ol>
+     *   <li><b>Seed columns</b> — the Stage5 assignment, so the MIP can always
+     *       reproduce the current result (a natural lower bound, never regresses).</li>
+     *   <li><b>Pure-roll columns</b> — each width filled with a single order, paired
+     *       across widths by demand rank (rank0×rank0, …), top-M orders per width.</li>
+     *   <li><b>Remainder columns</b> — for multi-slot widths (k≥2), the "j slots of a
+     *       secondary order + main order fills the rest" configs that absorb the
+     *       non-divisible remainder into few shared rolls.</li>
+     * </ol>
+     */
+    private List<Column> buildStructuredColumnPool(
             Phase2Data data,
             Map<PatternCandidate, List<AssignmentMIPSolver.AssignmentBlock>> seedAssignments) {
         List<Column> columns = new ArrayList<>();
@@ -163,7 +200,7 @@ public class Phase2SequenceGroupSolver {
 
         int seedColumns = addSeedColumns(columns, seen, data, seedAssignments);
         if (seedColumns > 0) {
-            log.info("Phase2 initial seed columns={}", seedColumns);
+            log.info("Phase2 pool seed columns={}", seedColumns);
         }
 
         for (int patternIndex = 0; patternIndex < data.patterns().size(); patternIndex++) {
@@ -172,7 +209,10 @@ public class Phase2SequenceGroupSolver {
                 continue;
             }
 
-            for (int rank = 0; rank < INITIAL_TOP_MESSAGES_PER_PATTERN; rank++) {
+            int patternStart = columns.size();
+
+            // (2) Pure-roll columns: each width = one order, paired by demand rank.
+            for (int rank = 0; rank < POOL_TOP_MESSAGES_PER_WIDTH; rank++) {
                 Map<Integer, List<String>> config = new LinkedHashMap<>();
                 for (Map.Entry<Integer, Integer> cut : pattern.getPattern().entrySet()) {
                     int width = cut.getKey();
@@ -184,9 +224,39 @@ public class Phase2SequenceGroupSolver {
                 addColumn(columns, seen, createColumn(patternIndex, pattern, config, data.demands()));
             }
 
-
+            // (3) Remainder columns: absorb non-divisible leftovers on multi-slot widths.
+            Map<Integer, List<String>> baseConfig = topMessageConfig(pattern, data.messagesByWidth());
+            outer:
+            for (Map.Entry<Integer, Integer> cut : pattern.getPattern().entrySet()) {
+                int width = cut.getKey();
+                int slots = cut.getValue();
+                if (slots <= 1) {
+                    continue;
+                }
+                List<MessageDemand> messages = data.messagesByWidth().getOrDefault(width, Collections.emptyList());
+                if (messages.isEmpty()) {
+                    continue;
+                }
+                String mainMessage = messages.get(0).message();
+                int orderLimit = Math.min(POOL_REMAINDER_TOP_ORDERS, messages.size());
+                for (int orderRank = 1; orderRank < orderLimit; orderRank++) {
+                    String secondary = messages.get(orderRank).message();
+                    for (int j = 1; j < slots; j++) {
+                        Map<Integer, List<String>> mixed = copyConfig(baseConfig);
+                        List<String> slotMessages = new ArrayList<>(slots);
+                        for (int s = 0; s < j; s++) slotMessages.add(secondary);
+                        for (int s = j; s < slots; s++) slotMessages.add(mainMessage);
+                        mixed.put(width, slotMessages);
+                        addColumn(columns, seen, createColumn(patternIndex, pattern, mixed, data.demands()));
+                        if (columns.size() - patternStart >= POOL_MAX_COLUMNS_PER_PATTERN) {
+                            break outer;
+                        }
+                    }
+                }
+            }
         }
 
+        log.info("Phase2 structured column pool: total={} patterns={}", columns.size(), data.patterns().size());
         return columns;
     }
 
@@ -336,143 +406,66 @@ public class Phase2SequenceGroupSolver {
         return result.assignments().values().stream().mapToInt(List::size).sum();
     }
 
-    // ── Column generation: master LP ─────────────────────────────────────────
+    // ── Global set-partition MIP ──────────────────────────────────────────────
 
-    private MasterLPResult solveMasterLP(List<Column> columns, Phase2Data data) {
-        try {
-            MPSolver solver = MPSolver.createSolver("GLOP");
-            if (solver == null) return new MasterLPResult(false, Map.of());
-
-            List<MPVariable> lambdas = new java.util.ArrayList<>();
-            for (int i = 0; i < columns.size(); i++) {
-                lambdas.add(solver.makeNumVar(0, solver.infinity(), "l" + i));
-            }
-
-            // Demand constraints + shortage slack for LP feasibility
-            Map<DemandKey, MPConstraint> demandCtrs = new LinkedHashMap<>();
-            for (Map.Entry<DemandKey, Integer> e : data.demands().entrySet()) {
-                DemandKey key = e.getKey();
-                MPVariable slack = solver.makeNumVar(0, e.getValue(), "s_" + key.hashCode());
-                MPConstraint c = solver.makeConstraint(e.getValue(), solver.infinity(),
-                        "d_" + key.hashCode());
-                for (int i = 0; i < columns.size(); i++) {
-                    int contrib = columns.get(i).contributions().getOrDefault(key, 0);
-                    if (contrib > 0) c.setCoefficient(lambdas.get(i), contrib);
-                }
-                c.setCoefficient(slack, 1.0);
-                // slack in objective with high penalty
-                solver.objective().setCoefficient(slack, SLACK_PENALTY);
-                demandCtrs.put(key, c);
-            }
-
-            // Global roll bound
-            MPConstraint rollBound = solver.makeConstraint(0, data.incumbentRolls(), "rolls");
-            lambdas.forEach(lam -> rollBound.setCoefficient(lam, 1.0));
-
-            // Objective: min total usage (proxy; duals guide pricing)
-            lambdas.forEach(lam -> solver.objective().setCoefficient(lam, 1.0));
-            solver.objective().setMinimization();
-
-            long lpIterMs = Math.max(500, LP_TIME_LIMIT_MS / (MAX_COLUMN_GENERATION_ITERATIONS + 1));
-            solver.setTimeLimit(lpIterMs);
-            MPSolver.ResultStatus status = solver.solve();
-            if (status != MPSolver.ResultStatus.OPTIMAL && status != MPSolver.ResultStatus.FEASIBLE) {
-                return new MasterLPResult(false, Map.of());
-            }
-
-            Map<DemandKey, Double> duals = new LinkedHashMap<>();
-            demandCtrs.forEach((key, c) -> duals.put(key, c.dualValue()));
-            return new MasterLPResult(true, duals);
-        } catch (Exception ex) {
-            log.warn("Phase2 master LP exception", ex);
-            return new MasterLPResult(false, Map.of());
+    /**
+     * One-shot global set-partition over the structured column pool.
+     *
+     * <p>min Σ y[col]  (active configs = sequence groups)
+     * <br>s.t. Σ contrib[col][order]·n[col] + slack[order] = demand[order]  (exact, no over-production)
+     * <br>     Σ_{col∈pattern p} n[col] = usage[p]                          (A-layer roll counts fixed)
+     * <br>     n[col] ≤ usage[p]·y[col]                                     (linking)
+     *
+     * <p>The per-order slack (heavily penalized) only guarantees feasibility; the
+     * seed columns make a zero-slack solution always reachable, so a non-zero slack
+     * result is discarded in favour of the seed.
+     */
+    private SolveResult solveGlobalSetPartition(List<Column> columns,
+                                                Phase2Data data,
+                                                Map<PatternCandidate, Integer> solution,
+                                                long startTime,
+                                                long timeLimitMs) {
+        if (columns.isEmpty()) {
+            return null;
         }
-    }
-
-    // ── Column generation: pricing subproblem (greedy per pattern) ──────────
-
-    private List<PricedColumn> priceColumns(Phase2Data data,
-                                             Map<DemandKey, Double> duals,
-                                             Set<String> seen) {
-        List<PricedColumn> result = new java.util.ArrayList<>();
-        for (int pIdx = 0; pIdx < data.patterns().size(); pIdx++) {
-            PatternCandidate pattern = data.patterns().get(pIdx);
-            if (!isPatternMessageCovered(pattern, data.messagesByWidth())) continue;
-
-            Map<Integer, List<String>> bestConfig = new LinkedHashMap<>();
-            double totalDual = 0.0;
-
-            for (Map.Entry<Integer, Integer> cut : pattern.getPattern().entrySet()) {
-                int width = cut.getKey();
-                int kw = cut.getValue();
-                List<MessageDemand> msgs = data.messagesByWidth().getOrDefault(width, Collections.emptyList());
-                String bestMsg = null;
-                double bestDual = Double.NEGATIVE_INFINITY;
-                for (MessageDemand md : msgs) {
-                    double d = duals.getOrDefault(new DemandKey(width, md.message()), 0.0);
-                    if (d > bestDual) { bestDual = d; bestMsg = md.message(); }
-                }
-                if (bestMsg == null) { bestConfig = null; break; }
-                bestConfig.put(width, repeatMessage(bestMsg, kw));
-                totalDual += bestDual * kw;
-            }
-
-            if (bestConfig == null) continue;
-            double rc = 1.0 - totalDual;
-            if (rc < -REDUCED_COST_EPSILON) {
-                Column col = createColumn(pIdx, pattern, bestConfig, data.demands());
-                if (col != null && !seen.contains(col.signature())) {
-                    result.add(new PricedColumn(col, rc));
-                }
-            }
-        }
-        result.sort(Comparator.comparingDouble(PricedColumn::reducedCost));
-        return result;
-    }
-
-    // ── Final integer MIP ─────────────────────────────────────────────────────
-
-    private SolveResult solveFinalMip(List<Column> columns, Phase2Data data, Map<PatternCandidate, Integer> solution) {
         try {
             MPSolver solver = null;
             try { solver = MPSolver.createSolver("SCIP"); } catch (Exception ignored) {}
-            if (solver == null) {
+            if (solver != null) {
+                solver.setSolverSpecificParametersAsString(SCIP_DETERMINISTIC_PARAMS);
+            } else {
                 try { solver = MPSolver.createSolver("CBC"); } catch (Exception ignored2) {}
             }
             if (solver == null) return null;
 
-            int bigM = data.incumbentRolls() + params.getTotalOverCap();
-
-            List<MPVariable> nVars = new java.util.ArrayList<>();
-            List<MPVariable> yVars = new java.util.ArrayList<>();
-            for (int i = 0; i < columns.size(); i++) {
-                nVars.add(solver.makeIntVar(0, bigM, "n" + i));
-                yVars.add(solver.makeBoolVar("y" + i));
-            }
-
-            // Demand: Σ contrib[col][key] * n[col] >= demand[key]
-            for (Map.Entry<DemandKey, Integer> e : data.demands().entrySet()) {
-                DemandKey key = e.getKey();
-                MPConstraint c = solver.makeConstraint(e.getValue(), solver.infinity(),
-                        "d_" + key.hashCode());
-                for (int i = 0; i < columns.size(); i++) {
-                    int contrib = columns.get(i).contributions().getOrDefault(key, 0);
-                    if (contrib > 0) c.setCoefficient(nVars.get(i), contrib);
-                }
-            }
-
-            // Waste cap: Σ waste[col] * n[col] <= incumbentWaste
-            MPConstraint wasteCap = solver.makeConstraint(0, data.incumbentWaste(), "waste");
-            for (int i = 0; i < columns.size(); i++) {
-                wasteCap.setCoefficient(nVars.get(i), columns.get(i).waste());
-            }
-
-            // Per-pattern equality: Σ_{col for p} n[col] = usage[p]
-            // Fixes each pattern's roll count — makes MIP nearly decomposable per pattern
             Map<PatternCandidate, List<Integer>> colsByPattern = new LinkedHashMap<>();
             for (int i = 0; i < columns.size(); i++) {
                 colsByPattern.computeIfAbsent(columns.get(i).pattern(), k -> new ArrayList<>()).add(i);
             }
+
+            List<MPVariable> nVars = new ArrayList<>();
+            List<MPVariable> yVars = new ArrayList<>();
+            for (int i = 0; i < columns.size(); i++) {
+                int cap = Math.max(0, solution.getOrDefault(columns.get(i).pattern(), 0));
+                nVars.add(solver.makeIntVar(0, cap, "n" + i));
+                yVars.add(solver.makeBoolVar("y" + i));
+            }
+
+            // Demand: exact equality with a penalized slack for guaranteed feasibility.
+            List<MPVariable> slackVars = new ArrayList<>();
+            for (Map.Entry<DemandKey, Integer> e : data.demands().entrySet()) {
+                DemandKey key = e.getKey();
+                MPVariable slack = solver.makeNumVar(0, e.getValue(), "sp_" + key.hashCode());
+                slackVars.add(slack);
+                MPConstraint c = solver.makeConstraint(e.getValue(), e.getValue(), "d_" + key.hashCode());
+                for (int i = 0; i < columns.size(); i++) {
+                    int contrib = columns.get(i).contributions().getOrDefault(key, 0);
+                    if (contrib > 0) c.setCoefficient(nVars.get(i), contrib);
+                }
+                c.setCoefficient(slack, 1.0);
+            }
+
+            // Per-pattern roll count fixed to the A-layer solution: waste/over unchanged.
             for (Map.Entry<PatternCandidate, List<Integer>> pe : colsByPattern.entrySet()) {
                 Integer usage = solution.get(pe.getKey());
                 if (usage == null || usage <= 0) continue;
@@ -483,34 +476,45 @@ public class Phase2SequenceGroupSolver {
                 }
             }
 
-            // Linking: n[col] <= bigM * y[col]
+            // Linking: n[col] <= usage[p] * y[col]
             for (int i = 0; i < columns.size(); i++) {
+                int cap = Math.max(1, solution.getOrDefault(columns.get(i).pattern(), 0));
                 MPConstraint link = solver.makeConstraint(-solver.infinity(), 0, "lk" + i);
                 link.setCoefficient(nVars.get(i), 1.0);
-                link.setCoefficient(yVars.get(i), -bigM);
+                link.setCoefficient(yVars.get(i), -(double) cap);
             }
 
-            // Objective: min Σ y[col] + tiny × n + tiny × waste×n
+            // Objective: min Σ y[col] + tiny tie-breakers + heavy slack penalty.
             MPObjective obj = solver.objective();
             for (int i = 0; i < columns.size(); i++) {
                 obj.setCoefficient(yVars.get(i), 1.0);
                 obj.setCoefficient(nVars.get(i),
                         ROLL_TIE_BREAKER + columns.get(i).waste() * WASTE_TIE_BREAKER);
             }
+            for (MPVariable slack : slackVars) {
+                obj.setCoefficient(slack, SLACK_PENALTY_SP);
+            }
             obj.setMinimization();
 
-            solver.setTimeLimit(MIP_TIME_LIMIT_MS);
+            solver.setTimeLimit(timeLimitMs);
             MPSolver.ResultStatus status = solver.solve();
             if (status != MPSolver.ResultStatus.OPTIMAL && status != MPSolver.ResultStatus.FEASIBLE) {
-                log.warn("Phase2 final MIP failed: {} ({}ms), columns={}",
-                        status, MIP_TIME_LIMIT_MS, columns.size());
+                log.warn("Phase2 global set-partition failed: {} ({}ms), columns={}",
+                        status, timeLimitMs, columns.size());
                 return null;
             }
 
-            log.info("Phase2 final MIP completed: {} columns={}", status, columns.size());
+            double totalSlack = slackVars.stream().mapToDouble(MPVariable::solutionValue).sum();
+            if (totalSlack > 0.5) {
+                log.info("Phase2 global set-partition left slack={} (exact unreachable), falling back to seed",
+                        totalSlack);
+                return null;
+            }
+
+            log.info("Phase2 global set-partition completed: {} columns={}", status, columns.size());
             return extractSolveResult(columns, nVars);
         } catch (Exception ex) {
-            log.error("Phase2 final MIP exception", ex);
+            log.error("Phase2 global set-partition exception", ex);
             return null;
         }
     }
@@ -648,7 +652,11 @@ public class Phase2SequenceGroupSolver {
         try {
             MPSolver solver = null;
             try { solver = MPSolver.createSolver("SCIP"); } catch (Exception ignored) {}
-            if (solver == null) try { solver = MPSolver.createSolver("CBC"); } catch (Exception ignored2) {}
+            if (solver != null) {
+                solver.setSolverSpecificParametersAsString(SCIP_DETERMINISTIC_PARAMS);
+            } else {
+                try { solver = MPSolver.createSolver("CBC"); } catch (Exception ignored2) {}
+            }
             if (solver == null) return null;
 
             List<MPVariable> nVars = new java.util.ArrayList<>();
@@ -751,19 +759,4 @@ public class Phase2SequenceGroupSolver {
             String signature) {
     }
 
-    private record WidthOption(
-            List<String> messages,
-            int support,
-            int distinctMessageCount,
-            int oddMultiplicityCount) {
-    }
-
-    private record PricedColumn(Column column, double reducedCost) {
-    }
-
-    private record ActiveColumn(Column column, int count) {
-    }
-
-    private record MasterLPResult(boolean feasible, Map<DemandKey, Double> duals) {
-    }
 }

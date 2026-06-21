@@ -37,6 +37,21 @@ public class MultiStageMIPSolver {
     private static final double WASTE_PROTECTION_RATIO = 0.10;
     private static final int MIN_WASTE_PROTECTION_MM = 200;
 
+    /**
+     * 固定 SCIP 随机化种子，保证相同输入 → 相同解。没有这一步，分支定界轨迹
+     * （以及命中时限时的当前 incumbent）每次都不同，diverse 花型集随之漂移。
+     * 复现性 = 固定种子 + 确定性时间预算（见 generateDiverseSolutions）+ 确定性花型池。
+     */
+    private static final String SCIP_DETERMINISTIC_PARAMS =
+            "randomization/randomseedshift = 0\n"
+          + "randomization/permutationseed = 0\n"
+          + "randomization/lpseed = 0\n";
+
+    /** diverse 每步 refine 的固定预算（去掉 wall-clock 依赖，保证复现）。 */
+    private static final long REFINE_BUDGET_MS = 15_000L;
+    /** diverse 循环的安全护栏：仅在确实逼近 deadline 时才提前停止。 */
+    private static final long DIVERSE_MIN_REMAINING_MS = 3_000L;
+
     private final SolverParameters params;
 
     public MultiStageMIPSolver(SolverParameters params) {
@@ -92,6 +107,27 @@ public class MultiStageMIPSolver {
                     new SolverResult(solution.solution(), totalRolls, totalWaste, totalOver, solveTimeMs)));
         }
         return candidates;
+    }
+
+    /**
+     * Legacy primary only (no diverse search). Used by multi-order multi-start for
+     * alternate orders: each order's primary is what wins, and its diverse alternatives
+     * never beat the primary, so skipping them keeps extra orders cheap (~legacy time).
+     */
+    public SolveCandidate solvePrimaryOnly(List<PatternCandidate> patterns,
+            Map<Integer, Integer> demands,
+            Set<Integer> allowOverSet) {
+        LegacyOrderPatternSelectionSolver legacySolver = new LegacyOrderPatternSelectionSolver(params);
+        List<LegacyOrderPatternSelectionSolver.Result> results = legacySolver.solveCandidates(
+                patterns, demands, allowOverSet);
+        if (results.isEmpty()) {
+            return null;
+        }
+        Map<PatternCandidate, Integer> sol = results.get(0).solution();
+        int rolls = sol.values().stream().mapToInt(Integer::intValue).sum();
+        int waste = calculateTotalWaste(sol);
+        int over = calculateTotalOver(sol, demands);
+        return new SolveCandidate(results.get(0).name(), new SolverResult(sol, rolls, waste, over, 0L));
     }
 
     private static final long DIVERSE_RESERVE_MS = 35_000L;
@@ -232,15 +268,24 @@ public class MultiStageMIPSolver {
         List<NamedSolution> solutions = new ArrayList<>();
         addSolutionCandidate(solutions, "best-waste", primarySolution);
 
+        // primary（best-waste/legacy）的母卷数 = 最终选择 Priority-1 的基准线。
+        // diverse 候选若多用 1 卷，会在 rolls 这关被直接淘汰，序号组根本轮不到比较，
+        // 故 diverse 搜索必须把母卷数压到该基准，让对齐度只在同等卷数内重排花型。
+        int primaryRolls = primarySolution.values().stream().mapToInt(Integer::intValue).sum();
+
         for (int k = 1; k < 5; k++) {
             long remaining = deadlineMs - System.currentTimeMillis();
-            if (remaining < 3000) {
+            if (remaining < DIVERSE_MIN_REMAINING_MS) {
                 log.info("Stopping diversity search: only {}ms remaining", remaining);
                 break;
             }
-            long diverseTime = Math.min(remaining / 2, params.getStage4TimeLimit() * 2L);
+            // 固定预算（仅依赖配置，不读 wall-clock），保证 diverse 花型集可复现。
+            // 跑满 4 步需 timeoutMs 充足（≈ Legacy 预算 + 4×(stage4 + refine)）；
+            // 用户当前 ~340s 档已满足。timeout 偏紧时 remaining 护栏会确定性地提前收尾。
+            long diverseTime = params.getStage4TimeLimit();
             Map<PatternCandidate, Integer> diverse = solveMIPDiverseAlternative(
-                    patterns, demands, allowOverSet, maxTotalOver, bestWaste, solutions, diverseTime, alignmentScores);
+                    patterns, demands, allowOverSet, maxTotalOver, bestWaste, solutions, diverseTime,
+                    alignmentScores, primaryRolls);
 
             if (diverse != null && !diverse.isEmpty()) {
                 String name = "diverse-" + k;
@@ -251,8 +296,9 @@ public class MultiStageMIPSolver {
                 // This is a critical step — Stage4 refine typically reduces patterns by 10-15,
                 // which directly improves sequence group count.
                 long remainAfterDiverse = deadlineMs - System.currentTimeMillis();
-                long refineBudget = Math.min(15_000L, Math.max(0, remainAfterDiverse - 5_000L));
-                if (refineBudget > 1_500L) {
+                // 固定 refine 预算（去 wall-clock 化）；仅在确实逼近 deadline 时跳过。
+                long refineBudget = REFINE_BUDGET_MS;
+                if (remainAfterDiverse > DIVERSE_MIN_REMAINING_MS) {
                     try {
                         LegacyOrderPatternSelectionSolver refiner = new LegacyOrderPatternSelectionSolver(params);
                         List<PatternCandidate> diversePats = new ArrayList<>(diverse.keySet());
@@ -275,7 +321,7 @@ public class MultiStageMIPSolver {
                         log.warn("Stage4 refinement of {} failed: {}", name, ex.getMessage());
                     }
                 } else {
-                    log.info("Skipping Stage4 refine for {}: budget={}ms (need >1500ms)", name, refineBudget);
+                    log.info("Skipping Stage4 refine for {}: only {}ms remaining before deadline", name, remainAfterDiverse);
                 }
             } else {
                 log.info("Could not find diversity candidate {}, stopping", k);
@@ -294,7 +340,8 @@ public class MultiStageMIPSolver {
             int maxWaste,
             List<NamedSolution> existingSolutions,
             long timeLimitMs,
-            Map<PatternCandidate, Double> alignmentScores) {
+            Map<PatternCandidate, Double> alignmentScores,
+            int maxRolls) {
         try {
             MPSolver solver = createMIPSolver();
             if (solver == null) return null;
@@ -328,7 +375,10 @@ public class MultiStageMIPSolver {
             MPConstraint totalOverConstraint = solver.makeConstraint(0, maxTotalOver, "totalOverCap");
             for (MPVariable overVar : overVars.values()) totalOverConstraint.setCoefficient(overVar, 1);
 
-            MPConstraint rollsCap = solver.makeConstraint(0, maxTotalRolls, "rollsCap");
+            // 把母卷数压到 primary 同等水平（maxRolls）：对齐度不得以多开一卷为代价，
+            // 否则候选会在最终选择的 Priority-1(rolls) 上被直接淘汰。
+            int rollsUpperBound = Math.max(1, Math.min(maxTotalRolls, maxRolls));
+            MPConstraint rollsCap = solver.makeConstraint(0, rollsUpperBound, "rollsCap");
             for (MPVariable xVar : xVars) rollsCap.setCoefficient(xVar, 1);
 
             // Waste bound with protection band — allows slightly worse waste for better pattern diversity
@@ -349,7 +399,13 @@ public class MultiStageMIPSolver {
             }
             double maxUsage = totalUsage.values().stream().mapToDouble(Double::doubleValue).max().orElse(1.0);
             double DIVERSITY_WEIGHT = 0.5;
-            double ALIGNMENT_ALPHA = 20.0;
+            // 对齐度主导强度。每卷废边 80~380mm，旧值 20 比废边小一个量级，对齐度被
+            // 完全压制（这就是「PatternAlignmentScorer 没真正主导 diverse 选择」的根因）。
+            // 提到 300 后，满分对齐(=1.0)≈300mm 等效收益/卷，足以在废边带内主导花型选择，
+            // 偏向序号对齐度高的花型集（即能拼到 ~77 的那一类）。
+            // 安全性：wasteCap 硬约束把总废边锁在 best+10% 带内，alpha 再大也吹不飞废边，
+            // 只决定「在保护带内多激进地换取对齐度」。这是本次主要可调旋钮。
+            double ALIGNMENT_ALPHA = 300.0;
             double KW_PENALTY_PER_EXTRA_SLOT = 15.0;
 
             MPObjective objective = solver.objective();
@@ -1055,10 +1111,14 @@ public class MultiStageMIPSolver {
 
     private MPSolver createMIPSolver() {
         MPSolver solver = MPSolver.createSolver("SCIP");
-        if (solver == null) {
-            solver = MPSolver.createSolver("CBC");
+        if (solver != null) {
+            // 仅 SCIP 接受该参数串；CBC 回退路径不应用。
+            solver.setSolverSpecificParametersAsString(SCIP_DETERMINISTIC_PARAMS);
+            // 单线程：多线程 MIP 是非确定性的经典来源（线程竞争与种子无关）。
+            try { solver.setNumThreads(1); } catch (Exception ignored) {}
+            return solver;
         }
-        return solver;
+        return MPSolver.createSolver("CBC");
     }
 
     private Map<PatternCandidate, Integer> extractSolution(List<PatternCandidate> patterns, List<MPVariable> xVars) {

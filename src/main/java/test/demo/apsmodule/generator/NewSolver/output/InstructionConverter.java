@@ -141,6 +141,40 @@ public class InstructionConverter {
                 buildSequenceCandidateRows(candidates, bestPlan.name()));
     }
 
+    /**
+     * Cheap assignment used to rank pattern candidates before committing to the
+     * expensive Stage5+Phase2 path. Runs only the greedy assignment variants
+     * (seconds each), never the Stage5 MIP, so a whole candidate pool can be
+     * screened quickly. The winner is the lowest-group greedy plan.
+     */
+    public ConversionResult convertFast(Map<PatternCandidate, Integer> solution,
+            String groupKey,
+            List<SolverOrderItem> groupItems,
+            Map<Integer, Integer> demands) {
+        List<ScoredInstructionPlan> candidates = new ArrayList<>();
+
+        List<CuttingInstruction> greedy = buildFromGreedyAssignment(
+                solution, groupKey, groupItems, OrderAssignmentOptimizer.GreedyStrategy.BATCH_FIRST);
+        addCandidate(candidates, "greedy", greedy);
+        addPostProcessedCandidate(candidates, "greedy-post", greedy);
+
+        List<CuttingInstruction> reuseGreedy = buildFromGreedyAssignment(
+                solution, groupKey, groupItems, OrderAssignmentOptimizer.GreedyStrategy.REUSE_FIRST);
+        addCandidate(candidates, "greedy-reuse", reuseGreedy);
+        addPostProcessedCandidate(candidates, "greedy-reuse-post", reuseGreedy);
+
+        if (candidates.isEmpty()) {
+            return new ConversionResult(new ArrayList<>(), "none", 0, List.of());
+        }
+
+        ScoredInstructionPlan bestPlan = selectBestCandidate(candidates);
+        return new ConversionResult(
+                bestPlan.instructions(),
+                bestPlan.name(),
+                bestPlan.sequenceGroupCount(),
+                buildSequenceCandidateRows(candidates, bestPlan.name()));
+    }
+
     protected Map<PatternCandidate, List<AssignmentMIPSolver.AssignmentBlock>> solveAssignmentWithMip(
             Map<PatternCandidate, Integer> solution,
             List<SolverOrderItem> groupItems) {
@@ -339,10 +373,11 @@ public class InstructionConverter {
             return;
         }
 
-        int sequenceGroupCount = SequenceGroupPostProcessor.countTotalGroups(instructions);
-        candidates.add(new ScoredInstructionPlan(name, instructions, sequenceGroupCount));
-        log.info("Sequence-group candidate: {} groups={} instructions={}",
-                name, sequenceGroupCount, instructions.size());
+        SequenceGroupPostProcessor.GroupStats stats = SequenceGroupPostProcessor.computeGroupStats(instructions);
+        candidates.add(new ScoredInstructionPlan(
+                name, instructions, stats.groups(), stats.oddCarGroups(), stats.smallCarGroups()));
+        log.info("Sequence-group candidate: {} groups={} oddCars={} smallCars={} instructions={}",
+                name, stats.groups(), stats.oddCarGroups(), stats.smallCarGroups(), instructions.size());
     }
 
     private void addPostProcessedCandidate(List<ScoredInstructionPlan> candidates, String name,
@@ -550,6 +585,7 @@ public class InstructionConverter {
         List<RollBlock> currentBlocks = buildRollBlocks(currentRolls);
         int currentBlockCount = currentBlocks.size();
         int currentOddBlockCount = countOddBlocks(currentBlocks);
+        int currentSmallBlockCount = countSmallBlocks(currentBlocks);
         if (currentBlockCount <= 1 && currentOddBlockCount == 0) {
             return family;
         }
@@ -569,6 +605,7 @@ public class InstructionConverter {
                 candidateConfigs,
                 currentBlockCount,
                 currentOddBlockCount,
+                currentSmallBlockCount,
                 repackProfile);
         if (repackPlan == null) {
             return family;
@@ -605,6 +642,7 @@ public class InstructionConverter {
         List<RollBlock> currentBlocks = buildRollBlocks(currentRolls);
         int currentBlockCount = currentBlocks.size();
         int currentOddBlockCount = countOddBlocks(currentBlocks);
+        int currentSmallBlockCount = countSmallBlocks(currentBlocks);
         if (currentBlockCount <= 1 && currentOddBlockCount == 0) {
             return;
         }
@@ -624,6 +662,7 @@ public class InstructionConverter {
                 candidateConfigs,
                 currentBlockCount,
                 currentOddBlockCount,
+                currentSmallBlockCount,
                 repackProfile);
         if (repackPlan == null) {
             return;
@@ -704,6 +743,7 @@ public class InstructionConverter {
             List<RollConfig> candidateConfigs,
             int currentBlockCount,
             int currentOddBlockCount,
+            int currentSmallBlockCount,
             RepackProfile repackProfile) {
         MPSolver solver = MPSolver.createSolver("SCIP");
         if (solver == null) {
@@ -724,6 +764,10 @@ public class InstructionConverter {
         List<MPVariable> useVars = new ArrayList<>(activeConfigs.size());
         List<MPVariable> oddVars = new ArrayList<>(activeConfigs.size());
         List<MPVariable> halfVars = new ArrayList<>(activeConfigs.size());
+        List<MPVariable> smallVars = new ArrayList<>(activeConfigs.size());
+
+        // A block with 1..SMALL_CAR_MAX_CARS cars is "small"; threshold is one above.
+        int smallThreshold = SequenceGroupPostProcessor.SMALL_CAR_MAX_CARS + 1;
 
         for (int index = 0; index < activeConfigs.size(); index++) {
             RollConfig config = activeConfigs.get(index);
@@ -732,6 +776,7 @@ public class InstructionConverter {
             MPVariable useVar = solver.makeBoolVar("repack_use_" + index);
             MPVariable oddVar = solver.makeBoolVar("repack_odd_" + index);
             MPVariable halfVar = solver.makeIntVar(0, upperBound, "repack_half_" + index);
+            MPVariable smallVar = solver.makeBoolVar("repack_small_" + index);
 
             MPConstraint linkConstraint = solver.makeConstraint(-MPSolver.infinity(), 0, "repack_link_" + index);
             linkConstraint.setCoefficient(countVar, 1);
@@ -742,10 +787,18 @@ public class InstructionConverter {
             parityConstraint.setCoefficient(halfVar, -2);
             parityConstraint.setCoefficient(oddVar, -1);
 
+            // Force small=1 when 0 < count <= SMALL_CAR_MAX_CARS:
+            //   smallThreshold*small + count >= smallThreshold*use
+            MPConstraint smallConstraint = solver.makeConstraint(0, MPSolver.infinity(), "repack_small_c_" + index);
+            smallConstraint.setCoefficient(smallVar, smallThreshold);
+            smallConstraint.setCoefficient(countVar, 1);
+            smallConstraint.setCoefficient(useVar, -smallThreshold);
+
             countVars.add(countVar);
             useVars.add(useVar);
             oddVars.add(oddVar);
             halfVars.add(halfVar);
+            smallVars.add(smallVar);
         }
 
         MPConstraint rollCountConstraint = solver.makeConstraint(usageCount, usageCount, "repack_total_rolls");
@@ -764,10 +817,12 @@ public class InstructionConverter {
             }
         }
 
+        // Weights enforce priority: fewer blocks (groups) >> fewer odd-car blocks > fewer small-car blocks.
         MPObjective objective = solver.objective();
         for (int index = 0; index < activeConfigs.size(); index++) {
             objective.setCoefficient(useVars.get(index), 10_000);
             objective.setCoefficient(oddVars.get(index), 100);
+            objective.setCoefficient(smallVars.get(index), 10);
         }
         objective.setMinimization();
 
@@ -795,9 +850,21 @@ public class InstructionConverter {
 
         int optimizedBlockCount = blocks.size();
         int optimizedOddBlockCount = (int) blocks.stream().filter(block -> block.count() % 2 != 0).count();
-        if (optimizedBlockCount > currentBlockCount
-                || (optimizedBlockCount == currentBlockCount && optimizedOddBlockCount >= currentOddBlockCount)) {
+        int optimizedSmallBlockCount = (int) blocks.stream()
+                .filter(block -> block.count() > 0 && block.count() <= SequenceGroupPostProcessor.SMALL_CAR_MAX_CARS)
+                .count();
+        // Accept only a real improvement, ranked blocks > odd-blocks > small-blocks.
+        if (optimizedBlockCount > currentBlockCount) {
             return null;
+        }
+        if (optimizedBlockCount == currentBlockCount) {
+            if (optimizedOddBlockCount > currentOddBlockCount) {
+                return null;
+            }
+            if (optimizedOddBlockCount == currentOddBlockCount
+                    && optimizedSmallBlockCount >= currentSmallBlockCount) {
+                return null;
+            }
         }
 
         if (!exactCounts.equals(countAssignmentsByDemandKey(materializeRepackedInstructions(blocks)))) {
@@ -1110,6 +1177,13 @@ public class InstructionConverter {
         return (int) blocks.stream().filter(block -> block.rolls().size() % 2 != 0).count();
     }
 
+    private int countSmallBlocks(List<RollBlock> blocks) {
+        return (int) blocks.stream()
+                .filter(block -> !block.rolls().isEmpty()
+                        && block.rolls().size() <= SequenceGroupPostProcessor.SMALL_CAR_MAX_CARS)
+                .count();
+    }
+
     private void compactInstructionRollOrder(List<CuttingInstruction> instructions) {
         for (CuttingInstruction instruction : instructions) {
             compactInstructionRollOrder(instruction);
@@ -1281,7 +1355,10 @@ public class InstructionConverter {
     }
 
     private ScoredInstructionPlan selectBestCandidate(List<ScoredInstructionPlan> candidates) {
+        // Priority: fewer groups > fewer odd-car groups > fewer small-car groups > preference.
         candidates.sort(Comparator.comparingInt(ScoredInstructionPlan::sequenceGroupCount)
+                .thenComparingInt(ScoredInstructionPlan::oddCarGroups)
+                .thenComparingInt(ScoredInstructionPlan::smallCarGroups)
                 .thenComparingInt(candidate -> candidatePreference(candidate.name())));
         return candidates.get(0);
     }
@@ -1328,7 +1405,9 @@ public class InstructionConverter {
     private record ScoredInstructionPlan(
             String name,
             List<CuttingInstruction> instructions,
-            int sequenceGroupCount) {
+            int sequenceGroupCount,
+            int oddCarGroups,
+            int smallCarGroups) {
     }
 
     public record ConversionResult(

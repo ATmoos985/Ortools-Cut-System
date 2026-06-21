@@ -28,7 +28,17 @@ import java.util.Set;
 public class AssignmentMIPSolver {
 
     private static final Logger log = LoggerFactory.getLogger(AssignmentMIPSolver.class);
+    // On large instances this slot-level MIP needs ~30s just to reach its first
+    // feasible solution; a tighter budget returns NOT_SOLVED and forces a fallback
+    // to the much weaker greedy assignment. The solve speed-up comes from running
+    // Stage5 on only the screened top-K candidates, not from shrinking this budget.
     private static final long DEFAULT_STAGE5_TIME_LIMIT_MS = 30000L;
+
+    /** 固定 SCIP 随机化种子，让 Stage5 装配结果在相同输入下可复现（消除运行间序号组摇摆）。 */
+    private static final String SCIP_DETERMINISTIC_PARAMS =
+            "randomization/randomseedshift = 42\n"
+          + "randomization/permutationseed = 42\n"
+          + "randomization/lpseed = 42\n";
 
     private final SolverParameters params;
 
@@ -144,7 +154,9 @@ public class AssignmentMIPSolver {
 
         try {
             MPSolver solver = MPSolver.createSolver("SCIP");
-            if (solver == null) {
+            if (solver != null) {
+                solver.setSolverSpecificParametersAsString(SCIP_DETERMINISTIC_PARAMS);
+            } else {
                 solver = MPSolver.createSolver("CBC");
             }
             if (solver == null) {
