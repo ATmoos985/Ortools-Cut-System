@@ -156,6 +156,9 @@ public class AssignmentMIPSolver {
             MPSolver solver = MPSolver.createSolver("SCIP");
             if (solver != null) {
                 solver.setSolverSpecificParametersAsString(SCIP_DETERMINISTIC_PARAMS);
+                // Single-threaded: multi-threaded MIP is a classic non-determinism source
+                // (the other A-layer solvers already do this; Stage5 was missing it).
+                try { solver.setNumThreads(1); } catch (Exception ignored) {}
             } else {
                 solver = MPSolver.createSolver("CBC");
             }
@@ -266,7 +269,10 @@ public class AssignmentMIPSolver {
                 return null;
             }
 
-            log.info("Stage5 completed: {} ({}ms), proxyBlocks={}", status, elapsed, (int) objective.value());
+            long bbNodes = -1;
+            try { bbNodes = solver.nodes(); } catch (Throwable ignored) {}
+            log.info("Stage5 completed: {} ({}ms), proxyBlocks={}, nodes={}, patterns={}",
+                    status, elapsed, (int) objective.value(), bbNodes, patternList.size());
 
             Map<PatternCandidate, List<AssignmentBlock>> result = new LinkedHashMap<>();
 
