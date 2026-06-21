@@ -32,6 +32,23 @@ class LegacyOrderPatternSelectionSolver {
             "randomization/randomseedshift = 0\n"
           + "randomization/permutationseed = 0\n"
           + "randomization/lpseed = 0\n";
+
+    /**
+     * SCIP randomization params for the configured A-layer seed. The seed steers
+     * which 花型集 the selection MIP lands on among tie-degenerate optima; the
+     * multi-start in CuttingSolver sweeps it to find a lower sequence-group set.
+     * Seed 0 reproduces the legacy {@link #SCIP_DETERMINISTIC_PARAMS}.
+     */
+    private String scipParams() {
+        int s = params.getALayerScipSeed();
+        if (s == 0) {
+            return SCIP_DETERMINISTIC_PARAMS;
+        }
+        return "randomization/randomseedshift = " + s + "\n"
+             + "randomization/permutationseed = " + s + "\n"
+             + "randomization/lpseed = " + s + "\n";
+    }
+
     private static final double LEGACY_SEQ_GROUP_ALPHA = 1.0;
     private static final double LEGACY_SEQ_GROUP_BETA = 0.0;
     private static final int    MIN_USAGE_THRESHOLD = 4;
@@ -617,7 +634,7 @@ class LegacyOrderPatternSelectionSolver {
         MPSolver solver = MPSolver.createSolver("SCIP");
         if (solver != null) {
             // 仅 SCIP 接受该参数串；CBC 回退路径不应用。
-            solver.setSolverSpecificParametersAsString(SCIP_DETERMINISTIC_PARAMS);
+            solver.setSolverSpecificParametersAsString(scipParams());
             // 单线程：多线程 MIP 是非确定性的经典来源（线程竞争与种子无关）。
             try { solver.setNumThreads(1); } catch (Exception ignored) {}
             return solver;

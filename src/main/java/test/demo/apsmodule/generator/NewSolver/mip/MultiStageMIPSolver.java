@@ -47,6 +47,21 @@ public class MultiStageMIPSolver {
           + "randomization/permutationseed = 0\n"
           + "randomization/lpseed = 0\n";
 
+    /**
+     * SCIP randomization params for the configured A-layer seed (see
+     * {@link SolverParameters#getALayerScipSeed()}). Seed 0 reproduces the legacy
+     * {@link #SCIP_DETERMINISTIC_PARAMS}.
+     */
+    private String scipParams() {
+        int s = params.getALayerScipSeed();
+        if (s == 0) {
+            return SCIP_DETERMINISTIC_PARAMS;
+        }
+        return "randomization/randomseedshift = " + s + "\n"
+             + "randomization/permutationseed = " + s + "\n"
+             + "randomization/lpseed = " + s + "\n";
+    }
+
     /** diverse 每步 refine 的固定预算（去掉 wall-clock 依赖，保证复现）。 */
     private static final long REFINE_BUDGET_MS = 15_000L;
     /** diverse 循环的安全护栏：仅在确实逼近 deadline 时才提前停止。 */
@@ -117,7 +132,21 @@ public class MultiStageMIPSolver {
     public SolveCandidate solvePrimaryOnly(List<PatternCandidate> patterns,
             Map<Integer, Integer> demands,
             Set<Integer> allowOverSet) {
-        LegacyOrderPatternSelectionSolver legacySolver = new LegacyOrderPatternSelectionSolver(params);
+        return solvePrimaryOnly(patterns, demands, allowOverSet, params.getALayerScipSeed());
+    }
+
+    /**
+     * Legacy primary with an explicit A-layer SCIP seed. The seed steers the
+     * selection MIP onto a different (but reproducible) 花型集 among tie-degenerate
+     * optima, which is the cheap multi-start dimension that finds lower-group sets.
+     */
+    public SolveCandidate solvePrimaryOnly(List<PatternCandidate> patterns,
+            Map<Integer, Integer> demands,
+            Set<Integer> allowOverSet,
+            int seed) {
+        SolverParameters seededParams = params.copy();
+        seededParams.setALayerScipSeed(seed);
+        LegacyOrderPatternSelectionSolver legacySolver = new LegacyOrderPatternSelectionSolver(seededParams);
         List<LegacyOrderPatternSelectionSolver.Result> results = legacySolver.solveCandidates(
                 patterns, demands, allowOverSet);
         if (results.isEmpty()) {
@@ -1113,7 +1142,7 @@ public class MultiStageMIPSolver {
         MPSolver solver = MPSolver.createSolver("SCIP");
         if (solver != null) {
             // 仅 SCIP 接受该参数串；CBC 回退路径不应用。
-            solver.setSolverSpecificParametersAsString(SCIP_DETERMINISTIC_PARAMS);
+            solver.setSolverSpecificParametersAsString(scipParams());
             // 单线程：多线程 MIP 是非确定性的经典来源（线程竞争与种子无关）。
             try { solver.setNumThreads(1); } catch (Exception ignored) {}
             return solver;

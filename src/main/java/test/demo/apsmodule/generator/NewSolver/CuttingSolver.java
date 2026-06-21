@@ -30,6 +30,16 @@ public class CuttingSolver implements CuttingSolverAlgorithm {
     private static final Logger log = LoggerFactory.getLogger(CuttingSolver.class);
     private static boolean orToolsLoaded = false;
 
+    /**
+     * A-layer SCIP seeds swept on the cheap primary (legacy) path of alternate
+     * demand orders. Each seed steers the pattern-selection MIP onto a different
+     * deterministic 花型集; pooling them and keeping the lowest-group plan is what
+     * recovers the better sets the old non-deterministic solver only hit by luck
+     * (single-seed default caps at 79; seed 7 reaches 73 on T9EST188). Distinct
+     * 花型集 are deduped by signature, so extra seeds rarely add B-layer cost.
+     */
+    private static final int[] A_LAYER_SEEDS = {1, 7};
+
     // Baseline defaults only; each solve call uses a per-request copy.
     private final SolverParameters baseParams;
 
@@ -120,17 +130,27 @@ public class CuttingSolver implements CuttingSolverAlgorithm {
                 List<Map<Integer, Integer>> demandOrders = buildDemandOrders(demands);
                 for (int orderIdx = 0; orderIdx < demandOrders.size(); orderIdx++) {
                     Map<Integer, Integer> orderedDemands = demandOrders.get(orderIdx);
-                    // Order 0 (default): full search (primary + diverse). Alternate orders:
-                    // primary only (cheap) — their diverse alternatives never beat the
-                    // primary yet would multiply the expensive B-layer assignment.
-                    List<MultiStageMIPSolver.SolveCandidate> orderCandidates;
+                    // Order 0 (default): full search (primary + diverse) at the default
+                    // A-layer seed. Alternate orders: cheap primary only — but swept over
+                    // a small set of A-layer SCIP seeds. The seed deterministically steers
+                    // the selection MIP onto a different 花型集 among tie-degenerate optima,
+                    // which is the multi-start dimension that finds a much lower-group set
+                    // (seed 7 reaches 73 where the single-seed default caps at 79). Distinct
+                    // 花型集 are deduped by signature so the expensive B-layer assignment runs
+                    // once per genuinely different set, not once per seed.
+                    List<MultiStageMIPSolver.SolveCandidate> orderCandidates = new ArrayList<>();
                     if (orderIdx == 0) {
-                        orderCandidates = mipSolver.solveCandidates(
-                                new ArrayList<>(patterns), orderedDemands, allowOverSet, groupItems);
+                        orderCandidates.addAll(mipSolver.solveCandidates(
+                                new ArrayList<>(patterns), orderedDemands, allowOverSet, groupItems));
                     } else {
-                        MultiStageMIPSolver.SolveCandidate primary = mipSolver.solvePrimaryOnly(
-                                new ArrayList<>(patterns), orderedDemands, allowOverSet);
-                        orderCandidates = primary == null ? List.of() : List.of(primary);
+                        for (int seed : A_LAYER_SEEDS) {
+                            MultiStageMIPSolver.SolveCandidate primary = mipSolver.solvePrimaryOnly(
+                                    new ArrayList<>(patterns), orderedDemands, allowOverSet, seed);
+                            if (primary != null) {
+                                orderCandidates.add(new MultiStageMIPSolver.SolveCandidate(
+                                        "s" + seed + "-" + primary.name(), primary.result()));
+                            }
+                        }
                     }
                     for (MultiStageMIPSolver.SolveCandidate candidate : orderCandidates) {
                         String sig = solutionSignature(candidate.result().getSolution());

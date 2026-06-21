@@ -28,6 +28,14 @@ public class SolverParameters {
     private long timeoutMs = 120000;
     private long stage4TimeLimit = 30000;
 
+    /**
+     * A-layer (pattern-selection MIP) SCIP randomization seed. The seed
+     * deterministically steers which 花型集 the selection MIP lands on among
+     * tie-degenerate optima; sweeping it is the multi-start dimension that finds a
+     * lower sequence-group 花型集 (e.g. 79→73 on T9EST188). Default 0 = legacy.
+     */
+    private int aLayerScipSeed = 0;
+
     private double seqGroupAlpha = 1.0;
     private double seqGroupBeta = 0.0;
 
@@ -135,6 +143,14 @@ public class SolverParameters {
         return stage4TimeLimit;
     }
 
+    public int getALayerScipSeed() {
+        return aLayerScipSeed;
+    }
+
+    public void setALayerScipSeed(int aLayerScipSeed) {
+        this.aLayerScipSeed = aLayerScipSeed;
+    }
+
     public void setStage4TimeLimit(long stage4TimeLimit) {
         this.stage4TimeLimit = stage4TimeLimit;
     }
@@ -213,6 +229,7 @@ public class SolverParameters {
         copy.maxDistinctWidths = this.maxDistinctWidths;
         copy.timeoutMs = this.timeoutMs;
         copy.stage4TimeLimit = this.stage4TimeLimit;
+        copy.aLayerScipSeed = this.aLayerScipSeed;
         copy.seqGroupAlpha = this.seqGroupAlpha;
         copy.seqGroupBeta = this.seqGroupBeta;
         copy.useOptimizedAssignment = this.useOptimizedAssignment;
