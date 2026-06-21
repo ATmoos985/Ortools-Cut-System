@@ -130,26 +130,21 @@ public class CuttingSolver implements CuttingSolverAlgorithm {
                 List<Map<Integer, Integer>> demandOrders = buildDemandOrders(demands);
                 for (int orderIdx = 0; orderIdx < demandOrders.size(); orderIdx++) {
                     Map<Integer, Integer> orderedDemands = demandOrders.get(orderIdx);
-                    // Order 0 (default): full search (primary + diverse) at the default
-                    // A-layer seed. Alternate orders: cheap primary only — but swept over
-                    // a small set of A-layer SCIP seeds. The seed deterministically steers
-                    // the selection MIP onto a different 花型集 among tie-degenerate optima,
-                    // which is the multi-start dimension that finds a much lower-group set
-                    // (seed 7 reaches 73 where the single-seed default caps at 79). Distinct
-                    // 花型集 are deduped by signature so the expensive B-layer assignment runs
-                    // once per genuinely different set, not once per seed.
+                    // Every order: cheap primary (legacy) only, swept over a small set of
+                    // A-layer SCIP seeds. The seed deterministically steers the selection
+                    // MIP onto a different 花型集 among tie-degenerate optima — the multi-start
+                    // dimension that finds lower-group sets. The expensive diverse generation
+                    // was removed: across every measured run its candidates never won (always
+                    // 85-103, beaten by a legacy primary), so it was ~half the runtime for no
+                    // gain. Distinct 花型集 are deduped by signature so the B-layer assignment
+                    // runs once per genuinely different set, not once per (order, seed).
                     List<MultiStageMIPSolver.SolveCandidate> orderCandidates = new ArrayList<>();
-                    if (orderIdx == 0) {
-                        orderCandidates.addAll(mipSolver.solveCandidates(
-                                new ArrayList<>(patterns), orderedDemands, allowOverSet, groupItems));
-                    } else {
-                        for (int seed : A_LAYER_SEEDS) {
-                            MultiStageMIPSolver.SolveCandidate primary = mipSolver.solvePrimaryOnly(
-                                    new ArrayList<>(patterns), orderedDemands, allowOverSet, seed);
-                            if (primary != null) {
-                                orderCandidates.add(new MultiStageMIPSolver.SolveCandidate(
-                                        "s" + seed + "-" + primary.name(), primary.result()));
-                            }
+                    for (int seed : A_LAYER_SEEDS) {
+                        MultiStageMIPSolver.SolveCandidate primary = mipSolver.solvePrimaryOnly(
+                                new ArrayList<>(patterns), orderedDemands, allowOverSet, seed);
+                        if (primary != null) {
+                            orderCandidates.add(new MultiStageMIPSolver.SolveCandidate(
+                                    "s" + seed + "-" + primary.name(), primary.result()));
                         }
                     }
                     for (MultiStageMIPSolver.SolveCandidate candidate : orderCandidates) {
