@@ -95,11 +95,36 @@ class B5SixianTest {
         var conv = converter.convertWithDetails(solution, groupKey, items1350, demands);
         SequenceGroupPostProcessor.GroupStats stats =
                 SequenceGroupPostProcessor.computeGroupStats(conv.instructions());
+        // 防伪解硬校验:最终指令的逐(宽度|消息)产量必须 == 需求,车数/废边守恒
+        java.util.Map<String, Integer> producedDemand = new java.util.TreeMap<>();
+        int prodCars = 0, prodWaste = 0;
+        for (CuttingInstruction ci : conv.instructions()) {
+            prodCars += ci.getUsageCount();
+            prodWaste += ci.getWaste() * ci.getUsageCount();
+            for (var sa : ci.getStationAssignments()) {
+                producedDemand.merge(sa.getWidth() + "|" + sa.getMessageText(), 1, Integer::sum);
+            }
+        }
+        // 需求(按 宽度|消息)= 注入解的产量(=订单需求,over=0)
+        java.util.Map<String, Integer> wantDemand = new java.util.TreeMap<>();
+        int wantCars = 0, wantWaste = 0;
+        for (var e : solution.entrySet()) {
+            wantCars += e.getValue();
+            wantWaste += (params.getTotalWidth() - e.getKey().getPatternWidth()) * e.getValue();
+        }
+        for (SolverOrderItem it : items1350) wantDemand.merge(it.getWidth() + "|" + it.getMessageText(), it.getDemand(), Integer::sum);
+        boolean demandOk = producedDemand.equals(wantDemand);
+        boolean carsOk = prodCars == wantCars;
+        boolean wasteOk = prodWaste == wantWaste;
+
         System.out.println("\n##### 人工固定分布注入(1350m) #####");
-        System.out.println("花型=" + solution.size() + " 车=" + solution.values().stream().mapToInt(Integer::intValue).sum()
+        System.out.println("花型=" + solution.size() + " 车=" + wantCars
                 + " groups=" + stats.groups() + " winner=" + conv.selectedName()
                 + "   (我的花型1350m pre-LNS=54, 人工最终=46)");
+        System.out.println("VALID demandOk=" + demandOk + " carsOk=" + carsOk + "(" + prodCars + "/" + wantCars
+                + ") wasteOk=" + wasteOk + "(" + prodWaste + "/" + wantWaste + ")");
         System.out.println("#########################\n");
+        org.junit.jupiter.api.Assertions.assertTrue(demandOk && carsOk && wasteOk, "伪解! demand/cars/waste 不守恒");
     }
 
     /** Dump my solver's 花型(搭切组合) distribution + per-order group spread, to compare with 人工. */

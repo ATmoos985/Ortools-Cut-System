@@ -661,7 +661,17 @@ public class LocalNeighborhoodSequenceOptimizer {
         try {
             MPSolver solver = MPSolver.createSolver("SCIP");
             if (solver != null) {
-                solver.setSolverSpecificParametersAsString(SCIP_DETERMINISTIC_PARAMS);
+                // Deterministic node limit: bound the B&B by a fixed NODE count, not wall-clock.
+                // A wall-clock limit returns whatever incumbent the machine reached in N seconds
+                // (non-deterministic on rich pools); a node limit explores the same nodes every
+                // run → reproducible incumbent even when optimality isn't proven. This is what
+                // makes enriched (large) neighbourhoods deterministic on SCIP 9.10.
+                String scipParams = SCIP_DETERMINISTIC_PARAMS;
+                long nodeLimit = Long.getLong("cutting.lns.scipNodeLimit", -1L);
+                if (nodeLimit > 0) {
+                    scipParams = scipParams + "limits/nodes = " + nodeLimit + "\n";
+                }
+                solver.setSolverSpecificParametersAsString(scipParams);
                 try {
                     solver.setNumThreads(1);
                 } catch (Exception ignored) {
