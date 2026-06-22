@@ -402,6 +402,16 @@ public class LocalNeighborhoodSequenceOptimizer {
             return null;
         }
         addCompatiblePatterns(rolls, freeDemand, patterns);
+        // Enrich the pool with 花型 generated from this neighbourhood's own freeWidths, at
+        // diverse patternWidths. The waste constraint (Σ waste = B_waste with cars fixed)
+        // preserves total patternWidth exactly, so swapping a concentrated combo for a balanced
+        // one is waste/yield-neutral. Gives the min-Σy MIP intermediate 花型 to consolidate with
+        // — the lever behind the human's balanced distribution reaching fewer groups. Default off.
+        if (Boolean.parseBoolean(System.getProperty("cutting.lns.enrichPatterns", "false"))) {
+            for (PatternKey pk : generateBalancingPatterns(freeDemand, selectedRolls)) {
+                patterns.putIfAbsent(pk.signature(), pk);
+            }
+        }
         return new Neighborhood(List.copyOf(seedKeys), selectedIndexes, freeDemand,
                 new ArrayList<>(patterns.values()), List.copyOf(selectedRolls), cars, waste);
     }
@@ -500,6 +510,64 @@ public class LocalNeighborhoodSequenceOptimizer {
             }
             patterns.put(pattern.signature(), pattern);
         }
+    }
+
+    /**
+     * Enumerate valid 花型 (slot multisets) over the neighbourhood's own freeWidths whose
+     * patternWidth lands in [minRollWidth, maxRollWidth]. These give the MIP intermediate
+     * patternWidths so it can swap a concentrated combo for a balanced one at the SAME total
+     * waste (waste = totalWidth - patternWidth, consistent with the production convention).
+     */
+    private List<PatternKey> generateBalancingPatterns(Map<String, Integer> freeDemand,
+            List<RollRecord> selectedRolls) {
+        if (selectedRolls.isEmpty()) {
+            return List.of();
+        }
+        int totalWidth = params.getTotalWidth();
+        int minRw = params.getMinRollWidth();
+        int maxRw = params.getMaxRollWidth();
+        int maxDistinct = params.getMaxDistinctWidths();
+        int cap = Integer.getInteger("cutting.lns.enrichCap", 120);
+        PatternKey sample = selectedRolls.get(0).pattern();
+        List<Integer> widths = freeDemand.keySet().stream()
+                .map(DemandKey::parse)
+                .map(DemandKey::width)
+                .distinct()
+                .sorted()
+                .toList();
+        List<PatternKey> result = new ArrayList<>();
+        enumerateBalancingPatterns(widths, 0, new LinkedHashMap<>(), 0,
+                minRw, maxRw, maxDistinct, totalWidth, sample, result, cap);
+        return result;
+    }
+
+    private void enumerateBalancingPatterns(List<Integer> widths, int idx,
+            Map<Integer, Integer> current, int sum, int minRw, int maxRw, int maxDistinct,
+            int totalWidth, PatternKey sample, List<PatternKey> result, int cap) {
+        if (result.size() >= cap) {
+            return;
+        }
+        if (idx == widths.size()) {
+            if (sum >= minRw && sum <= maxRw && !current.isEmpty()) {
+                result.add(new PatternKey(sample.groupKey(), sum, sample.length(),
+                        sample.surfaceTreatment(), sample.thickness(),
+                        new LinkedHashMap<>(current), sum, totalWidth - sum));
+            }
+            return;
+        }
+        int w = widths.get(idx);
+        int maxC = (maxRw - sum) / w;
+        for (int c = 0; c <= maxC && result.size() < cap; c++) {
+            if (c > 0) {
+                if (!current.containsKey(w) && current.size() >= maxDistinct) {
+                    break;
+                }
+                current.put(w, c);
+            }
+            enumerateBalancingPatterns(widths, idx + 1, current, sum + c * w,
+                    minRw, maxRw, maxDistinct, totalWidth, sample, result, cap);
+        }
+        current.remove(w);
     }
 
     private SolveAttempt solveNeighborhood(Neighborhood neighborhood) {
