@@ -44,7 +44,13 @@ public class LocalNeighborhoodSequenceOptimizer {
     private static final int DEFAULT_MAX_COLUMNS = 3000;
     private static final int DEFAULT_MAX_ITERATIONS = 40;
     private static final int DEFAULT_MAX_NEIGHBORHOODS = 50;
-    private static final long DEFAULT_TIME_LIMIT_MS = 8000L;
+    // High wall-clock cap acts only as a runaway safety; the SCIP node limit is the real,
+    // deterministic bound (see scipNodeLimit). Generous so the node limit always binds first.
+    private static final long DEFAULT_TIME_LIMIT_MS = 120000L;
+    // Deterministic B&B node budget (default ON): fixed node count → reproducible incumbent
+    // regardless of machine speed, even on rich enriched pools. This is what makes the LNS
+    // deterministic without CP-SAT. Set to -1 to fall back to wall-clock (non-deterministic).
+    private static final long DEFAULT_SCIP_NODE_LIMIT = 15000L;
     private static final long DEFAULT_TOTAL_TIME_LIMIT_MS = 30000L;
     private static final long DEFAULT_POST_TIME_BUDGET_MS = 0L;
     private static final int DEFAULT_MAX_SEED_COUNT = 4;
@@ -671,7 +677,7 @@ public class LocalNeighborhoodSequenceOptimizer {
                 // run → reproducible incumbent even when optimality isn't proven. This is what
                 // makes enriched (large) neighbourhoods deterministic on SCIP 9.10.
                 String scipParams = SCIP_DETERMINISTIC_PARAMS;
-                long nodeLimit = Long.getLong("cutting.lns.scipNodeLimit", -1L);
+                long nodeLimit = Long.getLong("cutting.lns.scipNodeLimit", DEFAULT_SCIP_NODE_LIMIT);
                 if (nodeLimit > 0) {
                     scipParams = scipParams + "limits/nodes = " + nodeLimit + "\n";
                 }
