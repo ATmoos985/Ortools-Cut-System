@@ -524,8 +524,12 @@ public class LocalNeighborhoodSequenceOptimizer {
             return List.of();
         }
         int totalWidth = params.getTotalWidth();
-        int minRw = params.getMinRollWidth();
-        int maxRw = params.getMaxRollWidth();
+        // Restrict generated 花型 to a patternWidth band (default = full valid range). Narrowing it
+        // to the underrepresented middle (e.g. 4340-4389, the "hole" a concentrated distribution
+        // lacks) yields far fewer, targeted 花型 — exactly the intermediate widths the waste-neutral
+        // rebalance needs — so pools stay small enough to solve fast even in big neighbourhoods.
+        int minRw = Integer.getInteger("cutting.lns.enrichMinPw", params.getMinRollWidth());
+        int maxRw = Integer.getInteger("cutting.lns.enrichMaxPw", params.getMaxRollWidth());
         int maxDistinct = params.getMaxDistinctWidths();
         int cap = Integer.getInteger("cutting.lns.enrichCap", 60);
         int guard = Math.max(cap, Integer.getInteger("cutting.lns.enrichGuard", 1500));
