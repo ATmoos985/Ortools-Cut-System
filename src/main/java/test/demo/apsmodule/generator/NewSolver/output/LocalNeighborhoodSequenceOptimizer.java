@@ -514,8 +514,17 @@ public class LocalNeighborhoodSequenceOptimizer {
             return SolveAttempt.infeasible("stage1-infeasible", columns, System.currentTimeMillis() - start);
         }
 
-        SolveSolution stage2 = solveColumns(neighborhood, columns, stage1.activeColumns(), true);
-        SolveSolution best = stage2 != null && !stage2.counts().isEmpty() ? stage2 : stage1;
+        // Stage2 only refines the secondary shape (odd/small/split) under Σy ≤ stage1; the
+        // primary group count is fixed by stage1. Its extra binary machinery makes it the slow,
+        // FEASIBLE-not-OPTIMAL (non-deterministic) solve, so it can be disabled to keep every
+        // solve OPTIMAL/deterministic without changing the group floor.
+        SolveSolution best = stage1;
+        if (Boolean.parseBoolean(System.getProperty("cutting.lns.secondary", "true"))) {
+            SolveSolution stage2 = solveColumns(neighborhood, columns, stage1.activeColumns(), true);
+            if (stage2 != null && !stage2.counts().isEmpty()) {
+                best = stage2;
+            }
+        }
         return new SolveAttempt(true, best.status(), columns, best.counts(), System.currentTimeMillis() - start);
     }
 
