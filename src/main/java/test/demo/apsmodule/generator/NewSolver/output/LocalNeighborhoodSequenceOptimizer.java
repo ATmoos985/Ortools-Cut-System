@@ -609,7 +609,7 @@ public class LocalNeighborhoodSequenceOptimizer {
         // FEASIBLE-not-OPTIMAL (non-deterministic) solve, so it can be disabled to keep every
         // solve OPTIMAL/deterministic without changing the group floor.
         SolveSolution best = stage1;
-        if (Boolean.parseBoolean(System.getProperty("cutting.lns.secondary", "true"))) {
+        if (Boolean.parseBoolean(System.getProperty("cutting.lns.secondary", "false"))) {
             SolveSolution stage2 = solveColumns(neighborhood, columns, stage1.activeColumns(), true);
             if (stage2 != null && !stage2.counts().isEmpty()) {
                 best = stage2;
