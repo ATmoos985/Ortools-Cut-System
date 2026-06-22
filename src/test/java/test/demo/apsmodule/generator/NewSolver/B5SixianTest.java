@@ -1,5 +1,9 @@
 package test.demo.apsmodule.generator.NewSolver;
 
+import com.google.ortools.linearsolver.MPConstraint;
+import com.google.ortools.linearsolver.MPObjective;
+import com.google.ortools.linearsolver.MPSolver;
+import com.google.ortools.linearsolver.MPVariable;
 import org.junit.jupiter.api.Test;
 import test.demo.apsmodule.generator.NewSolver.output.SequenceGroupPostProcessor;
 import test.demo.apsmodule.service.CuttingInstruction;
@@ -125,6 +129,98 @@ class B5SixianTest {
                 + ") wasteOk=" + wasteOk + "(" + prodWaste + "/" + wantWaste + ")");
         System.out.println("#########################\n");
         org.junit.jupiter.api.Assertions.assertTrue(demandOk && carsOk && wasteOk, "伪解! demand/cars/waste 不守恒");
+    }
+
+    /**
+     * 实验:用「去集中化」目标重选 1350m 花型集(同最小废边、得率中性),再喂 enriched LNS,
+     * 验证 A 层均衡分布能否让我的管线高效到 ~43(碾压人工)。
+     * 去集中目标 = min Σ(patternWidth≥4390 的车数),把 4400 的堆摊向中间。
+     */
+    @Test
+    void runBalancedSelection() throws Exception {
+        com.google.ortools.Loader.loadNativeLibraries();
+        SolverConfig config = buildConfig();
+        var params = test.demo.apsmodule.generator.NewSolver.config.SolverParameters.createDefault();
+        params.mergeFrom(config);
+        params.sanitize();
+        int totalWidth = params.getTotalWidth(); // 4600
+        int minRw = params.getMinRollWidth(), maxRw = params.getMaxRollWidth(); // 4300..4400
+
+        List<SolverOrderItem> items1350 = new ArrayList<>();
+        for (SolverOrderItem it : loadItems()) if (it.getLength() == 1350) items1350.add(it);
+        java.util.Map<Integer, Integer> demand = new java.util.TreeMap<>();
+        for (SolverOrderItem it : items1350) demand.merge(it.getWidth(), it.getDemand(), Integer::sum);
+        List<Integer> widths = new ArrayList<>(demand.keySet());
+
+        // 枚举花型池(宽度多重集,sum∈[minRw,maxRw],distinct≤maxDistinct),含中间 pw
+        List<java.util.Map<Integer, Integer>> pool = new ArrayList<>();
+        enumPatterns(widths, 0, new java.util.LinkedHashMap<>(), 0, minRw, maxRw,
+                params.getMaxDistinctWidths(), pool, 6000);
+        System.out.println("balanced pool=" + pool.size());
+
+        int wasteTarget = 99380; // 1350m 组的最小废边(各跑一致),得率中性约束
+
+        MPSolver solver = MPSolver.createSolver("SCIP");
+        solver.setSolverSpecificParametersAsString(
+                "randomization/randomseedshift = 0\nlimits/nodes = 40000\n");
+        try { solver.setNumThreads(1); } catch (Exception ignored) {}
+        int n = pool.size();
+        MPVariable[] x = new MPVariable[n];
+        int tot = demand.values().stream().mapToInt(Integer::intValue).sum();
+        for (int i = 0; i < n; i++) x[i] = solver.makeIntVar(0, tot, "x" + i);
+        for (int w : widths) {
+            MPConstraint c = solver.makeConstraint(demand.get(w), demand.get(w), "d" + w);
+            for (int i = 0; i < n; i++) {
+                int cnt = pool.get(i).getOrDefault(w, 0);
+                if (cnt > 0) c.setCoefficient(x[i], cnt);
+            }
+        }
+        MPConstraint wc = solver.makeConstraint(0, wasteTarget, "waste");
+        for (int i = 0; i < n; i++) wc.setCoefficient(x[i], totalWidth - patternWidth(pool.get(i)));
+        MPObjective obj = solver.objective();
+        for (int i = 0; i < n; i++) if (patternWidth(pool.get(i)) >= 4390) obj.setCoefficient(x[i], 1.0);
+        obj.setMinimization();
+        solver.setTimeLimit(120000);
+        MPSolver.ResultStatus st = solver.solve();
+        System.out.println("balance MIP status=" + st);
+
+        java.util.Map<test.demo.apsmodule.generator.NewSolver.model.PatternCandidate, Integer> solution =
+                new java.util.LinkedHashMap<>();
+        for (int i = 0; i < n; i++) {
+            int v = (int) Math.round(x[i].solutionValue());
+            if (v > 0) solution.put(new test.demo.apsmodule.generator.NewSolver.model.PatternCandidate(
+                    pool.get(i), patternWidth(pool.get(i))), v);
+        }
+        int hi = solution.entrySet().stream().filter(e -> patternWidth(e.getKey().getPattern()) >= 4390)
+                .mapToInt(java.util.Map.Entry::getValue).sum();
+        int totCars = solution.values().stream().mapToInt(Integer::intValue).sum();
+        System.out.println("balanced 花型=" + solution.size() + " 车=" + totCars + " 高pw(≥4390)车=" + hi);
+
+        var converter = new test.demo.apsmodule.generator.NewSolver.output.InstructionConverter(params);
+        var conv = converter.convertWithDetails(solution, items1350.get(0).getGroupKey(), items1350, demand);
+        var stats = SequenceGroupPostProcessor.computeGroupStats(conv.instructions());
+        System.out.println("\n##### 均衡重选(1350m) groups=" + stats.groups()
+                + " winner=" + conv.selectedName() + "  (人工=46, 我集中=47-48) #####\n");
+    }
+
+    private int patternWidth(java.util.Map<Integer, Integer> pat) {
+        int s = 0; for (var e : pat.entrySet()) s += e.getKey() * e.getValue(); return s;
+    }
+
+    private void enumPatterns(List<Integer> widths, int idx, java.util.Map<Integer, Integer> cur, int sum,
+            int minRw, int maxRw, int maxDistinct, List<java.util.Map<Integer, Integer>> out, int cap) {
+        if (out.size() >= cap) return;
+        if (idx == widths.size()) {
+            if (sum >= minRw && sum <= maxRw && !cur.isEmpty()) out.add(new java.util.LinkedHashMap<>(cur));
+            return;
+        }
+        int w = widths.get(idx);
+        int maxC = (maxRw - sum) / w;
+        for (int c = 0; c <= maxC && out.size() < cap; c++) {
+            if (c > 0) { if (!cur.containsKey(w) && cur.size() >= maxDistinct) break; cur.put(w, c); }
+            enumPatterns(widths, idx + 1, cur, sum + c * w, minRw, maxRw, maxDistinct, out, cap);
+        }
+        cur.remove(w);
     }
 
     /** Dump my solver's 花型(搭切组合) distribution + per-order group spread, to compare with 人工. */
