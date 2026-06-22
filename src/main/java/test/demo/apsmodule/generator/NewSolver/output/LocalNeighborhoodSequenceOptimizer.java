@@ -38,14 +38,20 @@ public class LocalNeighborhoodSequenceOptimizer {
 
     private static final Logger log = LoggerFactory.getLogger(LocalNeighborhoodSequenceOptimizer.class);
 
-    private static final int MAX_FREE_ORDERS = 8;
-    private static final int MAX_FREE_PATTERNS = 10;
-    private static final int MAX_COLUMNS = 2000;
-    private static final int DEFAULT_MAX_ITERATIONS = 5;
-    private static final int DEFAULT_MAX_NEIGHBORHOODS = 30;
-    private static final long DEFAULT_TIME_LIMIT_MS = 5000L;
-    private static final int MAX_SEED_COUNT = 3;
-    private static final int COLUMN_ENUMERATION_GUARD = 20000;
+    private static final int DEFAULT_MAX_FREE_ORDERS = 10;
+    private static final int DEFAULT_MAX_FREE_PATTERNS = 12;
+    private static final int DEFAULT_MAX_FREE_CARS = 32;
+    private static final int DEFAULT_MAX_COLUMNS = 3000;
+    private static final int DEFAULT_MAX_ITERATIONS = 6;
+    private static final int DEFAULT_MAX_NEIGHBORHOODS = 50;
+    private static final long DEFAULT_TIME_LIMIT_MS = 3000L;
+    private static final long DEFAULT_TOTAL_TIME_LIMIT_MS = 30000L;
+    private static final long DEFAULT_POST_TIME_BUDGET_MS = 0L;
+    private static final int DEFAULT_MAX_SEED_COUNT = 4;
+    private static final int DEFAULT_SHARED_WIDTH_DEPTH = 1;
+    private static final int DEFAULT_COLUMN_ENUMERATION_GUARD = 50000;
+    private static final int DEFAULT_MAX_SLICE_NEIGHBORHOODS = 20;
+    private static final int DEFAULT_MAX_SLICE_CARS_PER_CONFIG = 8;
     private static final String SCIP_DETERMINISTIC_PARAMS =
             "randomization/randomseedshift = 0\n"
           + "randomization/permutationseed = 0\n"
@@ -81,16 +87,31 @@ public class LocalNeighborhoodSequenceOptimizer {
 
         int maxIterations = Integer.getInteger("cutting.lns.maxIterations", DEFAULT_MAX_ITERATIONS);
         int maxNeighborhoods = Integer.getInteger("cutting.lns.maxNeighborhoods", DEFAULT_MAX_NEIGHBORHOODS);
+        boolean allowPlateau = Boolean.parseBoolean(System.getProperty("cutting.lns.allowPlateau", "true"));
+        long deadline = System.currentTimeMillis()
+                + Long.getLong("cutting.lns.totalTimeLimitMs", DEFAULT_TOTAL_TIME_LIMIT_MS);
         boolean improved = false;
         String lastReason = "no-improving-neighborhood";
+        boolean timeExpired = false;
 
         for (int iteration = 0; iteration < maxIterations; iteration++) {
+            if (System.currentTimeMillis() >= deadline) {
+                lastReason = "total-time-limit";
+                break;
+            }
             int beforeGroups = SequenceGroupPostProcessor.computeGroupStats(current).groups();
+            int beforeFragmentation = fragmentationScore(current);
             List<RollRecord> rolls = decompose(current);
             List<Neighborhood> neighborhoods = buildNeighborhoods(rolls, maxNeighborhoods);
-            boolean acceptedThisIteration = false;
+            MoveCandidate bestImprovement = null;
+            MoveCandidate bestPlateau = null;
 
             for (Neighborhood neighborhood : neighborhoods) {
+                if (System.currentTimeMillis() >= deadline) {
+                    lastReason = "total-time-limit";
+                    timeExpired = true;
+                    break;
+                }
                 SolveAttempt attempt = solveNeighborhood(neighborhood);
                 lastReason = attempt.reason();
                 if (!attempt.feasible()) {
@@ -102,31 +123,36 @@ public class LocalNeighborhoodSequenceOptimizer {
                 int candidateWaste = totalWaste(candidate);
                 Map<String, Integer> candidateDemand = countAssignmentsByDemandKey(candidate);
                 int afterGroups = SequenceGroupPostProcessor.computeGroupStats(candidate).groups();
+                int afterFragmentation = fragmentationScore(candidate);
 
                 if (candidateCars == originalCars
                         && candidateWaste == originalWaste
-                        && originalDemand.equals(candidateDemand)
-                        && afterGroups < beforeGroups) {
-                    log.info("LNS accepted: groups {} -> {}, waste={} cars={}, seeds={}, orders={}, patterns={}, columns={}, status={}, elapsed={}ms",
-                            beforeGroups,
-                            afterGroups,
-                            candidateWaste,
-                            candidateCars,
-                            neighborhood.seedKeys(),
-                            neighborhood.freeDemand().keySet(),
-                            neighborhood.patterns().size(),
-                            attempt.columns().size(),
-                            attempt.status(),
-                            attempt.elapsedMs());
-                    current = candidate;
-                    improved = true;
-                    acceptedThisIteration = true;
-                    break;
+                        && originalDemand.equals(candidateDemand)) {
+                    boolean promisingRaw = afterGroups <= beforeGroups || afterFragmentation < beforeFragmentation;
+                    long postTimeBudgetMs = Long.getLong(
+                            "cutting.lns.postTimeBudgetMs", DEFAULT_POST_TIME_BUDGET_MS);
+                    if (promisingRaw && postTimeBudgetMs > 0L) {
+                        SequenceGroupPostProcessor.optimize(candidate,
+                                postTimeBudgetMs, false);
+                        afterGroups = SequenceGroupPostProcessor.computeGroupStats(candidate).groups();
+                        afterFragmentation = fragmentationScore(candidate);
+                    }
+                    MoveCandidate move = new MoveCandidate(
+                            candidate, neighborhood, attempt, afterGroups, afterFragmentation);
+                    if (afterGroups < beforeGroups) {
+                        bestImprovement = betterMove(bestImprovement, move);
+                    } else if (allowPlateau
+                            && afterGroups == beforeGroups
+                            && afterFragmentation < beforeFragmentation) {
+                        bestPlateau = betterMove(bestPlateau, move);
+                    }
                 }
 
-                log.info("LNS rejected: groups {} -> {}, cars {}->{}, waste {}->{}, demandOk={}, seeds={}, columns={}, status={}",
+                log.info("LNS rejected: groups {} -> {}, frag {}->{}, cars {}->{}, waste {}->{}, demandOk={}, seeds={}, columns={}, status={}",
                         beforeGroups,
                         afterGroups,
+                        beforeFragmentation,
+                        afterFragmentation,
                         originalCars,
                         candidateCars,
                         originalWaste,
@@ -137,7 +163,29 @@ public class LocalNeighborhoodSequenceOptimizer {
                         attempt.status());
             }
 
-            if (!acceptedThisIteration) {
+            MoveCandidate accepted = bestImprovement != null ? bestImprovement : bestPlateau;
+            if (accepted == null) {
+                break;
+            }
+
+            log.info("LNS accepted: groups {} -> {}, frag {}->{}, waste={} cars={}, seeds={}, orders={}, patterns={}, columns={}, status={}, elapsed={}ms",
+                    beforeGroups,
+                    accepted.afterGroups(),
+                    beforeFragmentation,
+                    accepted.afterFragmentation(),
+                    totalWaste(accepted.instructions()),
+                    totalCars(accepted.instructions()),
+                    accepted.neighborhood().seedKeys(),
+                    accepted.neighborhood().freeDemand().keySet(),
+                    accepted.neighborhood().patterns().size(),
+                    accepted.attempt().columns().size(),
+                    accepted.attempt().status(),
+                    accepted.attempt().elapsedMs());
+            current = accepted.instructions();
+            if (accepted.afterGroups() < beforeGroups) {
+                improved = true;
+            }
+            if (timeExpired) {
                 break;
             }
         }
@@ -182,27 +230,99 @@ public class LocalNeighborhoodSequenceOptimizer {
 
         List<Neighborhood> neighborhoods = new ArrayList<>();
         Set<String> seen = new HashSet<>();
+        addSlicedNeighborhoods(rolls, fragmentedKeys, neighborhoods, seen, maxNeighborhoods);
+        int maxSeedCount = Integer.getInteger("cutting.lns.maxSeedCount", DEFAULT_MAX_SEED_COUNT);
         for (int start = 0; start < fragmentedKeys.size() && neighborhoods.size() < maxNeighborhoods; start++) {
-            for (int seedCount = 1; seedCount <= MAX_SEED_COUNT
+            for (int seedCount = 1; seedCount <= maxSeedCount
                     && start + seedCount <= fragmentedKeys.size()
                     && neighborhoods.size() < maxNeighborhoods; seedCount++) {
                 List<String> seeds = fragmentedKeys.subList(start, start + seedCount);
-                Neighborhood neighborhood = buildNeighborhood(rolls, seeds);
-                if (neighborhood == null) {
-                    continue;
-                }
-                String signature = neighborhood.selectedRollIndexes().stream()
-                        .map(String::valueOf)
-                        .collect(Collectors.joining(","));
-                if (seen.add(signature)) {
-                    neighborhoods.add(neighborhood);
+                for (boolean expandSharedWidths : List.of(false, true)) {
+                    Neighborhood neighborhood = buildNeighborhood(rolls, seeds, expandSharedWidths);
+                    if (neighborhood == null) {
+                        continue;
+                    }
+                    addNeighborhood(neighborhoods, seen, neighborhood, maxNeighborhoods);
                 }
             }
         }
         return neighborhoods;
     }
 
-    private Neighborhood buildNeighborhood(List<RollRecord> rolls, List<String> seedKeys) {
+    private void addSlicedNeighborhoods(List<RollRecord> rolls,
+            List<String> fragmentedKeys,
+            List<Neighborhood> neighborhoods,
+            Set<String> seen,
+            int maxNeighborhoods) {
+        int sliceBudget = Math.min(
+                Integer.getInteger("cutting.lns.maxSliceNeighborhoods", DEFAULT_MAX_SLICE_NEIGHBORHOODS),
+                maxNeighborhoods);
+        int maxSliceCars = Integer.getInteger(
+                "cutting.lns.maxSliceCarsPerConfig", DEFAULT_MAX_SLICE_CARS_PER_CONFIG);
+
+        for (String key : fragmentedKeys) {
+            if (neighborhoods.size() >= sliceBudget || neighborhoods.size() >= maxNeighborhoods) {
+                return;
+            }
+
+            Map<String, List<Integer>> indexesByConfig = new LinkedHashMap<>();
+            for (RollRecord roll : rolls) {
+                if (roll.demandCounts().containsKey(key)) {
+                    indexesByConfig.computeIfAbsent(roll.configSignature(), ignored -> new ArrayList<>())
+                            .add(roll.index());
+                }
+            }
+
+            List<List<Integer>> configSlices = indexesByConfig.values().stream()
+                    .filter(indexes -> !indexes.isEmpty())
+                    .sorted(Comparator
+                            .<List<Integer>>comparingInt(List::size).reversed()
+                            .thenComparing(indexes -> indexes.get(0)))
+                    .toList();
+            if (configSlices.size() < 2) {
+                continue;
+            }
+
+            for (int left = 0; left < configSlices.size(); left++) {
+                for (int right = left + 1; right < configSlices.size(); right++) {
+                    if (neighborhoods.size() >= sliceBudget || neighborhoods.size() >= maxNeighborhoods) {
+                        return;
+                    }
+                    Set<Integer> selectedIndexes = new LinkedHashSet<>();
+                    addLimitedIndexes(selectedIndexes, configSlices.get(left), maxSliceCars);
+                    addLimitedIndexes(selectedIndexes, configSlices.get(right), maxSliceCars);
+                    Neighborhood neighborhood = createNeighborhood(rolls, List.of(key), selectedIndexes);
+                    if (neighborhood != null) {
+                        addNeighborhood(neighborhoods, seen, neighborhood, maxNeighborhoods);
+                    }
+                }
+            }
+        }
+    }
+
+    private void addLimitedIndexes(Set<Integer> selectedIndexes, List<Integer> indexes, int limit) {
+        for (int i = 0; i < indexes.size() && i < limit; i++) {
+            selectedIndexes.add(indexes.get(i));
+        }
+    }
+
+    private void addNeighborhood(List<Neighborhood> neighborhoods,
+            Set<String> seen,
+            Neighborhood neighborhood,
+            int maxNeighborhoods) {
+        if (neighborhoods.size() >= maxNeighborhoods) {
+            return;
+        }
+        String signature = neighborhood.selectedRollIndexes().stream()
+                .map(String::valueOf)
+                .collect(Collectors.joining(","));
+        if (seen.add(signature)) {
+            neighborhoods.add(neighborhood);
+        }
+    }
+
+    private Neighborhood buildNeighborhood(List<RollRecord> rolls, List<String> seedKeys,
+            boolean expandSharedWidths) {
         Set<Integer> selectedIndexes = new LinkedHashSet<>();
         Set<String> seedSet = new HashSet<>(seedKeys);
         for (RollRecord roll : rolls) {
@@ -213,6 +333,15 @@ public class LocalNeighborhoodSequenceOptimizer {
         if (selectedIndexes.isEmpty()) {
             return null;
         }
+        if (expandSharedWidths) {
+            selectedIndexes = expandBySharedWidths(rolls, selectedIndexes);
+        }
+
+        return createNeighborhood(rolls, seedKeys, selectedIndexes);
+    }
+
+    private Neighborhood createNeighborhood(List<RollRecord> rolls, List<String> seedKeys,
+            Set<Integer> selectedIndexes) {
 
         Map<String, Integer> freeDemand = new TreeMap<>();
         Map<String, PatternKey> patterns = new LinkedHashMap<>();
@@ -230,11 +359,110 @@ public class LocalNeighborhoodSequenceOptimizer {
             }
         }
 
-        if (freeDemand.size() > MAX_FREE_ORDERS || patterns.size() > MAX_FREE_PATTERNS) {
+        if (freeDemand.size() > maxFreeOrders()
+                || patterns.size() > maxFreePatterns()
+                || cars > maxFreeCars()) {
             return null;
         }
+        addCompatiblePatterns(rolls, freeDemand, patterns);
         return new Neighborhood(List.copyOf(seedKeys), selectedIndexes, freeDemand,
                 new ArrayList<>(patterns.values()), List.copyOf(selectedRolls), cars, waste);
+    }
+
+    private Set<Integer> expandBySharedWidths(List<RollRecord> rolls, Set<Integer> selectedIndexes) {
+        Set<Integer> expanded = new LinkedHashSet<>(selectedIndexes);
+        int maxDepth = Integer.getInteger("cutting.lns.sharedWidthDepth", DEFAULT_SHARED_WIDTH_DEPTH);
+        for (int depth = 0; depth < maxDepth; depth++) {
+            Set<Integer> activeWidths = widthsInSelectedRolls(rolls, expanded);
+            List<RollRecord> candidates = rolls.stream()
+                    .filter(roll -> !expanded.contains(roll.index()))
+                    .filter(roll -> overlapScore(roll, activeWidths) > 0)
+                    .sorted(Comparator
+                            .comparingInt((RollRecord roll) -> overlapScore(roll, activeWidths)).reversed()
+                            .thenComparingInt(roll -> roll.demandCounts().size())
+                            .thenComparingInt(RollRecord::index))
+                    .toList();
+
+            boolean added = false;
+            for (RollRecord roll : candidates) {
+                Set<Integer> trial = new LinkedHashSet<>(expanded);
+                trial.add(roll.index());
+                NeighborhoodSize size = neighborhoodSize(rolls, trial);
+                if (size.freeOrders() <= maxFreeOrders()
+                        && size.patterns() <= maxFreePatterns()
+                        && size.cars() <= maxFreeCars()) {
+                    expanded.add(roll.index());
+                    added = true;
+                }
+            }
+            if (!added) {
+                break;
+            }
+        }
+        return expanded;
+    }
+
+    private Set<Integer> widthsInSelectedRolls(List<RollRecord> rolls, Set<Integer> selectedIndexes) {
+        Set<Integer> widths = new LinkedHashSet<>();
+        for (int index : selectedIndexes) {
+            widths.addAll(rolls.get(index).pattern().subRolls().keySet());
+        }
+        return widths;
+    }
+
+    private int overlapScore(RollRecord roll, Set<Integer> widths) {
+        int score = 0;
+        for (Integer width : roll.pattern().subRolls().keySet()) {
+            if (widths.contains(width)) {
+                score++;
+            }
+        }
+        return score;
+    }
+
+    private NeighborhoodSize neighborhoodSize(List<RollRecord> rolls, Set<Integer> selectedIndexes) {
+        Set<String> freeDemand = new HashSet<>();
+        Set<String> patterns = new HashSet<>();
+        for (int index : selectedIndexes) {
+            RollRecord roll = rolls.get(index);
+            freeDemand.addAll(roll.demandCounts().keySet());
+            patterns.add(roll.pattern().signature());
+        }
+        return new NeighborhoodSize(freeDemand.size(), patterns.size(), selectedIndexes.size());
+    }
+
+    private void addCompatiblePatterns(List<RollRecord> rolls,
+            Map<String, Integer> freeDemand,
+            Map<String, PatternKey> patterns) {
+        if (patterns.size() >= maxFreePatterns()) {
+            return;
+        }
+        Set<Integer> freeWidths = freeDemand.keySet().stream()
+                .map(DemandKey::parse)
+                .map(DemandKey::width)
+                .collect(Collectors.toCollection(LinkedHashSet::new));
+        List<PatternKey> candidates = rolls.stream()
+                .map(RollRecord::pattern)
+                .filter(pattern -> !patterns.containsKey(pattern.signature()))
+                .filter(pattern -> freeWidths.containsAll(pattern.subRolls().keySet()))
+                .collect(Collectors.toMap(
+                        PatternKey::signature,
+                        pattern -> pattern,
+                        (left, right) -> left,
+                        LinkedHashMap::new))
+                .values()
+                .stream()
+                .sorted(Comparator
+                        .comparingInt((PatternKey pattern) -> pattern.subRolls().size()).reversed()
+                        .thenComparingInt(PatternKey::waste)
+                        .thenComparing(PatternKey::signature))
+                .toList();
+        for (PatternKey pattern : candidates) {
+            if (patterns.size() >= maxFreePatterns()) {
+                break;
+            }
+            patterns.put(pattern.signature(), pattern);
+        }
     }
 
     private SolveAttempt solveNeighborhood(Neighborhood neighborhood) {
@@ -252,6 +480,40 @@ public class LocalNeighborhoodSequenceOptimizer {
         SolveSolution stage2 = solveColumns(neighborhood, columns, stage1.activeColumns(), true);
         SolveSolution best = stage2 != null && !stage2.counts().isEmpty() ? stage2 : stage1;
         return new SolveAttempt(true, best.status(), columns, best.counts(), System.currentTimeMillis() - start);
+    }
+
+    private MoveCandidate betterMove(MoveCandidate current, MoveCandidate candidate) {
+        if (current == null) {
+            return candidate;
+        }
+        if (candidate.afterGroups() != current.afterGroups()) {
+            return candidate.afterGroups() < current.afterGroups() ? candidate : current;
+        }
+        if (candidate.afterFragmentation() != current.afterFragmentation()) {
+            return candidate.afterFragmentation() < current.afterFragmentation() ? candidate : current;
+        }
+        if (candidate.neighborhood().cars() != current.neighborhood().cars()) {
+            return candidate.neighborhood().cars() > current.neighborhood().cars() ? candidate : current;
+        }
+        if (candidate.attempt().columns().size() != current.attempt().columns().size()) {
+            return candidate.attempt().columns().size() > current.attempt().columns().size() ? candidate : current;
+        }
+        return current;
+    }
+
+    private int fragmentationScore(List<CuttingInstruction> instructions) {
+        Map<String, Set<String>> configsByDemand = new HashMap<>();
+        for (RollRecord roll : decompose(instructions)) {
+            for (String demand : roll.demandCounts().keySet()) {
+                configsByDemand.computeIfAbsent(demand, ignored -> new HashSet<>())
+                        .add(roll.configSignature());
+            }
+        }
+        int score = 0;
+        for (Set<String> configs : configsByDemand.values()) {
+            score += Math.max(0, configs.size() - 1);
+        }
+        return score;
     }
 
     private SolveSolution solveColumns(Neighborhood neighborhood, List<Column> columns,
@@ -389,7 +651,7 @@ public class LocalNeighborhoodSequenceOptimizer {
         for (PatternKey pattern : neighborhood.patterns()) {
             List<Column> patternColumns = enumerateColumns(pattern, neighborhood.freeDemand());
             enumerated.addAll(patternColumns);
-            if (enumerated.size() > COLUMN_ENUMERATION_GUARD) {
+            if (enumerated.size() > columnEnumerationGuard()) {
                 break;
             }
         }
@@ -401,11 +663,12 @@ public class LocalNeighborhoodSequenceOptimizer {
         List<Column> columns = new ArrayList<>(required.values());
         Set<String> seen = required.keySet().stream().collect(Collectors.toCollection(HashSet::new));
         int discarded = 0;
+        int maxColumns = maxColumns();
         for (Column column : enumerated) {
             if (!seen.add(column.signature())) {
                 continue;
             }
-            if (columns.size() >= MAX_COLUMNS) {
+            if (columns.size() >= maxColumns) {
                 discarded++;
                 continue;
             }
@@ -415,6 +678,26 @@ public class LocalNeighborhoodSequenceOptimizer {
         log.info("LNS column pool: required={} enumerated={} kept={} discarded={}",
                 required.size(), enumerated.size(), columns.size(), discarded);
         return columns;
+    }
+
+    private int maxFreeOrders() {
+        return Integer.getInteger("cutting.lns.maxFreeOrders", DEFAULT_MAX_FREE_ORDERS);
+    }
+
+    private int maxFreePatterns() {
+        return Integer.getInteger("cutting.lns.maxFreePatterns", DEFAULT_MAX_FREE_PATTERNS);
+    }
+
+    private int maxFreeCars() {
+        return Integer.getInteger("cutting.lns.maxFreeCars", DEFAULT_MAX_FREE_CARS);
+    }
+
+    private int maxColumns() {
+        return Integer.getInteger("cutting.lns.maxColumns", DEFAULT_MAX_COLUMNS);
+    }
+
+    private int columnEnumerationGuard() {
+        return Integer.getInteger("cutting.lns.columnEnumerationGuard", DEFAULT_COLUMN_ENUMERATION_GUARD);
     }
 
     private List<Column> enumerateColumns(PatternKey pattern, Map<String, Integer> freeDemand) {
@@ -491,7 +774,7 @@ public class LocalNeighborhoodSequenceOptimizer {
             Map<Integer, List<String>> config,
             List<Column> columns,
             Map<String, Integer> freeDemand) {
-        if (columns.size() >= COLUMN_ENUMERATION_GUARD) {
+        if (columns.size() >= columnEnumerationGuard()) {
             return;
         }
         if (offset == widths.size()) {
@@ -517,7 +800,7 @@ public class LocalNeighborhoodSequenceOptimizer {
             config.put(width, option.messages());
             buildColumnsForPattern(pattern, widths, optionsByWidth, offset + 1, config, columns, freeDemand);
             config.remove(width);
-            if (columns.size() >= COLUMN_ENUMERATION_GUARD) {
+            if (columns.size() >= columnEnumerationGuard()) {
                 return;
             }
         }
@@ -765,6 +1048,17 @@ public class LocalNeighborhoodSequenceOptimizer {
             List<RollRecord> selectedRolls,
             int cars,
             int waste) {
+    }
+
+    private record NeighborhoodSize(int freeOrders, int patterns, int cars) {
+    }
+
+    private record MoveCandidate(
+            List<CuttingInstruction> instructions,
+            Neighborhood neighborhood,
+            SolveAttempt attempt,
+            int afterGroups,
+            int afterFragmentation) {
     }
 
     private record SolveAttempt(
