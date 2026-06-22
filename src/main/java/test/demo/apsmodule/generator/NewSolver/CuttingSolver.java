@@ -31,14 +31,14 @@ public class CuttingSolver implements CuttingSolverAlgorithm {
     private static boolean orToolsLoaded = false;
 
     /**
-     * A-layer SCIP seeds swept on the cheap primary (legacy) path of alternate
-     * demand orders. Each seed steers the pattern-selection MIP onto a different
-     * deterministic 花型集; pooling them and keeping the lowest-group plan is what
-     * recovers the better sets the old non-deterministic solver only hit by luck
-     * (single-seed default caps at 79; seed 7 reaches 73 on T9EST188). Distinct
-     * 花型集 are deduped by signature, so extra seeds rarely add B-layer cost.
+     * A-layer SCIP seed(s) for the pattern-selection MIP, swept across demand orders.
+     * Consolidated to seed 1 only: it lands the selection on low-pattern (42-44) 花型集
+     * that the B-layer assembles to 74-76, while the default seed 0 caps at 79. Seed 7
+     * was dropped — it produces 46-pattern sets that Stage5 frequently can't solve in
+     * time (NOT_SOLVED → greedy fallback), i.e. wasted runtime for no reliable gain.
+     * Fewer candidates = roughly half the solve time at the same result level.
      */
-    private static final int[] A_LAYER_SEEDS = {1, 7};
+    private static final int[] A_LAYER_SEEDS = {1};
 
     // Baseline defaults only; each solve call uses a per-request copy.
     private final SolverParameters baseParams;
