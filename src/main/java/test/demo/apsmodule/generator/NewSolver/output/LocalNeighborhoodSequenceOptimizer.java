@@ -42,7 +42,7 @@ public class LocalNeighborhoodSequenceOptimizer {
     private static final int DEFAULT_MAX_FREE_PATTERNS = 12;
     private static final int DEFAULT_MAX_FREE_CARS = 32;
     private static final int DEFAULT_MAX_COLUMNS = 3000;
-    private static final int DEFAULT_MAX_ITERATIONS = 6;
+    private static final int DEFAULT_MAX_ITERATIONS = 40;
     private static final int DEFAULT_MAX_NEIGHBORHOODS = 50;
     private static final long DEFAULT_TIME_LIMIT_MS = 3000L;
     private static final long DEFAULT_TOTAL_TIME_LIMIT_MS = 30000L;
@@ -88,11 +88,23 @@ public class LocalNeighborhoodSequenceOptimizer {
         int maxIterations = Integer.getInteger("cutting.lns.maxIterations", DEFAULT_MAX_ITERATIONS);
         int maxNeighborhoods = Integer.getInteger("cutting.lns.maxNeighborhoods", DEFAULT_MAX_NEIGHBORHOODS);
         boolean allowPlateau = Boolean.parseBoolean(System.getProperty("cutting.lns.allowPlateau", "true"));
+        // Iterated-local-search escape: when no improving/plateau move exists, take the
+        // least-worsening feasible move (bounded relative to best-ever) to climb out of the
+        // local optimum. best-ever is the safety net, so a returned plan is never worse than start.
+        boolean escape = Boolean.parseBoolean(System.getProperty("cutting.lns.escape", "true"));
+        int worseningTolerance = Integer.getInteger("cutting.lns.worseningTolerance", 2);
         long deadline = System.currentTimeMillis()
                 + Long.getLong("cutting.lns.totalTimeLimitMs", DEFAULT_TOTAL_TIME_LIMIT_MS);
         boolean improved = false;
         String lastReason = "no-improving-neighborhood";
         boolean timeExpired = false;
+
+        List<CuttingInstruction> bestEver = cloneInstructions(current);
+        int bestEverGroups = originalGroups;
+        // Visited-solution tabu: forbids moves that return to an already-seen assignment.
+        // Without it the escape step oscillates in a 2-cycle (escape up, best move undoes it).
+        Set<String> visited = new HashSet<>();
+        visited.add(solutionSignature(current));
 
         for (int iteration = 0; iteration < maxIterations; iteration++) {
             if (System.currentTimeMillis() >= deadline) {
@@ -105,6 +117,7 @@ public class LocalNeighborhoodSequenceOptimizer {
             List<Neighborhood> neighborhoods = buildNeighborhoods(rolls, maxNeighborhoods);
             MoveCandidate bestImprovement = null;
             MoveCandidate bestPlateau = null;
+            MoveCandidate bestWorsening = null;
 
             for (Neighborhood neighborhood : neighborhoods) {
                 if (System.currentTimeMillis() >= deadline) {
@@ -137,14 +150,18 @@ public class LocalNeighborhoodSequenceOptimizer {
                         afterGroups = SequenceGroupPostProcessor.computeGroupStats(candidate).groups();
                         afterFragmentation = fragmentationScore(candidate);
                     }
-                    MoveCandidate move = new MoveCandidate(
-                            candidate, neighborhood, attempt, afterGroups, afterFragmentation);
-                    if (afterGroups < beforeGroups) {
-                        bestImprovement = betterMove(bestImprovement, move);
-                    } else if (allowPlateau
-                            && afterGroups == beforeGroups
-                            && afterFragmentation < beforeFragmentation) {
-                        bestPlateau = betterMove(bestPlateau, move);
+                    if (!visited.contains(solutionSignature(candidate))) {
+                        MoveCandidate move = new MoveCandidate(
+                                candidate, neighborhood, attempt, afterGroups, afterFragmentation);
+                        if (afterGroups < beforeGroups) {
+                            bestImprovement = betterMove(bestImprovement, move);
+                        } else if (afterGroups == beforeGroups) {
+                            if (allowPlateau && afterFragmentation < beforeFragmentation) {
+                                bestPlateau = betterMove(bestPlateau, move);
+                            }
+                        } else {
+                            bestWorsening = betterMove(bestWorsening, move);
+                        }
                     }
                 }
 
@@ -164,11 +181,20 @@ public class LocalNeighborhoodSequenceOptimizer {
             }
 
             MoveCandidate accepted = bestImprovement != null ? bestImprovement : bestPlateau;
+            boolean escapeStep = false;
             if (accepted == null) {
-                break;
+                // No descending/plateau move. Try a bounded escape step to leave the local optimum.
+                if (escape && bestWorsening != null
+                        && bestWorsening.afterGroups() <= bestEverGroups + worseningTolerance) {
+                    accepted = bestWorsening;
+                    escapeStep = true;
+                } else {
+                    break;
+                }
             }
 
-            log.info("LNS accepted: groups {} -> {}, frag {}->{}, waste={} cars={}, seeds={}, orders={}, patterns={}, columns={}, status={}, elapsed={}ms",
+            log.info("LNS {}: groups {} -> {}, frag {}->{}, waste={} cars={}, seeds={}, orders={}, patterns={}, columns={}, status={}, elapsed={}ms",
+                    escapeStep ? "escape" : "accepted",
                     beforeGroups,
                     accepted.afterGroups(),
                     beforeFragmentation,
@@ -182,7 +208,10 @@ public class LocalNeighborhoodSequenceOptimizer {
                     accepted.attempt().status(),
                     accepted.attempt().elapsedMs());
             current = accepted.instructions();
-            if (accepted.afterGroups() < beforeGroups) {
+            visited.add(solutionSignature(current));
+            if (accepted.afterGroups() < bestEverGroups) {
+                bestEver = cloneInstructions(current);
+                bestEverGroups = accepted.afterGroups();
                 improved = true;
             }
             if (timeExpired) {
@@ -190,9 +219,8 @@ public class LocalNeighborhoodSequenceOptimizer {
             }
         }
 
-        int finalGroups = SequenceGroupPostProcessor.computeGroupStats(current).groups();
-        if (improved && finalGroups < originalGroups) {
-            return new LnsResult(true, current, originalGroups, finalGroups, "improved");
+        if (improved && bestEverGroups < originalGroups) {
+            return new LnsResult(true, bestEver, originalGroups, bestEverGroups, "improved");
         }
         return LnsResult.notImproved(originalInstructions, lastReason);
     }
@@ -499,6 +527,20 @@ public class LocalNeighborhoodSequenceOptimizer {
             return candidate.attempt().columns().size() > current.attempt().columns().size() ? candidate : current;
         }
         return current;
+    }
+
+    /**
+     * Canonical signature of a full assignment: the sorted multiset of every roll's
+     * content signature. Two solutions with the same signature have identical sequence-group
+     * structure, so the tabu set uses it to forbid revisiting (prevents escape-step oscillation).
+     */
+    private String solutionSignature(List<CuttingInstruction> instructions) {
+        List<String> rollSignatures = new ArrayList<>();
+        for (RollRecord roll : decompose(instructions)) {
+            rollSignatures.add(roll.configSignature());
+        }
+        rollSignatures.sort(Comparator.naturalOrder());
+        return String.join(";", rollSignatures);
     }
 
     private int fragmentationScore(List<CuttingInstruction> instructions) {
