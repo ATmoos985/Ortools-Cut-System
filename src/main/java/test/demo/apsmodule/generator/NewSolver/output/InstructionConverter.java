@@ -132,13 +132,46 @@ public class InstructionConverter {
         }
 
         ScoredInstructionPlan bestPlan = selectBestCandidate(candidates);
+        List<CuttingInstruction> selectedInstructions = bestPlan.instructions();
+        String selectedName = bestPlan.name();
+        int selectedGroups = bestPlan.sequenceGroupCount();
+        List<SequenceCandidateRow> candidateRows = new ArrayList<>(
+                buildSequenceCandidateRows(candidates, selectedName));
+
+        if (LocalNeighborhoodSequenceOptimizer.isEnabled()) {
+            LocalNeighborhoodSequenceOptimizer optimizer = new LocalNeighborhoodSequenceOptimizer(params);
+            LocalNeighborhoodSequenceOptimizer.LnsResult lnsResult =
+                    optimizer.improve(selectedInstructions, groupItems);
+            if (lnsResult.improved()) {
+                selectedInstructions = lnsResult.instructions();
+                selectedName = selectedName + "+lns";
+                selectedGroups = lnsResult.afterGroups();
+                candidateRows = new ArrayList<>(candidateRows.stream()
+                        .map(row -> new SequenceCandidateRow(
+                                row.name(),
+                                row.sequenceGroupCount(),
+                                row.instructions(),
+                                false))
+                        .toList());
+                candidateRows.add(new SequenceCandidateRow(
+                        selectedName,
+                        selectedGroups,
+                        selectedInstructions.size(),
+                        true));
+                log.info("LNS improved selected sequence plan: groups {} -> {}",
+                        lnsResult.beforeGroups(), lnsResult.afterGroups());
+            } else {
+                log.info("LNS produced no accepted improvement: {}", lnsResult.reason());
+            }
+        }
+
         log.info("Sequence-group selection: winner={} groups={} candidates={}",
-                bestPlan.name(), bestPlan.sequenceGroupCount(), summarizeCandidates(candidates));
+                selectedName, selectedGroups, summarizeCandidates(candidates));
         return new ConversionResult(
-                bestPlan.instructions(),
-                bestPlan.name(),
-                bestPlan.sequenceGroupCount(),
-                buildSequenceCandidateRows(candidates, bestPlan.name()));
+                selectedInstructions,
+                selectedName,
+                selectedGroups,
+                candidateRows);
     }
 
     /**
