@@ -51,7 +51,6 @@ public class LocalNeighborhoodSequenceOptimizer {
     // regardless of machine speed, even on rich enriched pools. This is what makes the LNS
     // deterministic without CP-SAT. Set to -1 to fall back to wall-clock (non-deterministic).
     private static final long DEFAULT_SCIP_NODE_LIMIT = 15000L;
-    private static final long DEFAULT_TOTAL_TIME_LIMIT_MS = 30000L;
     private static final long DEFAULT_POST_TIME_BUDGET_MS = 0L;
     private static final int DEFAULT_MAX_SEED_COUNT = 4;
     private static final int DEFAULT_SHARED_WIDTH_DEPTH = 1;
@@ -179,7 +178,7 @@ public class LocalNeighborhoodSequenceOptimizer {
                     }
                 }
 
-                log.info("LNS rejected: groups {} -> {}, frag {}->{}, cars {}->{}, waste {}->{}, demandOk={}, seeds={}, columns={}, status={}",
+                log.debug("LNS rejected: groups {} -> {}, frag {}->{}, cars {}->{}, waste {}->{}, demandOk={}, seeds={}, columns={}, status={}",
                         beforeGroups,
                         afterGroups,
                         beforeFragmentation,
@@ -856,7 +855,7 @@ public class LocalNeighborhoodSequenceOptimizer {
             columns.add(column);
         }
 
-        log.info("LNS column pool: required={} enumerated={} kept={} discarded={}",
+        log.debug("LNS column pool: required={} enumerated={} kept={} discarded={}",
                 required.size(), enumerated.size(), columns.size(), discarded);
         return columns;
     }
