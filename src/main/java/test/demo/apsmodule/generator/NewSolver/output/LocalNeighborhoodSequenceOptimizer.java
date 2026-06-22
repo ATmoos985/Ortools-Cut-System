@@ -527,7 +527,8 @@ public class LocalNeighborhoodSequenceOptimizer {
         int minRw = params.getMinRollWidth();
         int maxRw = params.getMaxRollWidth();
         int maxDistinct = params.getMaxDistinctWidths();
-        int cap = Integer.getInteger("cutting.lns.enrichCap", 120);
+        int cap = Integer.getInteger("cutting.lns.enrichCap", 60);
+        int guard = Math.max(cap, Integer.getInteger("cutting.lns.enrichGuard", 1500));
         PatternKey sample = selectedRolls.get(0).pattern();
         List<Integer> widths = freeDemand.keySet().stream()
                 .map(DemandKey::parse)
@@ -535,10 +536,21 @@ public class LocalNeighborhoodSequenceOptimizer {
                 .distinct()
                 .sorted()
                 .toList();
-        List<PatternKey> result = new ArrayList<>();
+        List<PatternKey> all = new ArrayList<>();
         enumerateBalancingPatterns(widths, 0, new LinkedHashMap<>(), 0,
-                minRw, maxRw, maxDistinct, totalWidth, sample, result, cap);
-        return result;
+                minRw, maxRw, maxDistinct, totalWidth, sample, all, guard);
+        if (all.size() <= cap) {
+            return all;
+        }
+        // Sample evenly across patternWidth so a small cap still spans the intermediate widths
+        // the rebalance needs (vs. enumeration order, which clusters similar 花型 and explodes
+        // columns without adding the missing patternWidths).
+        all.sort(Comparator.comparingInt(PatternKey::patternWidth).thenComparing(PatternKey::signature));
+        List<PatternKey> sampled = new ArrayList<>(cap);
+        for (int i = 0; i < cap; i++) {
+            sampled.add(all.get((int) ((long) i * all.size() / cap)));
+        }
+        return sampled;
     }
 
     private void enumerateBalancingPatterns(List<Integer> widths, int idx,
