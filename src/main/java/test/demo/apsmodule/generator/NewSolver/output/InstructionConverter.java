@@ -139,7 +139,8 @@ public class InstructionConverter {
                 buildSequenceCandidateRows(candidates, selectedName));
 
         if (LocalNeighborhoodSequenceOptimizer.isEnabled()) {
-            LocalNeighborhoodSequenceOptimizer optimizer = new LocalNeighborhoodSequenceOptimizer(params);
+            LocalNeighborhoodSequenceOptimizer optimizer =
+                    new LocalNeighborhoodSequenceOptimizer(params, this::arrangeForSequenceGroups);
             LocalNeighborhoodSequenceOptimizer.LnsResult lnsResult =
                     optimizer.improve(selectedInstructions, groupItems);
             if (lnsResult.improved()) {
@@ -1244,6 +1245,18 @@ public class InstructionConverter {
             }
         }
         instruction.setStationAssignments(compacted);
+    }
+
+    /**
+     * Canonical sequence-group arrangement used before counting groups: compact each
+     * instruction's rolls into content blocks, then globally cluster identical-content
+     * instructions adjacently. Exposed so the LNS measures candidates the same way the
+     * production candidates are measured (otherwise it compares a reordered baseline against
+     * un-reordered candidates and rejects real improvements).
+     */
+    void arrangeForSequenceGroups(List<CuttingInstruction> instructions) {
+        compactInstructionRollOrder(instructions);
+        reorderInstructionsForSequenceGroups(instructions);
     }
 
     private void reorderInstructionsForSequenceGroups(List<CuttingInstruction> instructions) {

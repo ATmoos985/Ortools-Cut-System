@@ -60,9 +60,21 @@ public class LocalNeighborhoodSequenceOptimizer {
     private static boolean orToolsLoaded;
 
     private final SolverParameters params;
+    /**
+     * Canonicalises an instruction list the same way the production candidate path does
+     * (compact rolls + cluster identical-content instructions) before group counting.
+     * Without it the search measures un-reordered candidates against a reordered baseline.
+     */
+    private final java.util.function.Consumer<List<CuttingInstruction>> arranger;
 
     public LocalNeighborhoodSequenceOptimizer(SolverParameters params) {
+        this(params, instructions -> { });
+    }
+
+    public LocalNeighborhoodSequenceOptimizer(SolverParameters params,
+            java.util.function.Consumer<List<CuttingInstruction>> arranger) {
         this.params = params;
+        this.arranger = arranger != null ? arranger : instructions -> { };
     }
 
     public static boolean isEnabled() {
@@ -80,6 +92,7 @@ public class LocalNeighborhoodSequenceOptimizer {
         }
 
         List<CuttingInstruction> current = cloneInstructions(originalInstructions);
+        arranger.accept(current);
         int originalGroups = SequenceGroupPostProcessor.computeGroupStats(current).groups();
         int originalCars = totalCars(current);
         int originalWaste = totalWaste(current);
@@ -132,6 +145,7 @@ public class LocalNeighborhoodSequenceOptimizer {
                 }
 
                 List<CuttingInstruction> candidate = rebuildWithNeighborhoodSolution(rolls, neighborhood, attempt);
+                arranger.accept(candidate);
                 int candidateCars = totalCars(candidate);
                 int candidateWaste = totalWaste(candidate);
                 Map<String, Integer> candidateDemand = countAssignmentsByDemandKey(candidate);
