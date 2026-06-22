@@ -793,9 +793,24 @@ public class LocalNeighborhoodSequenceOptimizer {
             required.putIfAbsent(column.signature(), column);
         }
 
+        // Cap configs PER 花型 (not just globally), so adding many enriched 花型 keeps the column
+        // pool bounded (≈ patternCount × cap) and the set-partition MIP stays small enough to solve
+        // to OPTIMAL (deterministic) — instead of a few 花型 with many configs blowing past maxColumns.
+        // Default high so the non-enriched path is unchanged; enrichment runs set it low to
+        // bound the pool across the many generated 花型.
+        int perPatternCap = Integer.getInteger("cutting.lns.maxColumnsPerPattern", 1000);
         List<Column> enumerated = new ArrayList<>();
         for (PatternKey pattern : neighborhood.patterns()) {
             List<Column> patternColumns = enumerateColumns(pattern, neighborhood.freeDemand());
+            if (patternColumns.size() > perPatternCap) {
+                patternColumns = patternColumns.stream()
+                        .sorted(Comparator
+                                .comparingInt((Column column) -> maxSupport(column, neighborhood.freeDemand())).reversed()
+                                .thenComparing(Comparator.comparingInt((Column column) -> column.demandCounts().size()).reversed())
+                                .thenComparing(Column::signature))
+                        .limit(perPatternCap)
+                        .toList();
+            }
             enumerated.addAll(patternColumns);
             if (enumerated.size() > columnEnumerationGuard()) {
                 break;
