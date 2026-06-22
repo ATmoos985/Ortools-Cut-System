@@ -44,7 +44,7 @@ public class LocalNeighborhoodSequenceOptimizer {
     private static final int DEFAULT_MAX_COLUMNS = 3000;
     private static final int DEFAULT_MAX_ITERATIONS = 40;
     private static final int DEFAULT_MAX_NEIGHBORHOODS = 50;
-    private static final long DEFAULT_TIME_LIMIT_MS = 3000L;
+    private static final long DEFAULT_TIME_LIMIT_MS = 8000L;
     private static final long DEFAULT_TOTAL_TIME_LIMIT_MS = 30000L;
     private static final long DEFAULT_POST_TIME_BUDGET_MS = 0L;
     private static final int DEFAULT_MAX_SEED_COUNT = 4;
@@ -106,11 +106,14 @@ public class LocalNeighborhoodSequenceOptimizer {
         // local optimum. best-ever is the safety net, so a returned plan is never worse than start.
         boolean escape = Boolean.parseBoolean(System.getProperty("cutting.lns.escape", "true"));
         int worseningTolerance = Integer.getInteger("cutting.lns.worseningTolerance", 2);
-        long deadline = System.currentTimeMillis()
-                + Long.getLong("cutting.lns.totalTimeLimitMs", DEFAULT_TOTAL_TIME_LIMIT_MS);
+        // Deterministic stopping: bound the search by ITERATION COUNT, not wall-clock. A
+        // wall-clock budget makes the result depend on machine load (different #iterations
+        // completed → different floor) — that was the run-to-run swing (49 vs 51). Stop after
+        // maxIterations, or early after maxNoImprove consecutive iterations with no new best.
+        int maxNoImprove = Integer.getInteger("cutting.lns.maxNoImprove", 12);
+        int noImproveStreak = 0;
         boolean improved = false;
         String lastReason = "no-improving-neighborhood";
-        boolean timeExpired = false;
 
         List<CuttingInstruction> bestEver = cloneInstructions(current);
         int bestEverGroups = originalGroups;
@@ -120,10 +123,6 @@ public class LocalNeighborhoodSequenceOptimizer {
         visited.add(solutionSignature(current));
 
         for (int iteration = 0; iteration < maxIterations; iteration++) {
-            if (System.currentTimeMillis() >= deadline) {
-                lastReason = "total-time-limit";
-                break;
-            }
             int beforeGroups = SequenceGroupPostProcessor.computeGroupStats(current).groups();
             int beforeFragmentation = fragmentationScore(current);
             List<RollRecord> rolls = decompose(current);
@@ -133,11 +132,6 @@ public class LocalNeighborhoodSequenceOptimizer {
             MoveCandidate bestWorsening = null;
 
             for (Neighborhood neighborhood : neighborhoods) {
-                if (System.currentTimeMillis() >= deadline) {
-                    lastReason = "total-time-limit";
-                    timeExpired = true;
-                    break;
-                }
                 SolveAttempt attempt = solveNeighborhood(neighborhood);
                 lastReason = attempt.reason();
                 if (!attempt.feasible()) {
@@ -227,8 +221,9 @@ public class LocalNeighborhoodSequenceOptimizer {
                 bestEver = cloneInstructions(current);
                 bestEverGroups = accepted.afterGroups();
                 improved = true;
-            }
-            if (timeExpired) {
+                noImproveStreak = 0;
+            } else if (++noImproveStreak >= maxNoImprove) {
+                lastReason = "no-improve-streak";
                 break;
             }
         }
@@ -678,6 +673,12 @@ public class LocalNeighborhoodSequenceOptimizer {
             MPSolver.ResultStatus status = solver.solve();
             if (status != MPSolver.ResultStatus.OPTIMAL && status != MPSolver.ResultStatus.FEASIBLE) {
                 return null;
+            }
+            if (status == MPSolver.ResultStatus.FEASIBLE) {
+                // Hit the time limit before proving optimality → incumbent depends on wall-clock,
+                // i.e. a non-determinism source. Flag it so we know the column pool is too big.
+                log.warn("LNS neighbourhood solve FEASIBLE not OPTIMAL (columns={}, secondary={}) — "
+                        + "determinism risk; shrink neighbourhood/columns", columnCount, secondaryObjective);
             }
 
             Map<Integer, Integer> counts = new LinkedHashMap<>();

@@ -46,6 +46,62 @@ class B5SixianTest {
         dumpPatterns(instructions);
     }
 
+    /**
+     * 诊断:把人工的 1350m 花型 + 人工车数(=均衡分布,固定不再重选)直接喂我的装配,
+     * 看落几组。隔离"花型分布"效应(规避注入实验里 A 层重选车数的漏洞)。
+     * 我的花型 1350m pre-LNS=54。-Dcutting.lns.enabled=true 可叠加 LNS。
+     */
+    @Test
+    void runHumanFixedDistribution() throws Exception {
+        com.google.ortools.Loader.loadNativeLibraries();
+        SolverConfig config = buildConfig();
+        test.demo.apsmodule.generator.NewSolver.config.SolverParameters params =
+                test.demo.apsmodule.generator.NewSolver.config.SolverParameters.createDefault();
+        params.mergeFrom(config);
+        params.sanitize();
+
+        List<SolverOrderItem> items1350 = new ArrayList<>();
+        for (SolverOrderItem it : loadItems()) {
+            if (it.getLength() == 1350) items1350.add(it);
+        }
+        java.util.Map<Integer, Integer> demands = new java.util.TreeMap<>();
+        for (SolverOrderItem it : items1350) demands.merge(it.getWidth(), it.getDemand(), Integer::sum);
+
+        java.util.Map<test.demo.apsmodule.generator.NewSolver.model.PatternCandidate, Integer> solution =
+                new java.util.LinkedHashMap<>();
+        var carsPat = java.util.regex.Pattern.compile("(\\d+)车");
+        for (String line : java.nio.file.Files.readAllLines(java.nio.file.Path.of("target/human_patterns.txt"))) {
+            int lb = line.indexOf('['), rb = line.indexOf(']');
+            if (lb < 0 || rb < 0 || !line.contains("车")) continue;
+            java.util.Map<Integer, Integer> pat = new java.util.LinkedHashMap<>();
+            int sum = 0;
+            boolean is1000m = false;
+            for (String p : line.substring(lb + 1, rb).split(",")) {
+                int w = Integer.parseInt(p.trim());
+                if (w == 380) is1000m = true;
+                pat.merge(w, 1, Integer::sum);
+                sum += w;
+            }
+            if (is1000m) continue;
+            var m = carsPat.matcher(line);
+            if (!m.find()) continue;
+            int cars = Integer.parseInt(m.group(1));
+            solution.put(new test.demo.apsmodule.generator.NewSolver.model.PatternCandidate(pat, sum), cars);
+        }
+
+        String groupKey = items1350.get(0).getGroupKey();
+        test.demo.apsmodule.generator.NewSolver.output.InstructionConverter converter =
+                new test.demo.apsmodule.generator.NewSolver.output.InstructionConverter(params);
+        var conv = converter.convertWithDetails(solution, groupKey, items1350, demands);
+        SequenceGroupPostProcessor.GroupStats stats =
+                SequenceGroupPostProcessor.computeGroupStats(conv.instructions());
+        System.out.println("\n##### 人工固定分布注入(1350m) #####");
+        System.out.println("花型=" + solution.size() + " 车=" + solution.values().stream().mapToInt(Integer::intValue).sum()
+                + " groups=" + stats.groups() + " winner=" + conv.selectedName()
+                + "   (我的花型1350m pre-LNS=54, 人工最终=46)");
+        System.out.println("#########################\n");
+    }
+
     /** Dump my solver's 花型(搭切组合) distribution + per-order group spread, to compare with 人工. */
     private void dumpPatterns(List<CuttingInstruction> ins) {
         // 花型 = sorted multiset of subRoll widths; aggregate blocks + cars per 花型
