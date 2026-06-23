@@ -115,17 +115,22 @@ public class InstructionConverter {
             log.warn("Phase2 sequence-group candidate failed, other candidates will still be evaluated", e);
         }
 
-        log.info("Evaluating greedy assignment candidate");
-        List<CuttingInstruction> greedyInstructions = buildFromGreedyAssignment(
-                solution, groupKey, groupItems, OrderAssignmentOptimizer.GreedyStrategy.BATCH_FIRST);
-        addCandidate(candidates, "greedy", greedyInstructions);
-        addPostProcessedCandidate(candidates, "greedy-post", greedyInstructions);
+        // Greedy is a FALLBACK ONLY. Across every measured run it never beats the Stage5/Phase2
+        // MIP candidates (typically 67-79 vs 47-55 groups), so building+scoring it when a MIP
+        // candidate already exists is pure overhead (~10s/candidate). Only run it when nothing
+        // else produced a plan, so it still guarantees a result if both MIP paths fail.
+        if (candidates.isEmpty()) {
+            log.info("No MIP candidate produced; falling back to greedy assignment");
+            List<CuttingInstruction> greedyInstructions = buildFromGreedyAssignment(
+                    solution, groupKey, groupItems, OrderAssignmentOptimizer.GreedyStrategy.BATCH_FIRST);
+            addCandidate(candidates, "greedy", greedyInstructions);
+            addPostProcessedCandidate(candidates, "greedy-post", greedyInstructions);
 
-        log.info("Evaluating reuse-first greedy assignment candidate");
-        List<CuttingInstruction> reuseGreedyInstructions = buildFromGreedyAssignment(
-                solution, groupKey, groupItems, OrderAssignmentOptimizer.GreedyStrategy.REUSE_FIRST);
-        addCandidate(candidates, "greedy-reuse", reuseGreedyInstructions);
-        addPostProcessedCandidate(candidates, "greedy-reuse-post", reuseGreedyInstructions);
+            List<CuttingInstruction> reuseGreedyInstructions = buildFromGreedyAssignment(
+                    solution, groupKey, groupItems, OrderAssignmentOptimizer.GreedyStrategy.REUSE_FIRST);
+            addCandidate(candidates, "greedy-reuse", reuseGreedyInstructions);
+            addPostProcessedCandidate(candidates, "greedy-reuse-post", reuseGreedyInstructions);
+        }
 
         if (candidates.isEmpty()) {
             return new ConversionResult(new ArrayList<>(), "none", 0, List.of());
