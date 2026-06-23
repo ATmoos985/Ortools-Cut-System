@@ -25,6 +25,7 @@ import java.util.Objects;
 import java.util.Queue;
 import java.util.Set;
 import java.util.TreeMap;
+import java.util.function.Supplier;
 import java.util.stream.Collectors;
 
 /**
@@ -63,6 +64,7 @@ public class LocalNeighborhoodSequenceOptimizer {
           + "randomization/lpseed = 0\n";
 
     private static boolean orToolsLoaded;
+    private static final ThreadLocal<Map<String, String>> PROPERTY_OVERRIDES = new ThreadLocal<>();
 
     private final SolverParameters params;
     /**
@@ -83,7 +85,66 @@ public class LocalNeighborhoodSequenceOptimizer {
     }
 
     public static boolean isEnabled() {
-        return Boolean.getBoolean("cutting.lns.enabled");
+        return booleanProperty("cutting.lns.enabled", false);
+    }
+
+    public static <T> T withPropertyOverrides(Map<String, String> overrides, Supplier<T> supplier) {
+        if (overrides == null || overrides.isEmpty()) {
+            return supplier.get();
+        }
+        Map<String, String> previous = PROPERTY_OVERRIDES.get();
+        Map<String, String> merged = new HashMap<>();
+        if (previous != null) {
+            merged.putAll(previous);
+        }
+        merged.putAll(overrides);
+        PROPERTY_OVERRIDES.set(Map.copyOf(merged));
+        try {
+            return supplier.get();
+        } finally {
+            if (previous == null) {
+                PROPERTY_OVERRIDES.remove();
+            } else {
+                PROPERTY_OVERRIDES.set(previous);
+            }
+        }
+    }
+
+    private static boolean booleanProperty(String key, boolean defaultValue) {
+        String value = configuredProperty(key);
+        return value == null ? defaultValue : Boolean.parseBoolean(value);
+    }
+
+    private static int intProperty(String key, int defaultValue) {
+        String value = configuredProperty(key);
+        if (value == null || value.isBlank()) {
+            return defaultValue;
+        }
+        try {
+            return Integer.parseInt(value);
+        } catch (NumberFormatException e) {
+            return defaultValue;
+        }
+    }
+
+    private static long longProperty(String key, long defaultValue) {
+        String value = configuredProperty(key);
+        if (value == null || value.isBlank()) {
+            return defaultValue;
+        }
+        try {
+            return Long.parseLong(value);
+        } catch (NumberFormatException e) {
+            return defaultValue;
+        }
+    }
+
+    private static String configuredProperty(String key) {
+        Map<String, String> overrides = PROPERTY_OVERRIDES.get();
+        if (overrides != null && overrides.containsKey(key)) {
+            return overrides.get(key);
+        }
+        return System.getProperty(key);
     }
 
     public LnsResult improve(List<CuttingInstruction> originalInstructions,
@@ -103,19 +164,19 @@ public class LocalNeighborhoodSequenceOptimizer {
         int originalWaste = totalWaste(current);
         Map<String, Integer> originalDemand = countAssignmentsByDemandKey(current);
 
-        int maxIterations = Integer.getInteger("cutting.lns.maxIterations", DEFAULT_MAX_ITERATIONS);
-        int maxNeighborhoods = Integer.getInteger("cutting.lns.maxNeighborhoods", DEFAULT_MAX_NEIGHBORHOODS);
-        boolean allowPlateau = Boolean.parseBoolean(System.getProperty("cutting.lns.allowPlateau", "true"));
+        int maxIterations = intProperty("cutting.lns.maxIterations", DEFAULT_MAX_ITERATIONS);
+        int maxNeighborhoods = intProperty("cutting.lns.maxNeighborhoods", DEFAULT_MAX_NEIGHBORHOODS);
+        boolean allowPlateau = booleanProperty("cutting.lns.allowPlateau", true);
         // Iterated-local-search escape: when no improving/plateau move exists, take the
         // least-worsening feasible move (bounded relative to best-ever) to climb out of the
         // local optimum. best-ever is the safety net, so a returned plan is never worse than start.
-        boolean escape = Boolean.parseBoolean(System.getProperty("cutting.lns.escape", "true"));
-        int worseningTolerance = Integer.getInteger("cutting.lns.worseningTolerance", 2);
+        boolean escape = booleanProperty("cutting.lns.escape", true);
+        int worseningTolerance = intProperty("cutting.lns.worseningTolerance", 2);
         // Deterministic stopping: bound the search by ITERATION COUNT, not wall-clock. A
         // wall-clock budget makes the result depend on machine load (different #iterations
         // completed → different floor) — that was the run-to-run swing (49 vs 51). Stop after
         // maxIterations, or early after maxNoImprove consecutive iterations with no new best.
-        int maxNoImprove = Integer.getInteger("cutting.lns.maxNoImprove", 12);
+        int maxNoImprove = intProperty("cutting.lns.maxNoImprove", 12);
         int noImproveStreak = 0;
         boolean improved = false;
         String lastReason = "no-improving-neighborhood";
@@ -127,8 +188,21 @@ public class LocalNeighborhoodSequenceOptimizer {
         Set<String> visited = new HashSet<>();
         visited.add(solutionSignature(current));
 
+        boolean profile = booleanProperty("cutting.lns.profile", false);
+        long tSolve = 0, tRebuild = 0, tArrange = 0, tStats = 0, tSig = 0;
+        long nCand = 0;
+        // Parallelize the independent neighborhood solves (the LNS hot path, ~94% of LNS time). Each
+        // solveNeighborhood builds its own MPSolver and reads only the (immutable) neighborhood, so
+        // it is thread-safe; results are consumed by index in the serial reduction below → identical,
+        // deterministic output to the serial path, just faster. Cross-validated byte-identical on
+        // sixian (49) and t9est188 (69); ON by default — set -Dcutting.lns.parallel=false for serial.
+        boolean parallel = booleanProperty("cutting.lns.parallel", true);
         for (int iteration = 0; iteration < maxIterations; iteration++) {
-            int beforeGroups = SequenceGroupPostProcessor.computeGroupStats(current).groups();
+            SequenceGroupPostProcessor.GroupStats beforeStats =
+                    SequenceGroupPostProcessor.computeGroupStats(current);
+            int beforeGroups = beforeStats.groups();
+            int beforeOddCars = beforeStats.oddCarGroups();
+            int beforeSmallCars = beforeStats.smallCarGroups();
             int beforeFragmentation = fragmentationScore(current);
             List<RollRecord> rolls = decompose(current);
             List<Neighborhood> neighborhoods = buildNeighborhoods(rolls, maxNeighborhoods);
@@ -136,36 +210,72 @@ public class LocalNeighborhoodSequenceOptimizer {
             MoveCandidate bestPlateau = null;
             MoveCandidate bestWorsening = null;
 
-            for (Neighborhood neighborhood : neighborhoods) {
-                SolveAttempt attempt = solveNeighborhood(neighborhood);
+            // Solve all neighborhoods up front in parallel (each solve is independent + thread-safe);
+            // the reduction below consumes them by index, so the chosen move is identical to serial.
+            List<SolveAttempt> presolved = null;
+            if (parallel && !neighborhoods.isEmpty()) {
+                long _tp = profile ? System.nanoTime() : 0;
+                presolved = neighborhoods.parallelStream()
+                        .map(this::solveNeighborhood)
+                        .collect(java.util.stream.Collectors.toList());
+                if (profile) { tSolve += System.nanoTime() - _tp; }
+            }
+
+            for (int ni = 0; ni < neighborhoods.size(); ni++) {
+                Neighborhood neighborhood = neighborhoods.get(ni);
+                SolveAttempt attempt;
+                if (presolved != null) {
+                    attempt = presolved.get(ni);
+                } else {
+                    long _t0 = profile ? System.nanoTime() : 0;
+                    attempt = solveNeighborhood(neighborhood);
+                    if (profile) { tSolve += System.nanoTime() - _t0; }
+                }
+                if (profile) { nCand++; }
                 lastReason = attempt.reason();
                 if (!attempt.feasible()) {
                     continue;
                 }
 
+                long _t1 = profile ? System.nanoTime() : 0;
                 List<CuttingInstruction> candidate = rebuildWithNeighborhoodSolution(rolls, neighborhood, attempt);
+                if (profile) { tRebuild += System.nanoTime() - _t1; _t1 = System.nanoTime(); }
                 arranger.accept(candidate);
+                if (profile) { tArrange += System.nanoTime() - _t1; }
                 int candidateCars = totalCars(candidate);
                 int candidateWaste = totalWaste(candidate);
                 Map<String, Integer> candidateDemand = countAssignmentsByDemandKey(candidate);
-                int afterGroups = SequenceGroupPostProcessor.computeGroupStats(candidate).groups();
+                long _t2 = profile ? System.nanoTime() : 0;
+                SequenceGroupPostProcessor.GroupStats afterStats =
+                        SequenceGroupPostProcessor.computeGroupStats(candidate);
+                if (profile) { tStats += System.nanoTime() - _t2; }
+                int afterGroups = afterStats.groups();
+                int afterOddCars = afterStats.oddCarGroups();
+                int afterSmallCars = afterStats.smallCarGroups();
                 int afterFragmentation = fragmentationScore(candidate);
 
                 if (candidateCars == originalCars
                         && candidateWaste == originalWaste
                         && originalDemand.equals(candidateDemand)) {
                     boolean promisingRaw = afterGroups <= beforeGroups || afterFragmentation < beforeFragmentation;
-                    long postTimeBudgetMs = Long.getLong(
+                    long postTimeBudgetMs = longProperty(
                             "cutting.lns.postTimeBudgetMs", DEFAULT_POST_TIME_BUDGET_MS);
                     if (promisingRaw && postTimeBudgetMs > 0L) {
                         SequenceGroupPostProcessor.optimize(candidate,
                                 postTimeBudgetMs, false);
-                        afterGroups = SequenceGroupPostProcessor.computeGroupStats(candidate).groups();
+                        SequenceGroupPostProcessor.GroupStats postStats =
+                                SequenceGroupPostProcessor.computeGroupStats(candidate);
+                        afterGroups = postStats.groups();
+                        afterOddCars = postStats.oddCarGroups();
+                        afterSmallCars = postStats.smallCarGroups();
                         afterFragmentation = fragmentationScore(candidate);
                     }
-                    if (!visited.contains(solutionSignature(candidate))) {
-                        MoveCandidate move = new MoveCandidate(
-                                candidate, neighborhood, attempt, afterGroups, afterFragmentation);
+                    long _t3 = profile ? System.nanoTime() : 0;
+                    boolean seen = visited.contains(solutionSignature(candidate));
+                    if (profile) { tSig += System.nanoTime() - _t3; }
+                    if (!seen) {
+                        MoveCandidate move = new MoveCandidate(candidate, neighborhood, attempt,
+                                afterGroups, afterOddCars, afterSmallCars, afterFragmentation);
                         if (afterGroups < beforeGroups) {
                             bestImprovement = betterMove(bestImprovement, move);
                         } else if (afterGroups == beforeGroups) {
@@ -206,10 +316,14 @@ public class LocalNeighborhoodSequenceOptimizer {
                 }
             }
 
-            log.info("LNS {}: groups {} -> {}, frag {}->{}, waste={} cars={}, seeds={}, orders={}, patterns={}, columns={}, status={}, elapsed={}ms",
+            log.info("LNS {}: groups {} -> {}, odd {}->{}, small {}->{}, frag {}->{}, waste={} cars={}, seeds={}, orders={}, patterns={}, columns={}, status={}, elapsed={}ms",
                     escapeStep ? "escape" : "accepted",
                     beforeGroups,
                     accepted.afterGroups(),
+                    beforeOddCars,
+                    accepted.afterOddCars(),
+                    beforeSmallCars,
+                    accepted.afterSmallCars(),
                     beforeFragmentation,
                     accepted.afterFragmentation(),
                     totalWaste(accepted.instructions()),
@@ -233,6 +347,11 @@ public class LocalNeighborhoodSequenceOptimizer {
             }
         }
 
+        if (profile) {
+            log.info("LNS PROFILE candidates={} | solveNbhd={}ms rebuild={}ms arrange={}ms groupStats={}ms signature={}ms",
+                    nCand, tSolve / 1_000_000, tRebuild / 1_000_000, tArrange / 1_000_000,
+                    tStats / 1_000_000, tSig / 1_000_000);
+        }
         if (improved && bestEverGroups < originalGroups) {
             return new LnsResult(true, bestEver, originalGroups, bestEverGroups, "improved");
         }
@@ -270,10 +389,30 @@ public class LocalNeighborhoodSequenceOptimizer {
                 .map(Map.Entry::getKey)
                 .toList();
 
+        // Heavy-family targeting (speed): only seed neighborhoods from widths carrying enough
+        // cars — the heavy families (1100/1000/1240/850/840/970/980/1110) where consolidation
+        // actually pays off. Light-tail widths (a few cars) can't merge, so optimising them just
+        // burns time. 0 = no filter (default, full behaviour). Set e.g. 50 for the fast profile.
+        int heavyWidthMinCars = intProperty("cutting.lns.heavyWidthMinCars", 0);
+        if (heavyWidthMinCars > 0) {
+            Map<Integer, Integer> carsByWidth = new HashMap<>();
+            for (RollRecord roll : rolls) {
+                for (Map.Entry<String, Integer> entry : roll.demandCounts().entrySet()) {
+                    carsByWidth.merge(DemandKey.parse(entry.getKey()).width(), entry.getValue(), Integer::sum);
+                }
+            }
+            List<String> heavyOnly = fragmentedKeys.stream()
+                    .filter(key -> carsByWidth.getOrDefault(DemandKey.parse(key).width(), 0) >= heavyWidthMinCars)
+                    .toList();
+            if (!heavyOnly.isEmpty()) {
+                fragmentedKeys = heavyOnly;
+            }
+        }
+
         List<Neighborhood> neighborhoods = new ArrayList<>();
         Set<String> seen = new HashSet<>();
         addSlicedNeighborhoods(rolls, fragmentedKeys, neighborhoods, seen, maxNeighborhoods);
-        int maxSeedCount = Integer.getInteger("cutting.lns.maxSeedCount", DEFAULT_MAX_SEED_COUNT);
+        int maxSeedCount = intProperty("cutting.lns.maxSeedCount", DEFAULT_MAX_SEED_COUNT);
         for (int start = 0; start < fragmentedKeys.size() && neighborhoods.size() < maxNeighborhoods; start++) {
             for (int seedCount = 1; seedCount <= maxSeedCount
                     && start + seedCount <= fragmentedKeys.size()
@@ -297,9 +436,9 @@ public class LocalNeighborhoodSequenceOptimizer {
             Set<String> seen,
             int maxNeighborhoods) {
         int sliceBudget = Math.min(
-                Integer.getInteger("cutting.lns.maxSliceNeighborhoods", DEFAULT_MAX_SLICE_NEIGHBORHOODS),
+                intProperty("cutting.lns.maxSliceNeighborhoods", DEFAULT_MAX_SLICE_NEIGHBORHOODS),
                 maxNeighborhoods);
-        int maxSliceCars = Integer.getInteger(
+        int maxSliceCars = intProperty(
                 "cutting.lns.maxSliceCarsPerConfig", DEFAULT_MAX_SLICE_CARS_PER_CONFIG);
 
         for (String key : fragmentedKeys) {
@@ -412,7 +551,7 @@ public class LocalNeighborhoodSequenceOptimizer {
         // preserves total patternWidth exactly, so swapping a concentrated combo for a balanced
         // one is waste/yield-neutral. Gives the min-Σy MIP intermediate 花型 to consolidate with
         // — the lever behind the human's balanced distribution reaching fewer groups. Default off.
-        if (Boolean.parseBoolean(System.getProperty("cutting.lns.enrichPatterns", "false"))) {
+        if (booleanProperty("cutting.lns.enrichPatterns", false)) {
             for (PatternKey pk : generateBalancingPatterns(freeDemand, selectedRolls)) {
                 patterns.putIfAbsent(pk.signature(), pk);
             }
@@ -423,7 +562,7 @@ public class LocalNeighborhoodSequenceOptimizer {
 
     private Set<Integer> expandBySharedWidths(List<RollRecord> rolls, Set<Integer> selectedIndexes) {
         Set<Integer> expanded = new LinkedHashSet<>(selectedIndexes);
-        int maxDepth = Integer.getInteger("cutting.lns.sharedWidthDepth", DEFAULT_SHARED_WIDTH_DEPTH);
+        int maxDepth = intProperty("cutting.lns.sharedWidthDepth", DEFAULT_SHARED_WIDTH_DEPTH);
         for (int depth = 0; depth < maxDepth; depth++) {
             Set<Integer> activeWidths = widthsInSelectedRolls(rolls, expanded);
             List<RollRecord> candidates = rolls.stream()
@@ -533,11 +672,11 @@ public class LocalNeighborhoodSequenceOptimizer {
         // to the underrepresented middle (e.g. 4340-4389, the "hole" a concentrated distribution
         // lacks) yields far fewer, targeted 花型 — exactly the intermediate widths the waste-neutral
         // rebalance needs — so pools stay small enough to solve fast even in big neighbourhoods.
-        int minRw = Integer.getInteger("cutting.lns.enrichMinPw", params.getMinRollWidth());
-        int maxRw = Integer.getInteger("cutting.lns.enrichMaxPw", params.getMaxRollWidth());
+        int minRw = intProperty("cutting.lns.enrichMinPw", params.getMinRollWidth());
+        int maxRw = intProperty("cutting.lns.enrichMaxPw", params.getMaxRollWidth());
         int maxDistinct = params.getMaxDistinctWidths();
-        int cap = Integer.getInteger("cutting.lns.enrichCap", 60);
-        int guard = Math.max(cap, Integer.getInteger("cutting.lns.enrichGuard", 1500));
+        int cap = intProperty("cutting.lns.enrichCap", 60);
+        int guard = Math.max(cap, intProperty("cutting.lns.enrichGuard", 1500));
         PatternKey sample = selectedRolls.get(0).pattern();
         List<Integer> widths = freeDemand.keySet().stream()
                 .map(DemandKey::parse)
@@ -608,7 +747,7 @@ public class LocalNeighborhoodSequenceOptimizer {
         // FEASIBLE-not-OPTIMAL (non-deterministic) solve, so it can be disabled to keep every
         // solve OPTIMAL/deterministic without changing the group floor.
         SolveSolution best = stage1;
-        if (Boolean.parseBoolean(System.getProperty("cutting.lns.secondary", "false"))) {
+        if (booleanProperty("cutting.lns.secondary", false)) {
             SolveSolution stage2 = solveColumns(neighborhood, columns, stage1.activeColumns(), true);
             if (stage2 != null && !stage2.counts().isEmpty()) {
                 best = stage2;
@@ -676,7 +815,7 @@ public class LocalNeighborhoodSequenceOptimizer {
                 // run → reproducible incumbent even when optimality isn't proven. This is what
                 // makes enriched (large) neighbourhoods deterministic on SCIP 9.10.
                 String scipParams = SCIP_DETERMINISTIC_PARAMS;
-                long nodeLimit = Long.getLong("cutting.lns.scipNodeLimit", DEFAULT_SCIP_NODE_LIMIT);
+                long nodeLimit = longProperty("cutting.lns.scipNodeLimit", DEFAULT_SCIP_NODE_LIMIT);
                 if (nodeLimit > 0) {
                     scipParams = scipParams + "limits/nodes = " + nodeLimit + "\n";
                 }
@@ -777,7 +916,7 @@ public class LocalNeighborhoodSequenceOptimizer {
             }
             objective.setMinimization();
 
-            solver.setTimeLimit(Long.getLong("cutting.lns.timeLimitMs", DEFAULT_TIME_LIMIT_MS));
+            solver.setTimeLimit(longProperty("cutting.lns.timeLimitMs", DEFAULT_TIME_LIMIT_MS));
             MPSolver.ResultStatus status = solver.solve();
             if (status != MPSolver.ResultStatus.OPTIMAL && status != MPSolver.ResultStatus.FEASIBLE) {
                 return null;
@@ -817,7 +956,7 @@ public class LocalNeighborhoodSequenceOptimizer {
         // to OPTIMAL (deterministic) — instead of a few 花型 with many configs blowing past maxColumns.
         // Default high so the non-enriched path is unchanged; enrichment runs set it low to
         // bound the pool across the many generated 花型.
-        int perPatternCap = Integer.getInteger("cutting.lns.maxColumnsPerPattern", 1000);
+        int perPatternCap = intProperty("cutting.lns.maxColumnsPerPattern", 1000);
         List<Column> enumerated = new ArrayList<>();
         for (PatternKey pattern : neighborhood.patterns()) {
             List<Column> patternColumns = enumerateColumns(pattern, neighborhood.freeDemand());
@@ -861,23 +1000,23 @@ public class LocalNeighborhoodSequenceOptimizer {
     }
 
     private int maxFreeOrders() {
-        return Integer.getInteger("cutting.lns.maxFreeOrders", DEFAULT_MAX_FREE_ORDERS);
+        return intProperty("cutting.lns.maxFreeOrders", DEFAULT_MAX_FREE_ORDERS);
     }
 
     private int maxFreePatterns() {
-        return Integer.getInteger("cutting.lns.maxFreePatterns", DEFAULT_MAX_FREE_PATTERNS);
+        return intProperty("cutting.lns.maxFreePatterns", DEFAULT_MAX_FREE_PATTERNS);
     }
 
     private int maxFreeCars() {
-        return Integer.getInteger("cutting.lns.maxFreeCars", DEFAULT_MAX_FREE_CARS);
+        return intProperty("cutting.lns.maxFreeCars", DEFAULT_MAX_FREE_CARS);
     }
 
     private int maxColumns() {
-        return Integer.getInteger("cutting.lns.maxColumns", DEFAULT_MAX_COLUMNS);
+        return intProperty("cutting.lns.maxColumns", DEFAULT_MAX_COLUMNS);
     }
 
     private int columnEnumerationGuard() {
-        return Integer.getInteger("cutting.lns.columnEnumerationGuard", DEFAULT_COLUMN_ENUMERATION_GUARD);
+        return intProperty("cutting.lns.columnEnumerationGuard", DEFAULT_COLUMN_ENUMERATION_GUARD);
     }
 
     private List<Column> enumerateColumns(PatternKey pattern, Map<String, Integer> freeDemand) {
@@ -1238,6 +1377,8 @@ public class LocalNeighborhoodSequenceOptimizer {
             Neighborhood neighborhood,
             SolveAttempt attempt,
             int afterGroups,
+            int afterOddCars,
+            int afterSmallCars,
             int afterFragmentation) {
     }
 
