@@ -73,7 +73,9 @@ class B5ALayerTest {
         ColumnGenerationSolver cg = new ColumnGenerationSolver(params);
         patterns = cg.solve(patterns, demands, allowOver);
         MultiStageMIPSolver mip = new MultiStageMIPSolver(params);
-        List<MultiStageMIPSolver.SolveCandidate> cands = mip.solveCandidates(patterns, demands, allowOver, items);
+        // Production path is solvePrimaryOnly (the diverse solveCandidates path was removed).
+        MultiStageMIPSolver.SolveCandidate primary = mip.solvePrimaryOnly(patterns, demands, allowOver);
+        List<MultiStageMIPSolver.SolveCandidate> cands = primary == null ? List.of() : List.of(primary);
         List<String> sigs = new ArrayList<>();
         for (MultiStageMIPSolver.SolveCandidate c : cands) {
             String sig = c.result().getSolution().entrySet().stream()
