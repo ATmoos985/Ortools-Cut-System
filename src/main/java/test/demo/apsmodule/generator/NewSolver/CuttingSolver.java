@@ -283,7 +283,16 @@ public class CuttingSolver implements CuttingSolverAlgorithm {
     private List<Map<Integer, Integer>> buildDemandOrders(Map<Integer, Integer> demands) {
         List<Map.Entry<Integer, Integer>> entries = new ArrayList<>(demands.entrySet());
         List<Map<Integer, Integer>> orders = new ArrayList<>();
+        // order 0: width-ascending. On the real four-line case this single order is
+        // the winner (o0 reached 47, beating o1/o2/o3 at 50/52/52). Production runs
+        // this ONE path: the other three cost ~13 min of B-layer LNS for a strictly
+        // worse result, which is unusable in production.
         orders.add(toOrderedMap(entries, Comparator.comparingInt(Map.Entry::getKey)));
+        if (candidateOrderCount() <= 1) {
+            return orders;
+        }
+        // The remaining orders are an offline multi-start dimension only; restore the
+        // full 4-candidate sweep with -Dcutting.candidateOrders=4.
         orders.add(toOrderedMap(entries, Comparator
                 .comparingInt((Map.Entry<Integer, Integer> e) -> e.getValue()).reversed()
                 .thenComparingInt(Map.Entry::getKey)));
@@ -292,7 +301,21 @@ public class CuttingSolver implements CuttingSolverAlgorithm {
         orders.add(toOrderedMap(entries, Comparator
                 .comparingInt((Map.Entry<Integer, Integer> e) -> e.getValue())
                 .thenComparingInt(Map.Entry::getKey)));
-        return orders;
+        int wanted = Math.min(candidateOrderCount(), orders.size());
+        return new ArrayList<>(orders.subList(0, wanted));
+    }
+
+    /** Number of demand-order candidates to run. Default 1 (single fast path). */
+    private int candidateOrderCount() {
+        String raw = System.getProperty("cutting.candidateOrders");
+        if (raw != null && !raw.isBlank()) {
+            try {
+                return Math.max(1, Integer.parseInt(raw.trim()));
+            } catch (NumberFormatException ignored) {
+                // fall through to default
+            }
+        }
+        return 1;
     }
 
     private Map<Integer, Integer> toOrderedMap(List<Map.Entry<Integer, Integer>> entries,

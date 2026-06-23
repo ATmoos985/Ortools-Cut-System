@@ -180,40 +180,6 @@ public class InstructionConverter {
                 candidateRows);
     }
 
-    /**
-     * Cheap assignment used to rank pattern candidates before committing to the
-     * expensive Stage5+Phase2 path. Runs only the greedy assignment variants
-     * (seconds each), never the Stage5 MIP, so a whole candidate pool can be
-     * screened quickly. The winner is the lowest-group greedy plan.
-     */
-    public ConversionResult convertFast(Map<PatternCandidate, Integer> solution,
-            String groupKey,
-            List<SolverOrderItem> groupItems,
-            Map<Integer, Integer> demands) {
-        List<ScoredInstructionPlan> candidates = new ArrayList<>();
-
-        List<CuttingInstruction> greedy = buildFromGreedyAssignment(
-                solution, groupKey, groupItems, OrderAssignmentOptimizer.GreedyStrategy.BATCH_FIRST);
-        addCandidate(candidates, "greedy", greedy);
-        addPostProcessedCandidate(candidates, "greedy-post", greedy);
-
-        List<CuttingInstruction> reuseGreedy = buildFromGreedyAssignment(
-                solution, groupKey, groupItems, OrderAssignmentOptimizer.GreedyStrategy.REUSE_FIRST);
-        addCandidate(candidates, "greedy-reuse", reuseGreedy);
-        addPostProcessedCandidate(candidates, "greedy-reuse-post", reuseGreedy);
-
-        if (candidates.isEmpty()) {
-            return new ConversionResult(new ArrayList<>(), "none", 0, List.of());
-        }
-
-        ScoredInstructionPlan bestPlan = selectBestCandidate(candidates);
-        return new ConversionResult(
-                bestPlan.instructions(),
-                bestPlan.name(),
-                bestPlan.sequenceGroupCount(),
-                buildSequenceCandidateRows(candidates, bestPlan.name()));
-    }
-
     protected Map<PatternCandidate, List<AssignmentMIPSolver.AssignmentBlock>> solveAssignmentWithMip(
             Map<PatternCandidate, Integer> solution,
             List<SolverOrderItem> groupItems) {
