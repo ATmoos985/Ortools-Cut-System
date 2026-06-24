@@ -188,9 +188,6 @@ public class LocalNeighborhoodSequenceOptimizer {
         Set<String> visited = new HashSet<>();
         visited.add(solutionSignature(current));
 
-        boolean profile = booleanProperty("cutting.lns.profile", false);
-        long tSolve = 0, tRebuild = 0, tArrange = 0, tStats = 0, tSig = 0;
-        long nCand = 0;
         // Parallelize the independent neighborhood solves (the LNS hot path, ~94% of LNS time). Each
         // solveNeighborhood builds its own MPSolver and reads only the (immutable) neighborhood, so
         // it is thread-safe; results are consumed by index in the serial reduction below → identical,
@@ -198,11 +195,7 @@ public class LocalNeighborhoodSequenceOptimizer {
         // sixian (49) and t9est188 (69); ON by default — set -Dcutting.lns.parallel=false for serial.
         boolean parallel = booleanProperty("cutting.lns.parallel", true);
         for (int iteration = 0; iteration < maxIterations; iteration++) {
-            SequenceGroupPostProcessor.GroupStats beforeStats =
-                    SequenceGroupPostProcessor.computeGroupStats(current);
-            int beforeGroups = beforeStats.groups();
-            int beforeOddCars = beforeStats.oddCarGroups();
-            int beforeSmallCars = beforeStats.smallCarGroups();
+            int beforeGroups = SequenceGroupPostProcessor.computeGroupStats(current).groups();
             int beforeFragmentation = fragmentationScore(current);
             List<RollRecord> rolls = decompose(current);
             List<Neighborhood> neighborhoods = buildNeighborhoods(rolls, maxNeighborhoods);
@@ -214,44 +207,26 @@ public class LocalNeighborhoodSequenceOptimizer {
             // the reduction below consumes them by index, so the chosen move is identical to serial.
             List<SolveAttempt> presolved = null;
             if (parallel && !neighborhoods.isEmpty()) {
-                long _tp = profile ? System.nanoTime() : 0;
                 presolved = neighborhoods.parallelStream()
                         .map(this::solveNeighborhood)
                         .collect(java.util.stream.Collectors.toList());
-                if (profile) { tSolve += System.nanoTime() - _tp; }
             }
 
             for (int ni = 0; ni < neighborhoods.size(); ni++) {
                 Neighborhood neighborhood = neighborhoods.get(ni);
-                SolveAttempt attempt;
-                if (presolved != null) {
-                    attempt = presolved.get(ni);
-                } else {
-                    long _t0 = profile ? System.nanoTime() : 0;
-                    attempt = solveNeighborhood(neighborhood);
-                    if (profile) { tSolve += System.nanoTime() - _t0; }
-                }
-                if (profile) { nCand++; }
+                SolveAttempt attempt = presolved != null
+                        ? presolved.get(ni) : solveNeighborhood(neighborhood);
                 lastReason = attempt.reason();
                 if (!attempt.feasible()) {
                     continue;
                 }
 
-                long _t1 = profile ? System.nanoTime() : 0;
                 List<CuttingInstruction> candidate = rebuildWithNeighborhoodSolution(rolls, neighborhood, attempt);
-                if (profile) { tRebuild += System.nanoTime() - _t1; _t1 = System.nanoTime(); }
                 arranger.accept(candidate);
-                if (profile) { tArrange += System.nanoTime() - _t1; }
                 int candidateCars = totalCars(candidate);
                 int candidateWaste = totalWaste(candidate);
                 Map<String, Integer> candidateDemand = countAssignmentsByDemandKey(candidate);
-                long _t2 = profile ? System.nanoTime() : 0;
-                SequenceGroupPostProcessor.GroupStats afterStats =
-                        SequenceGroupPostProcessor.computeGroupStats(candidate);
-                if (profile) { tStats += System.nanoTime() - _t2; }
-                int afterGroups = afterStats.groups();
-                int afterOddCars = afterStats.oddCarGroups();
-                int afterSmallCars = afterStats.smallCarGroups();
+                int afterGroups = SequenceGroupPostProcessor.computeGroupStats(candidate).groups();
                 int afterFragmentation = fragmentationScore(candidate);
 
                 if (candidateCars == originalCars
@@ -263,19 +238,12 @@ public class LocalNeighborhoodSequenceOptimizer {
                     if (promisingRaw && postTimeBudgetMs > 0L) {
                         SequenceGroupPostProcessor.optimize(candidate,
                                 postTimeBudgetMs, false);
-                        SequenceGroupPostProcessor.GroupStats postStats =
-                                SequenceGroupPostProcessor.computeGroupStats(candidate);
-                        afterGroups = postStats.groups();
-                        afterOddCars = postStats.oddCarGroups();
-                        afterSmallCars = postStats.smallCarGroups();
+                        afterGroups = SequenceGroupPostProcessor.computeGroupStats(candidate).groups();
                         afterFragmentation = fragmentationScore(candidate);
                     }
-                    long _t3 = profile ? System.nanoTime() : 0;
-                    boolean seen = visited.contains(solutionSignature(candidate));
-                    if (profile) { tSig += System.nanoTime() - _t3; }
-                    if (!seen) {
+                    if (!visited.contains(solutionSignature(candidate))) {
                         MoveCandidate move = new MoveCandidate(candidate, neighborhood, attempt,
-                                afterGroups, afterOddCars, afterSmallCars, afterFragmentation);
+                                afterGroups, afterFragmentation);
                         if (afterGroups < beforeGroups) {
                             bestImprovement = betterMove(bestImprovement, move);
                         } else if (afterGroups == beforeGroups) {
@@ -316,14 +284,10 @@ public class LocalNeighborhoodSequenceOptimizer {
                 }
             }
 
-            log.info("LNS {}: groups {} -> {}, odd {}->{}, small {}->{}, frag {}->{}, waste={} cars={}, seeds={}, orders={}, patterns={}, columns={}, status={}, elapsed={}ms",
+            log.info("LNS {}: groups {} -> {}, frag {}->{}, waste={} cars={}, seeds={}, orders={}, patterns={}, columns={}, status={}, elapsed={}ms",
                     escapeStep ? "escape" : "accepted",
                     beforeGroups,
                     accepted.afterGroups(),
-                    beforeOddCars,
-                    accepted.afterOddCars(),
-                    beforeSmallCars,
-                    accepted.afterSmallCars(),
                     beforeFragmentation,
                     accepted.afterFragmentation(),
                     totalWaste(accepted.instructions()),
@@ -347,11 +311,6 @@ public class LocalNeighborhoodSequenceOptimizer {
             }
         }
 
-        if (profile) {
-            log.info("LNS PROFILE candidates={} | solveNbhd={}ms rebuild={}ms arrange={}ms groupStats={}ms signature={}ms",
-                    nCand, tSolve / 1_000_000, tRebuild / 1_000_000, tArrange / 1_000_000,
-                    tStats / 1_000_000, tSig / 1_000_000);
-        }
         if (improved && bestEverGroups < originalGroups) {
             return new LnsResult(true, bestEver, originalGroups, bestEverGroups, "improved");
         }
@@ -1377,8 +1336,6 @@ public class LocalNeighborhoodSequenceOptimizer {
             Neighborhood neighborhood,
             SolveAttempt attempt,
             int afterGroups,
-            int afterOddCars,
-            int afterSmallCars,
             int afterFragmentation) {
     }
 
