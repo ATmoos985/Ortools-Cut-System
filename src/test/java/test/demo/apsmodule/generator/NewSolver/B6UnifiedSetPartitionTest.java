@@ -460,6 +460,352 @@ class B6UnifiedSetPartitionTest {
         }
     }
 
+    /**
+     * Level 8（池包含性诊断）：裁决"45/1 没被生产公平模式选出来"的病因是
+     * 假设A（池缺列：形状/截断把人工风格配对切掉了）还是假设B（列都在，SCIP 搜索迷路）。
+     * 方法：重现 L2 的 45/1 解，逐列检查三层包含性——
+     *   ①形状 ∈ 生产公平分层枚举形状集？
+     *   ②配置在生产截断参数（buffer=2, maxOptions=20）下可生成？
+     *   ③放开截断（buffer=8, maxOptions=5000）后可生成？
+     * ①缺→分层抽样要改；②缺③在→截断丢列（剪枝排序方向对）；全在→纯搜索问题（定价不可绕）。
+     */
+    @Test
+    void level8PoolContainmentDiagnostic() throws Exception {
+        Map<String, Integer> demand = loadBigGroupDemand();
+        Map<Integer, Map<String, Integer>> demandByWidth = byWidth(demand);
+
+        // 1. 重现 45/1（L2 配置：人工列 + 人工形状结构化列，人工解 warm start）
+        List<Column> manualColumns = loadManualBigGroupColumns();
+        List<Map<Integer, Integer>> manualPatterns = new ArrayList<>();
+        for (Column column : manualColumns) {
+            manualPatterns.add(column.pattern());
+        }
+        List<Column> pool2 = new ArrayList<>(manualColumns);
+        pool2.addAll(UnifiedSetPartitionSolver.structuredColumns(
+                manualPatterns, demandByWidth, 3, 20, 100));
+        Result r2 = new UnifiedSetPartitionSolver().solve(
+                pool2, demand, MANUAL_BIG_CARS, MANUAL_BIG_WASTE, TOTAL_WIDTH,
+                180_000, 0.02, loadManualBigGroupUses());
+        assertNotNull(r2);
+        System.out.printf("Level8 reference solution: groups=%d odd=%d (expect 45/1)%n",
+                r2.groups(), r2.oddBlocks());
+
+        // 2. 生产公平形状集（分层枚举，零人工知识）
+        List<Map<Integer, Integer>> prodShapes = stratifiedShapes(
+                new ArrayList<>(demandByWidth.keySet()), 4300, 4400, 5, 6000, 50, 400);
+        java.util.Set<String> prodShapeSigs = new java.util.HashSet<>();
+        for (Map<Integer, Integer> shape : prodShapes) {
+            prodShapeSigs.add(new TreeMap<>(shape).toString());
+        }
+
+        // 3. 逐列三层包含性
+        int shapeMissing = 0;
+        int cappedMissing = 0;
+        int wideMissing = 0;
+        List<String> examples = new ArrayList<>();
+        for (UnifiedSetPartitionSolver.ColumnUse use : r2.uses()) {
+            Column column = use.column();
+            boolean shapeOk = prodShapeSigs.contains(new TreeMap<>(column.pattern()).toString());
+            boolean cappedOk = configGeneratable(column, demandByWidth, 2, 20);
+            boolean wideOk = configGeneratable(column, demandByWidth, 8, 5000);
+            if (!shapeOk) {
+                shapeMissing++;
+            }
+            if (!cappedOk) {
+                cappedMissing++;
+            }
+            if (!wideOk) {
+                wideMissing++;
+            }
+            if ((!shapeOk || !cappedOk) && examples.size() < 8) {
+                examples.add(String.format("%d车 shape=%s capped=%s wide=%s | %s",
+                        use.count(), shapeOk, cappedOk, wideOk, column.signature()));
+            }
+        }
+        System.out.printf("%n##### Level8 containment: refCols=%d | shapeMissing=%d cappedMissing=%d wideMissing=%d%n",
+                r2.uses().size(), shapeMissing, cappedMissing, wideMissing);
+        System.out.println("verdict: shapeMissing>0 → 形状抽样缺口; cappedMissing>0&wideMissing==0 → 截断丢列(剪枝方向对); 全0 → 纯搜索问题(定价不可绕)");
+        for (String example : examples) {
+            System.out.println("  MISSING: " + example);
+        }
+    }
+
+    /**
+     * Level 9（修复后复测）：L8 三刀修复后的生产公平池——需求质量加权分层形状（800）+
+     * 比例匹配配置无 cap + 管线列垫底。先复查包含性（参考解列应基本进池），
+     * 再跑生产公平求解（管线 warm start），对照基线 46/7。
+     */
+    @Test
+    void level9FixedPoolProductionFair() throws Exception {
+        Map<String, Integer> demand = loadBigGroupDemand();
+        Map<Integer, Map<String, Integer>> demandByWidth = byWidth(demand);
+
+        // 参考解（L2 重现，用于包含性复查）
+        List<Column> manualColumns = loadManualBigGroupColumns();
+        List<Map<Integer, Integer>> manualPatterns = new ArrayList<>();
+        for (Column column : manualColumns) {
+            manualPatterns.add(column.pattern());
+        }
+        List<Column> pool2 = new ArrayList<>(manualColumns);
+        pool2.addAll(UnifiedSetPartitionSolver.structuredColumns(
+                manualPatterns, demandByWidth, 3, 20, 100));
+        Result reference = new UnifiedSetPartitionSolver().solve(
+                pool2, demand, MANUAL_BIG_CARS, MANUAL_BIG_WASTE, TOTAL_WIDTH,
+                180_000, 0.02, loadManualBigGroupUses());
+        assertNotNull(reference);
+        System.out.printf("Level9 reference: groups=%d odd=%d%n", reference.groups(), reference.oddBlocks());
+
+        // 修复后的生产公平池
+        List<UnifiedSetPartitionSolver.ColumnUse> pipelineUses = runPipelineBigGroup();
+        List<Map<Integer, Integer>> shapes = stratifiedShapes(
+                new ArrayList<>(demandByWidth.keySet()), 4300, 4400, 5, 6000, 100, 800, demandByWidth);
+        List<Column> pool = new ArrayList<>();
+        for (UnifiedSetPartitionSolver.ColumnUse use : pipelineUses) {
+            pool.add(use.column());
+        }
+        // 每形状少而精（11 配置/形状，比例匹配排前）：v1 的全局 9000 截尾让 800 形状
+        // 只剩前 ~110 个有列，形状覆盖塌方（containment stillMissing=30）
+        pool.addAll(UnifiedSetPartitionSolver.structuredColumns(shapes, demandByWidth, 2, 20, 11));
+        System.out.println("Level9 pool size (pre-dedup): " + pool.size());
+
+        // 包含性复查（对照 L8 的 27/7/2 缺口）
+        java.util.Set<String> poolSigs = new java.util.HashSet<>();
+        for (Column column : pool) {
+            poolSigs.add(column.signature());
+        }
+        int stillMissing = 0;
+        for (UnifiedSetPartitionSolver.ColumnUse use : reference.uses()) {
+            if (!poolSigs.contains(use.column().signature())) {
+                stillMissing++;
+            }
+        }
+        System.out.printf("Level9 containment after fix: refCols=%d stillMissing=%d (L8 baseline: 27 shape + 7 capped)%n",
+                reference.uses().size(), stillMissing);
+
+        // 生产公平求解（基线 46/7）
+        Result r9 = new UnifiedSetPartitionSolver().solve(
+                pool, demand, MANUAL_BIG_CARS, MANUAL_BIG_WASTE, TOTAL_WIDTH,
+                300_000, 0.02, pipelineUses);
+        assertNotNull(r9);
+        Result r9b = r9.groups() > 0
+                ? new UnifiedSetPartitionSolver().solve(
+                        pool, demand, MANUAL_BIG_CARS, MANUAL_BIG_WASTE, TOTAL_WIDTH,
+                        300_000, 0.02, r9.uses(), r9.groups())
+                : r9;
+        System.out.printf("%n##### UnifiedSP Level9 (fixed pool, production-fair): stage1 %d/%d/%d -> refine %d/%d/%d cars=%d waste=%d status=%s/%s (baseline 46/7, manual 46/1, ref %d/%d)%n",
+                r9.groups(), r9.oddBlocks(), r9.smallBlocks(),
+                r9b.groups(), r9b.oddBlocks(), r9b.smallBlocks(),
+                r9b.cars(), r9b.waste(), r9.status(), r9b.status(),
+                reference.groups(), reference.oddBlocks());
+        if (r9b.groups() > 0) {
+            assertEquals(MANUAL_BIG_CARS, r9b.cars(), "cars conserved");
+            assertTrue(r9b.waste() <= MANUAL_BIG_WASTE, "waste within cap");
+            verifyDemandExact(r9b, demand);
+        }
+    }
+
+    /**
+     * Level 10（定价第一checkpoint）：对偶价能否指到静态生成漏掉的列。
+     * 受限主问题（生产公平池）LP 松弛取对偶价，对参考解中"不在池里"的列逐根算
+     * reduced cost。验证目标：≥70% 缺失列 RC<0 ⇒ 定价恰好补上静态生成的洞，
+     * 绿灯建全量定价循环；否则主问题建模需先修。附带产出：LP 目标值 = 组数数学下界。
+     */
+    @Test
+    void level10PricingDualCheck() throws Exception {
+        Map<String, Integer> demand = loadBigGroupDemand();
+        Map<Integer, Map<String, Integer>> demandByWidth = byWidth(demand);
+
+        // 参考解（L2 重现）
+        List<Column> manualColumns = loadManualBigGroupColumns();
+        List<Map<Integer, Integer>> manualPatterns = new ArrayList<>();
+        for (Column column : manualColumns) {
+            manualPatterns.add(column.pattern());
+        }
+        List<Column> pool2 = new ArrayList<>(manualColumns);
+        pool2.addAll(UnifiedSetPartitionSolver.structuredColumns(
+                manualPatterns, demandByWidth, 3, 20, 100));
+        Result reference = new UnifiedSetPartitionSolver().solve(
+                pool2, demand, MANUAL_BIG_CARS, MANUAL_BIG_WASTE, TOTAL_WIDTH,
+                180_000, 0.02, loadManualBigGroupUses());
+        assertNotNull(reference);
+        System.out.printf("Level10 reference: groups=%d odd=%d%n", reference.groups(), reference.oddBlocks());
+
+        // 生产公平池（L9v1 参数：形状需求加权 800 + 比例无cap + 每形状80）
+        List<UnifiedSetPartitionSolver.ColumnUse> pipelineUses = runPipelineBigGroup();
+        List<Map<Integer, Integer>> shapes = stratifiedShapes(
+                new ArrayList<>(demandByWidth.keySet()), 4300, 4400, 5, 6000, 100, 800, demandByWidth);
+        List<Column> pool = new ArrayList<>();
+        for (UnifiedSetPartitionSolver.ColumnUse use : pipelineUses) {
+            pool.add(use.column());
+        }
+        pool.addAll(UnifiedSetPartitionSolver.structuredColumns(shapes, demandByWidth, 2, 20, 80));
+        java.util.Set<String> poolSigs = new java.util.HashSet<>();
+        for (Column column : pool) {
+            poolSigs.add(column.signature());
+        }
+
+        // LP 松弛 + 对偶价
+        UnifiedSetPartitionSolver.LpDuals duals = new UnifiedSetPartitionSolver()
+                .solveLpRelaxation(pool, demand, MANUAL_BIG_CARS, MANUAL_BIG_WASTE, TOTAL_WIDTH);
+        assertNotNull(duals);
+        System.out.printf("Level10 LP bound: objective=%.3f status=%s (参考解=%d组)%n",
+                duals.objective(), duals.status(), reference.groups());
+
+        // 缺失列 RC 检查
+        int missing = 0;
+        int negativeRc = 0;
+        List<String> rows = new ArrayList<>();
+        for (UnifiedSetPartitionSolver.ColumnUse use : reference.uses()) {
+            if (poolSigs.contains(use.column().signature())) {
+                continue;
+            }
+            missing++;
+            double rc = duals.reducedCost(use.column(), demand, TOTAL_WIDTH);
+            if (rc < -1e-9) {
+                negativeRc++;
+            }
+            if (rows.size() < 12) {
+                rows.add(String.format("  RC=%+.4f %s | %d车 %s",
+                        rc, rc < -1e-9 ? "PULL" : "skip", use.count(), use.column().signature()));
+            }
+        }
+        System.out.printf("%n##### Level10 pricing dual check: missing=%d negativeRC=%d (%.0f%%) — 目标≥70%%%n",
+                missing, negativeRc, missing == 0 ? 100.0 : 100.0 * negativeRc / missing);
+        for (String row : rows) {
+            System.out.println(row);
+        }
+    }
+
+    /**
+     * Level 11（定长列重构checkpoint）：L10 琥珀灯的修复验证。主问题重构为定长列
+     * (config, c)——c 固化进列，y 的每一单位就是一个组。c 档位 = 精确耗尽值 + 半档 +
+     * 偶邻；support 碎片档被排除（它正是 LP 下界 26.9 摊薄病的来源）。三个验证目标：
+     *   ①自检：含 support 档的展开 LP 下界应 ≈26.9（与旧连续松弛数学等价）；
+     *   ②收紧：严格档位下 LP 下界显著抬升（越接近 45-46，diving 越有依据）；
+     *   ③定价：缺失参考定长列（sig#count 粒度）RC<0 命中率 ≥70% ⇒ 绿灯建定价循环。
+     */
+    @Test
+    void level11FixedLengthLpCheckpoint() throws Exception {
+        Map<String, Integer> demand = loadBigGroupDemand();
+        Map<Integer, Map<String, Integer>> demandByWidth = byWidth(demand);
+
+        // 参考解（L2 重现）
+        List<Column> manualColumns = loadManualBigGroupColumns();
+        List<Map<Integer, Integer>> manualPatterns = new ArrayList<>();
+        for (Column column : manualColumns) {
+            manualPatterns.add(column.pattern());
+        }
+        List<Column> pool2 = new ArrayList<>(manualColumns);
+        pool2.addAll(UnifiedSetPartitionSolver.structuredColumns(
+                manualPatterns, demandByWidth, 3, 20, 100));
+        Result reference = new UnifiedSetPartitionSolver().solve(
+                pool2, demand, MANUAL_BIG_CARS, MANUAL_BIG_WASTE, TOTAL_WIDTH,
+                180_000, 0.02, loadManualBigGroupUses());
+        assertNotNull(reference);
+        System.out.printf("Level11 reference: groups=%d odd=%d%n", reference.groups(), reference.oddBlocks());
+
+        // 生产公平池（L10 同参）
+        List<UnifiedSetPartitionSolver.ColumnUse> pipelineUses = runPipelineBigGroup();
+        List<Map<Integer, Integer>> shapes = stratifiedShapes(
+                new ArrayList<>(demandByWidth.keySet()), 4300, 4400, 5, 6000, 100, 800, demandByWidth);
+        List<Column> pool = new ArrayList<>();
+        for (UnifiedSetPartitionSolver.ColumnUse use : pipelineUses) {
+            pool.add(use.column());
+        }
+        pool.addAll(UnifiedSetPartitionSolver.structuredColumns(shapes, demandByWidth, 2, 20, 80));
+
+        // 定长展开：严格档位（真收紧）；管线 warm-start 定长列兜底整数可行性
+        List<UnifiedSetPartitionSolver.FixedColumn> strictPool =
+                UnifiedSetPartitionSolver.expandFixedColumns(pool, demand, MANUAL_BIG_CARS, false);
+        // 自检变体：含 support 档 → 应退化回旧下界 26.9
+        List<UnifiedSetPartitionSolver.FixedColumn> selfCheckPool =
+                UnifiedSetPartitionSolver.expandFixedColumns(pool, demand, MANUAL_BIG_CARS, true);
+        for (UnifiedSetPartitionSolver.ColumnUse use : pipelineUses) {
+            strictPool.add(new UnifiedSetPartitionSolver.FixedColumn(use.column(), use.count()));
+            selfCheckPool.add(new UnifiedSetPartitionSolver.FixedColumn(use.column(), use.count()));
+        }
+        System.out.printf("Level11 fixed pools: strict=%d selfCheck=%d (configs=%d)%n",
+                strictPool.size(), selfCheckPool.size(), pool.size());
+
+        UnifiedSetPartitionSolver solver = new UnifiedSetPartitionSolver();
+        UnifiedSetPartitionSolver.LpDuals selfCheck = solver.solveFixedLpRelaxation(
+                selfCheckPool, demand, MANUAL_BIG_CARS, MANUAL_BIG_WASTE, TOTAL_WIDTH, 0.02);
+        UnifiedSetPartitionSolver.LpDuals strict = solver.solveFixedLpRelaxation(
+                strictPool, demand, MANUAL_BIG_CARS, MANUAL_BIG_WASTE, TOTAL_WIDTH, 0.02);
+        assertNotNull(strict);
+        assertNotNull(selfCheck);
+        System.out.printf("%n##### Level11 LP bounds: strict=%.3f (%s) | selfCheck=%.3f (旧下界26.9, %s) | 参考解=%d组%n",
+                strict.objective(), strict.status(), selfCheck.objective(), selfCheck.status(),
+                reference.groups());
+
+        // 缺失定长列 RC 检查（sig#count 粒度——config 在池但档位缺 = levelMissing）
+        java.util.Set<String> strictKeys = new java.util.HashSet<>();
+        for (UnifiedSetPartitionSolver.FixedColumn fixed : strictPool) {
+            strictKeys.add(fixed.key());
+        }
+        java.util.Set<String> poolSigs = new java.util.HashSet<>();
+        for (Column column : pool) {
+            poolSigs.add(column.signature());
+        }
+        int missing = 0;
+        int configMissing = 0;
+        int negativeRc = 0;
+        List<String> rows = new ArrayList<>();
+        for (UnifiedSetPartitionSolver.ColumnUse use : reference.uses()) {
+            String key = use.column().signature() + "#" + use.count();
+            if (strictKeys.contains(key)) {
+                continue;
+            }
+            missing++;
+            boolean sigInPool = poolSigs.contains(use.column().signature());
+            if (!sigInPool) {
+                configMissing++;
+            }
+            double rc = strict.fixedReducedCost(use.column(), use.count(), TOTAL_WIDTH, 0.02);
+            if (rc < -1e-9) {
+                negativeRc++;
+            }
+            if (rows.size() < 12) {
+                rows.add(String.format("  RC=%+.4f %s %s | %d车 %s",
+                        rc, rc < -1e-9 ? "PULL" : "skip",
+                        sigInPool ? "levelMissing" : "configMissing",
+                        use.count(), use.column().signature()));
+            }
+        }
+        System.out.printf("##### Level11 pricing check: missing=%d (configMissing=%d levelMissing=%d) negativeRC=%d (%.0f%%) — 目标≥70%%%n",
+                missing, configMissing, missing - configMissing, negativeRc,
+                missing == 0 ? 100.0 : 100.0 * negativeRc / missing);
+        for (String row : rows) {
+            System.out.println(row);
+        }
+        System.out.println("verdict: strict下界接近46 且 RC命中≥70% → 绿灯建定价循环+diving; 下界仍塌 → 档位设计再修; RC不达标 → 主问题仍需重构");
+    }
+
+    /** 该列的每个宽度配置能否被 widthOptions 在给定截断参数下生成。 */
+    private boolean configGeneratable(Column column,
+            Map<Integer, Map<String, Integer>> demandByWidth, int bufferCount, int maxOptions) {
+        for (Map.Entry<Integer, List<String>> entry : column.config().entrySet()) {
+            List<String> wanted = new ArrayList<>(entry.getValue());
+            wanted.sort(String::compareTo);
+            List<List<String>> options = UnifiedSetPartitionSolver.widthOptions(
+                    demandByWidth.getOrDefault(entry.getKey(), Map.of()),
+                    wanted.size(), bufferCount, maxOptions);
+            boolean found = false;
+            for (List<String> option : options) {
+                List<String> sorted = new ArrayList<>(option);
+                sorted.sort(String::compareTo);
+                if (sorted.equals(wanted)) {
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) {
+                return false;
+            }
+        }
+        return true;
+    }
+
     /** 跑管线（parity0.1 + 质量LNS）拿 1350m 大组的解，转成列。 */
     private List<UnifiedSetPartitionSolver.ColumnUse> runPipelineBigGroup() throws Exception {
         List<test.demo.apsmodule.service.SolverOrderItem> items = new ArrayList<>();
@@ -513,6 +859,17 @@ class B6UnifiedSetPartitionTest {
      */
     private List<Map<Integer, Integer>> stratifiedShapes(List<Integer> widths,
             int minRw, int maxRw, int maxDistinct, int rawCap, int perBand, int totalCap) {
+        return stratifiedShapes(widths, minRw, maxRw, maxDistinct, rawCap, perBand, totalCap, null);
+    }
+
+    /**
+     * demandByWidth 非空时用"需求质量加权"排序（L8 诊断：宽度种类少优先的旧排序把
+     * 参考解 27/46 的形状排出池外——人工大量用 5 宽度近邻组合如 840×2+850×2+980，
+     * 与旧标准正好相反）。得分 = Σ k_w×q_w（形状触及的总需求量），大者优先。
+     */
+    private List<Map<Integer, Integer>> stratifiedShapes(List<Integer> widths,
+            int minRw, int maxRw, int maxDistinct, int rawCap, int perBand, int totalCap,
+            Map<Integer, Map<String, Integer>> demandByWidth) {
         List<Map<Integer, Integer>> raw = new ArrayList<>();
         enumShapesRec(widths, 0, new LinkedHashMap<>(), 0, minRw, maxRw, maxDistinct, raw, rawCap);
         Map<Integer, List<Map<Integer, Integer>>> byBand = new TreeMap<>(Comparator.reverseOrder());
@@ -520,11 +877,21 @@ class B6UnifiedSetPartitionTest {
             int pw = shape.entrySet().stream().mapToInt(e -> e.getKey() * e.getValue()).sum();
             byBand.computeIfAbsent(pw / 10, k -> new ArrayList<>()).add(shape);
         }
+        Comparator<Map<Integer, Integer>> ranking;
+        if (demandByWidth == null) {
+            ranking = Comparator
+                    .comparingInt((Map<Integer, Integer> s) -> s.size())
+                    .thenComparing(s -> -s.entrySet().stream().mapToInt(e -> e.getKey() * e.getValue()).sum());
+        } else {
+            ranking = Comparator.comparingLong((Map<Integer, Integer> s) -> -s.entrySet().stream()
+                    .mapToLong(e -> (long) e.getValue() * demandByWidth
+                            .getOrDefault(e.getKey(), Map.of()).values().stream()
+                            .mapToInt(Integer::intValue).sum())
+                    .sum());
+        }
         List<Map<Integer, Integer>> kept = new ArrayList<>();
         for (List<Map<Integer, Integer>> band : byBand.values()) {
-            band.sort(Comparator
-                    .comparingInt((Map<Integer, Integer> s) -> s.size())
-                    .thenComparing(s -> -s.entrySet().stream().mapToInt(e -> e.getKey() * e.getValue()).sum()));
+            band.sort(ranking);
             for (int i = 0; i < Math.min(perBand, band.size()) && kept.size() < totalCap; i++) {
                 kept.add(band.get(i));
             }
@@ -532,7 +899,8 @@ class B6UnifiedSetPartitionTest {
                 break;
             }
         }
-        System.out.printf("stratifiedShapes: raw=%d bands=%d kept=%d%n", raw.size(), byBand.size(), kept.size());
+        System.out.printf("stratifiedShapes: raw=%d bands=%d kept=%d demandAware=%b%n",
+                raw.size(), byBand.size(), kept.size(), demandByWidth != null);
         return kept;
     }
 

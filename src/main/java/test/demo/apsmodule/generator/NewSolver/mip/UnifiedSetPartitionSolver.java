@@ -16,6 +16,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.TreeMap;
+import java.util.TreeSet;
 import java.util.stream.Collectors;
 
 /**
@@ -76,6 +77,14 @@ public class UnifiedSetPartitionSolver {
     }
 
     public record ColumnUse(Column column, int count) {
+    }
+
+    /** 定长列：c 固化进列的 (配置, 车数)——L10 琥珀灯裁决的主问题重构单元（笔记13）。 */
+    public record FixedColumn(Column column, int count) {
+
+        public String key() {
+            return column.signature() + "#" + count;
+        }
     }
 
     public record Result(List<ColumnUse> uses, int groups, int oddBlocks, int smallBlocks,
@@ -363,6 +372,223 @@ public class UnifiedSetPartitionSolver {
         return uses;
     }
 
+    /** LP 松弛的对偶价：π(w|m) 需求、μ 车数、ν 废边，及 LP 目标值（组数下界）。 */
+    public record LpDuals(Map<String, Double> demandDuals, double carsDual, double wasteDual,
+                          double objective, String status) {
+
+        /**
+         * 列的 reduced cost：cost(=1/support) − Σπ·mult − μ − ν·wastePerCar。
+         * 负值 ⇒ 该列会被定价拉入受限主问题。
+         */
+        public double reducedCost(Column column, Map<String, Integer> demand, int totalWidth) {
+            int support = supportOf(column, demand);
+            if (support < 1) {
+                return Double.POSITIVE_INFINITY;
+            }
+            double value = 0.0;
+            for (Map.Entry<String, Integer> use : column.demandUse().entrySet()) {
+                value += demandDuals.getOrDefault(use.getKey(), 0.0) * use.getValue();
+            }
+            value += carsDual;
+            value += wasteDual * (totalWidth - column.patternWidth());
+            return 1.0 / support - value;
+        }
+
+        /**
+         * 定长列 (config, c) 的 reduced cost：(1 + oddW·奇) − c·(Σπ·mult + μ + ν·wpc)。
+         * 对 c 线性——定价子问题中 config 定型后，最优 c 在档位端点上取。
+         */
+        public double fixedReducedCost(Column column, int count, int totalWidth, double oddWeight) {
+            double perCar = 0.0;
+            for (Map.Entry<String, Integer> use : column.demandUse().entrySet()) {
+                perCar += demandDuals.getOrDefault(use.getKey(), 0.0) * use.getValue();
+            }
+            perCar += carsDual;
+            perCar += wasteDual * (totalWidth - column.patternWidth());
+            return 1.0 + (count % 2 != 0 ? oddWeight : 0.0) - count * perCar;
+        }
+    }
+
+    /**
+     * 受限主问题的 LP 松弛（GLOP）：min Σ c_j/support_j（= Σy 的最紧凸松弛，
+     * 由 c ≤ support·y, y∈[0,1] 推出 y*=c/support），需求精确覆盖 + 车数等式 + 废边上限。
+     * 对偶价供定价子问题/缺失列 RC 检查使用（对偶仅在 GLOP 下有效）。
+     */
+    public LpDuals solveLpRelaxation(List<Column> pool,
+            Map<String, Integer> demand,
+            int exactCars,
+            int wasteCap,
+            int totalWidth) {
+        Map<String, Column> bySig = new LinkedHashMap<>();
+        for (Column column : pool) {
+            if (supportOf(column, demand) >= 1) {
+                bySig.putIfAbsent(column.signature(), column);
+            }
+        }
+        List<Column> columns = new ArrayList<>(bySig.values());
+        MPSolver solver = MPSolver.createSolver("GLOP");
+        if (solver == null) {
+            return null;
+        }
+        int n = columns.size();
+        MPVariable[] c = new MPVariable[n];
+        for (int j = 0; j < n; j++) {
+            c[j] = solver.makeNumVar(0, supportOf(columns.get(j), demand), "c_" + j);
+        }
+        Map<String, MPConstraint> demandConstraints = new LinkedHashMap<>();
+        for (Map.Entry<String, Integer> e : demand.entrySet()) {
+            demandConstraints.put(e.getKey(),
+                    solver.makeConstraint(e.getValue(), e.getValue(), "d_" + e.getKey()));
+        }
+        for (int j = 0; j < n; j++) {
+            for (Map.Entry<String, Integer> use : columns.get(j).demandUse().entrySet()) {
+                demandConstraints.get(use.getKey()).setCoefficient(c[j], use.getValue());
+            }
+        }
+        MPConstraint carsConstraint = solver.makeConstraint(exactCars, exactCars, "cars");
+        MPConstraint wasteConstraint = solver.makeConstraint(0, wasteCap, "waste");
+        for (int j = 0; j < n; j++) {
+            carsConstraint.setCoefficient(c[j], 1);
+            wasteConstraint.setCoefficient(c[j], totalWidth - columns.get(j).patternWidth());
+        }
+        MPObjective objective = solver.objective();
+        for (int j = 0; j < n; j++) {
+            objective.setCoefficient(c[j], 1.0 / supportOf(columns.get(j), demand));
+        }
+        objective.setMinimization();
+        MPSolver.ResultStatus status = solver.solve();
+        if (status != MPSolver.ResultStatus.OPTIMAL) {
+            log.warn("UnifiedSP LP relaxation returned {}", status);
+            return new LpDuals(Map.of(), 0, 0, Double.NaN, status.toString());
+        }
+        Map<String, Double> demandDuals = new LinkedHashMap<>();
+        for (Map.Entry<String, MPConstraint> e : demandConstraints.entrySet()) {
+            demandDuals.put(e.getKey(), e.getValue().dualValue());
+        }
+        log.info("UnifiedSP LP relaxation: columns={} objective={} (组数下界) carsDual={} wasteDual={}",
+                n, objective.value(), carsConstraint.dualValue(), wasteConstraint.dualValue());
+        return new LpDuals(demandDuals, carsConstraint.dualValue(), wasteConstraint.dualValue(),
+                objective.value(), status.toString());
+    }
+
+    /**
+     * 配置列 → 定长列展开。c 档位 = 精确耗尽值 e=q/mult（整除时取 c=e 该序号整块耗尽，
+     * 比例匹配手法的代数形式）+ 半档 e/2（e 偶）+ 全部奇档的偶邻 e−1（人工偏好偶块，
+     * 奇偶随档位直接进定价）。
+     *
+     * <p>includeSupportLevel=true 时另加支持度 s 档——数学警告：含 s 档时 LP 下界
+     * 退化回旧连续松弛（y=c/s 的碎片摊薄仍可行，下界 26.9），仅作实现自检；
+     * 真收紧必须排除。无任何精确档位的配置在严格模式下整列丢弃（它们正是碎片来源），
+     * LP/MIP 的可行性由调用方注入 warm-start 定长列兜底。
+     */
+    public static List<FixedColumn> expandFixedColumns(List<Column> pool,
+            Map<String, Integer> demand, int exactCars, boolean includeSupportLevel) {
+        Map<String, Column> bySig = new LinkedHashMap<>();
+        for (Column column : pool) {
+            if (supportOf(column, demand) >= 1) {
+                bySig.putIfAbsent(column.signature(), column);
+            }
+        }
+        Map<String, FixedColumn> byKey = new LinkedHashMap<>();
+        for (Column column : bySig.values()) {
+            int support = Math.min(exactCars, supportOf(column, demand));
+            TreeSet<Integer> levels = new TreeSet<>();
+            for (Map.Entry<String, Integer> use : column.demandUse().entrySet()) {
+                int q = demand.getOrDefault(use.getKey(), 0);
+                if (q % use.getValue() == 0) {
+                    int exhaust = q / use.getValue();
+                    if (exhaust >= 1 && exhaust <= support) {
+                        levels.add(exhaust);
+                        if (exhaust % 2 == 0 && exhaust >= 2) {
+                            levels.add(exhaust / 2);
+                        }
+                    }
+                }
+            }
+            if (includeSupportLevel) {
+                levels.add(support);
+            }
+            for (Integer level : new ArrayList<>(levels)) {
+                if (level % 2 != 0 && level > 1) {
+                    levels.add(level - 1);
+                }
+            }
+            for (int c : levels) {
+                FixedColumn fixed = new FixedColumn(column, c);
+                byKey.putIfAbsent(fixed.key(), fixed);
+            }
+        }
+        return new ArrayList<>(byKey.values());
+    }
+
+    /**
+     * 定长列受限主问题的 LP 松弛（GLOP）：min Σ(1+oddW·奇_j)·y_j，
+     * y_j ∈ [0, ⌊s/c⌋]（同一定长块允许重复开组），需求精确覆盖 Σc·mult·y=q +
+     * 车数硬等式 + 废边上限。c 固化后 y 的每一单位就是一个组——对偶价直接为
+     * "开一个组"定价，这是 L10 旧松弛（碎片摊薄，下界 26.9）的重构修法。
+     */
+    public LpDuals solveFixedLpRelaxation(List<FixedColumn> pool,
+            Map<String, Integer> demand,
+            int exactCars,
+            int wasteCap,
+            int totalWidth,
+            double oddWeight) {
+        Map<String, FixedColumn> byKey = new LinkedHashMap<>();
+        for (FixedColumn fixed : pool) {
+            if (fixed.count() >= 1 && supportOf(fixed.column(), demand) >= fixed.count()) {
+                byKey.putIfAbsent(fixed.key(), fixed);
+            }
+        }
+        List<FixedColumn> columns = new ArrayList<>(byKey.values());
+        MPSolver solver = MPSolver.createSolver("GLOP");
+        if (solver == null) {
+            return null;
+        }
+        int n = columns.size();
+        MPVariable[] y = new MPVariable[n];
+        for (int j = 0; j < n; j++) {
+            FixedColumn fixed = columns.get(j);
+            int repeats = Math.max(1, supportOf(fixed.column(), demand) / fixed.count());
+            y[j] = solver.makeNumVar(0, repeats, "y_" + j);
+        }
+        Map<String, MPConstraint> demandConstraints = new LinkedHashMap<>();
+        for (Map.Entry<String, Integer> e : demand.entrySet()) {
+            demandConstraints.put(e.getKey(),
+                    solver.makeConstraint(e.getValue(), e.getValue(), "d_" + e.getKey()));
+        }
+        for (int j = 0; j < n; j++) {
+            FixedColumn fixed = columns.get(j);
+            for (Map.Entry<String, Integer> use : fixed.column().demandUse().entrySet()) {
+                demandConstraints.get(use.getKey())
+                        .setCoefficient(y[j], (double) use.getValue() * fixed.count());
+            }
+        }
+        MPConstraint carsConstraint = solver.makeConstraint(exactCars, exactCars, "cars");
+        MPConstraint wasteConstraint = solver.makeConstraint(0, wasteCap, "waste");
+        MPObjective objective = solver.objective();
+        for (int j = 0; j < n; j++) {
+            FixedColumn fixed = columns.get(j);
+            carsConstraint.setCoefficient(y[j], fixed.count());
+            wasteConstraint.setCoefficient(y[j],
+                    (double) fixed.count() * (totalWidth - fixed.column().patternWidth()));
+            objective.setCoefficient(y[j], 1.0 + (fixed.count() % 2 != 0 ? oddWeight : 0.0));
+        }
+        objective.setMinimization();
+        MPSolver.ResultStatus status = solver.solve();
+        if (status != MPSolver.ResultStatus.OPTIMAL) {
+            log.warn("UnifiedSP fixed-length LP relaxation returned {}", status);
+            return new LpDuals(Map.of(), 0, 0, Double.NaN, status.toString());
+        }
+        Map<String, Double> demandDuals = new LinkedHashMap<>();
+        for (Map.Entry<String, MPConstraint> e : demandConstraints.entrySet()) {
+            demandDuals.put(e.getKey(), e.getValue().dualValue());
+        }
+        log.info("UnifiedSP fixed-length LP: columns={} objective={} (组数下界) carsDual={} wasteDual={}",
+                n, objective.value(), carsConstraint.dualValue(), wasteConstraint.dualValue());
+        return new LpDuals(demandDuals, carsConstraint.dualValue(), wasteConstraint.dualValue(),
+                objective.value(), status.toString());
+    }
+
     private static int supportOf(Column column, Map<String, Integer> demand) {
         int support = Integer.MAX_VALUE;
         for (Map.Entry<String, Integer> use : column.demandUse().entrySet()) {
@@ -431,7 +657,7 @@ public class UnifiedSetPartitionSolver {
      * 56×2+58+52 的 2:1:1 组合皆此规则特例）。另加缓冲组合：最大量序号配任意搭档，
      * 吸收余量。排序：比例匹配且 c 偶 > 比例匹配 > 支持度大。
      */
-    private static List<List<String>> widthOptions(Map<String, Integer> demandByMessage,
+    public static List<List<String>> widthOptions(Map<String, Integer> demandByMessage,
             int slots, int bufferCount, int maxOptions) {
         List<Map.Entry<String, Integer>> messages = demandByMessage.entrySet().stream()
                 .filter(e -> e.getValue() > 0)
@@ -566,15 +792,25 @@ public class UnifiedSetPartitionSolver {
             }
         }
 
-        return bySig.values().stream()
+        // L8 诊断修复：比例匹配选项不设 cap（截断曾把 26/27@1000 等量对切掉，
+        // 参考解 7/46 列因此丢失）；maxOptions 只约束缓冲组合。
+        List<List<String>> ratioMatched = new ArrayList<>();
+        List<List<String>> buffered = new ArrayList<>();
+        bySig.values().stream()
                 .sorted(Comparator
                         .comparing(Ranked::ratioMatched, Comparator.reverseOrder())
                         .thenComparing(Ranked::evenC, Comparator.reverseOrder())
                         .thenComparing(Comparator.comparingInt(Ranked::support).reversed())
                         .thenComparing(r -> String.join(",", r.option())))
-                .limit(maxOptions)
-                .map(Ranked::option)
-                .collect(Collectors.toList());
+                .forEach(r -> (r.ratioMatched() ? ratioMatched : buffered).add(r.option()));
+        List<List<String>> result = new ArrayList<>(ratioMatched);
+        for (List<String> option : buffered) {
+            if (result.size() >= ratioMatched.size() + maxOptions) {
+                break;
+            }
+            result.add(option);
+        }
+        return result;
     }
 
     private static void crossProduct(List<Integer> widths,
