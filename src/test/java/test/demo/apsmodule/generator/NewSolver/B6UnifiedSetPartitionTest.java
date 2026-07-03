@@ -781,6 +781,294 @@ class B6UnifiedSetPartitionTest {
         System.out.println("verdict: strict下界接近46 且 RC命中≥70% → 绿灯建定价循环+diving; 下界仍塌 → 档位设计再修; RC不达标 → 主问题仍需重构");
     }
 
+    /**
+     * Level 12（残差导向列注入 v1）：L11 关闭 LP 对偶定价后的幸存方向。
+     * 上下文 = 当前整数解的残差，不是 LP 对偶：从生产公平管线解出发，拆掉弱块
+     * （odd 或 c≤5），残差需求现场跑比例匹配列生成（widthOptions 在残差量上恰好
+     * 给出"还剩谁、谁互补"的配对——L9 证明静态排序原理上猜不中的正是这个上下文），
+     * 小规模 set-partition 精确重建（车数等式+废边≤拆除额，全局走廊不变；
+     * 弱块本身进子池兜底，重建只可能不劣）。子问题小 ⇒ SCIP 可 OPTIMAL，
+     * 绕开 L3-L9 反复撞的 warm start 盆地搜索迷路。
+     * Round A：只拆弱块；Round B：弱块 + 每弱块一个宽度重叠最大的捐赠强块。
+     * 通过标准：任一 Round 组数或 odd 严格改善 ⇒ 机制成立，做成多轮迭代。
+     */
+    @Test
+    void level12ResidualColumnInjection() throws Exception {
+        Map<String, Integer> demand = loadBigGroupDemand();
+        List<UnifiedSetPartitionSolver.ColumnUse> start = runPipelineBigGroup();
+        printBlockStats("Level12 start (pipeline)", start);
+
+        // Round A：弱块 = odd 或 small(c≤5)
+        List<UnifiedSetPartitionSolver.ColumnUse> weak = new ArrayList<>();
+        List<UnifiedSetPartitionSolver.ColumnUse> kept = new ArrayList<>();
+        for (UnifiedSetPartitionSolver.ColumnUse use : start) {
+            if (use.count() % 2 != 0 || use.count() <= 5) {
+                weak.add(use);
+            } else {
+                kept.add(use);
+            }
+        }
+        rebuildAndReport("Level12 RoundA (weak only)", weak, kept, demand);
+
+        // Round B：弱块 + 每弱块一个宽度重叠最大的捐赠强块（扩大配对空间）
+        List<UnifiedSetPartitionSolver.ColumnUse> donors = new ArrayList<>();
+        List<UnifiedSetPartitionSolver.ColumnUse> keptB = new ArrayList<>(kept);
+        for (UnifiedSetPartitionSolver.ColumnUse w : weak) {
+            UnifiedSetPartitionSolver.ColumnUse best = null;
+            int bestOverlap = 0;
+            for (UnifiedSetPartitionSolver.ColumnUse s : keptB) {
+                int overlap = 0;
+                for (Integer width : w.column().pattern().keySet()) {
+                    if (s.column().pattern().containsKey(width)) {
+                        overlap++;
+                    }
+                }
+                if (overlap > bestOverlap) {
+                    bestOverlap = overlap;
+                    best = s;
+                }
+            }
+            if (best != null) {
+                donors.add(best);
+                keptB.remove(best);
+            }
+        }
+        List<UnifiedSetPartitionSolver.ColumnUse> weakB = new ArrayList<>(weak);
+        weakB.addAll(donors);
+        rebuildAndReport("Level12 RoundB (weak + donors)", weakB, keptB, demand);
+    }
+
+    /**
+     * Level 12b（残差导向列注入 v2：微邻域迭代）：v1 裁决——RoundA 弱块残差无量可配、
+     * RoundB 邻域过大回到搜索迷路区，两轮均 FEASIBLE 非 OPTIMAL。v2 取中间尺度：
+     * 每次 1 个目标块（odd 优先，其次 small）+ 3 个共享需求键最多的捐赠块，
+     * 子问题 10-80 车 SCIP 可证 OPTIMAL，逐块接受严格改善（组数减，或组数平且 odd 减），
+     * 多 pass 至不动点。这是生产 LNS 的移动结构 × set-partition 组数目标 × 比例匹配注入列。
+     */
+    @Test
+    void level12bMicroNeighborhoodIteration() throws Exception {
+        Map<String, Integer> demand = loadBigGroupDemand();
+        List<UnifiedSetPartitionSolver.ColumnUse> current = new ArrayList<>(runPipelineBigGroup());
+        printBlockStats("Level12b start (pipeline)", current);
+
+        int accepted = 0;
+        for (int pass = 1; pass <= 3; pass++) {
+            boolean improvedThisPass = false;
+            // 目标快照（odd 优先，其次 small；按值定位，块可能已被前面的重建消耗）
+            List<UnifiedSetPartitionSolver.ColumnUse> targets = new ArrayList<>();
+            for (UnifiedSetPartitionSolver.ColumnUse use : current) {
+                if (use.count() % 2 != 0) {
+                    targets.add(use);
+                }
+            }
+            for (UnifiedSetPartitionSolver.ColumnUse use : current) {
+                if (use.count() % 2 == 0 && use.count() <= 5) {
+                    targets.add(use);
+                }
+            }
+            for (UnifiedSetPartitionSolver.ColumnUse target : targets) {
+                int targetIdx = current.indexOf(target);
+                if (targetIdx < 0) {
+                    continue;
+                }
+                // 捐赠块：共享需求键×2 + 共享宽度，取 top3
+                List<UnifiedSetPartitionSolver.ColumnUse> others = new ArrayList<>(current);
+                others.remove(targetIdx);
+                Map<String, Integer> targetUse = target.column().demandUse();
+                others.sort(Comparator.comparingInt((UnifiedSetPartitionSolver.ColumnUse s) -> {
+                    int sharedKeys = 0;
+                    for (String key : s.column().demandUse().keySet()) {
+                        if (targetUse.containsKey(key)) {
+                            sharedKeys++;
+                        }
+                    }
+                    int sharedWidths = 0;
+                    for (Integer width : s.column().pattern().keySet()) {
+                        if (target.column().pattern().containsKey(width)) {
+                            sharedWidths++;
+                        }
+                    }
+                    return -(sharedKeys * 2 + sharedWidths);
+                }));
+                List<UnifiedSetPartitionSolver.ColumnUse> removed = new ArrayList<>();
+                removed.add(target);
+                removed.addAll(others.subList(0, Math.min(3, others.size())));
+                List<UnifiedSetPartitionSolver.ColumnUse> kept = new ArrayList<>(current);
+                for (UnifiedSetPartitionSolver.ColumnUse r : removed) {
+                    kept.remove(r);
+                }
+
+                Result sub = microRebuild(removed, 30_000);
+                if (sub == null || sub.groups() == 0) {
+                    continue;
+                }
+                int removedOdd = 0;
+                for (UnifiedSetPartitionSolver.ColumnUse r : removed) {
+                    if (r.count() % 2 != 0) {
+                        removedOdd++;
+                    }
+                }
+                boolean better = sub.groups() < removed.size()
+                        || (sub.groups() == removed.size() && sub.oddBlocks() < removedOdd);
+                if (better) {
+                    System.out.printf("  ACCEPT pass%d: %d blocks (odd %d) -> %d (odd %d) | target=%d车 %s%n",
+                            pass, removed.size(), removedOdd, sub.groups(), sub.oddBlocks(),
+                            target.count(), target.column().signature());
+                    current = kept;
+                    current.addAll(sub.uses());
+                    accepted++;
+                    improvedThisPass = true;
+                }
+            }
+            printBlockStats("Level12b after pass" + pass, current);
+            if (!improvedThisPass) {
+                break;
+            }
+        }
+
+        // 全局守恒验证
+        int odd = 0;
+        int small = 0;
+        int cars = 0;
+        int waste = 0;
+        for (UnifiedSetPartitionSolver.ColumnUse use : current) {
+            cars += use.count();
+            waste += use.count() * (TOTAL_WIDTH - use.column().patternWidth());
+            if (use.count() % 2 != 0) {
+                odd++;
+            }
+            if (use.count() <= 5) {
+                small++;
+            }
+        }
+        Result mergedResult = new Result(current, current.size(), odd, small, cars, waste, "MICRO");
+        assertEquals(MANUAL_BIG_CARS, cars, "cars conserved");
+        assertTrue(waste <= MANUAL_BIG_WASTE, "waste within cap");
+        verifyDemandExact(mergedResult, demand);
+        System.out.printf("%n##### Level12b micro iteration: accepted=%d | global %d/%d/%d cars=%d waste=%d (start 47/3/13, ref 46/1)%n",
+                accepted, current.size(), odd, small, cars, waste);
+    }
+
+    /** 微邻域重建：残差需求 + 比例匹配注入列 + 拆除块兜底，单段求解（odd 已在目标）。 */
+    private Result microRebuild(List<UnifiedSetPartitionSolver.ColumnUse> removed, long budgetMs) {
+        Map<String, Integer> residual = new LinkedHashMap<>();
+        int removedCars = 0;
+        int removedWaste = 0;
+        for (UnifiedSetPartitionSolver.ColumnUse use : removed) {
+            removedCars += use.count();
+            removedWaste += use.count() * (TOTAL_WIDTH - use.column().patternWidth());
+            for (Map.Entry<String, Integer> e : use.column().demandUse().entrySet()) {
+                residual.merge(e.getKey(), use.count() * e.getValue(), Integer::sum);
+            }
+        }
+        Map<Integer, Map<String, Integer>> residualByWidth = byWidth(residual);
+        List<Map<Integer, Integer>> shapes = stratifiedShapes(
+                new ArrayList<>(residualByWidth.keySet()), 4300, 4400, 5, 6000, 100, 400,
+                residualByWidth);
+        List<Column> subPool = new ArrayList<>();
+        for (UnifiedSetPartitionSolver.ColumnUse use : removed) {
+            subPool.add(use.column());
+            shapes.add(use.column().pattern());
+        }
+        subPool.addAll(UnifiedSetPartitionSolver.structuredColumns(shapes, residualByWidth, 2, 20, 80));
+        return new UnifiedSetPartitionSolver().solve(
+                subPool, residual, removedCars, removedWaste, TOTAL_WIDTH, budgetMs, 0.02,
+                new ArrayList<>(removed));
+    }
+
+    /** 拆除 removed、对残差现场生成比例匹配列、精确重建（字典序两段）、合并守恒验证。 */
+    private void rebuildAndReport(String label,
+            List<UnifiedSetPartitionSolver.ColumnUse> removed,
+            List<UnifiedSetPartitionSolver.ColumnUse> kept,
+            Map<String, Integer> demand) {
+        Map<String, Integer> residual = new LinkedHashMap<>();
+        int removedCars = 0;
+        int removedWaste = 0;
+        int removedOdd = 0;
+        for (UnifiedSetPartitionSolver.ColumnUse use : removed) {
+            removedCars += use.count();
+            removedWaste += use.count() * (TOTAL_WIDTH - use.column().patternWidth());
+            if (use.count() % 2 != 0) {
+                removedOdd++;
+            }
+            for (Map.Entry<String, Integer> e : use.column().demandUse().entrySet()) {
+                residual.merge(e.getKey(), use.count() * e.getValue(), Integer::sum);
+            }
+        }
+        Map<Integer, Map<String, Integer>> residualByWidth = byWidth(residual);
+        List<Map<Integer, Integer>> shapes = stratifiedShapes(
+                new ArrayList<>(residualByWidth.keySet()), 4300, 4400, 5, 6000, 100, 400,
+                residualByWidth);
+        List<Column> subPool = new ArrayList<>();
+        for (UnifiedSetPartitionSolver.ColumnUse use : removed) {
+            subPool.add(use.column());
+            shapes.add(use.column().pattern());
+        }
+        subPool.addAll(UnifiedSetPartitionSolver.structuredColumns(shapes, residualByWidth, 2, 20, 80));
+        System.out.printf("%s: removed=%d blocks (odd=%d cars=%d waste=%d) residualKeys=%d subPool=%d%n",
+                label, removed.size(), removedOdd, removedCars, removedWaste,
+                residual.size(), subPool.size());
+
+        Result rebuilt = new UnifiedSetPartitionSolver().solve(
+                subPool, residual, removedCars, removedWaste, TOTAL_WIDTH, 180_000, 0.02,
+                new ArrayList<>(removed));
+        assertNotNull(rebuilt);
+        Result finalSub = rebuilt;
+        if (rebuilt.groups() > 0) {
+            Result refined = new UnifiedSetPartitionSolver().solve(
+                    subPool, residual, removedCars, removedWaste, TOTAL_WIDTH, 120_000, 0.02,
+                    rebuilt.uses(), rebuilt.groups());
+            if (refined != null && refined.groups() > 0) {
+                finalSub = refined;
+            }
+        }
+
+        // 合并 + 全局守恒验证
+        List<UnifiedSetPartitionSolver.ColumnUse> merged = new ArrayList<>(kept);
+        merged.addAll(finalSub.uses());
+        int odd = 0;
+        int small = 0;
+        int cars = 0;
+        int waste = 0;
+        for (UnifiedSetPartitionSolver.ColumnUse use : merged) {
+            cars += use.count();
+            waste += use.count() * (TOTAL_WIDTH - use.column().patternWidth());
+            if (use.count() % 2 != 0) {
+                odd++;
+            }
+            if (use.count() <= 5) {
+                small++;
+            }
+        }
+        Result mergedResult = new Result(merged, merged.size(), odd, small, cars, waste,
+                finalSub.status());
+        assertEquals(MANUAL_BIG_CARS, cars, "cars conserved");
+        assertTrue(waste <= MANUAL_BIG_WASTE, "waste within cap");
+        verifyDemandExact(mergedResult, demand);
+        System.out.printf("%n##### %s: sub %d->%d blocks (odd %d->%d, status=%s) | global %d/%d/%d cars=%d waste=%d%n",
+                label, removed.size(), finalSub.groups(), removedOdd, finalSub.oddBlocks(),
+                finalSub.status(), merged.size(), odd, small, cars, waste);
+    }
+
+    private void printBlockStats(String label, List<UnifiedSetPartitionSolver.ColumnUse> uses) {
+        int odd = 0;
+        int small = 0;
+        int cars = 0;
+        int waste = 0;
+        for (UnifiedSetPartitionSolver.ColumnUse use : uses) {
+            cars += use.count();
+            waste += use.count() * (TOTAL_WIDTH - use.column().patternWidth());
+            if (use.count() % 2 != 0) {
+                odd++;
+            }
+            if (use.count() <= 5) {
+                small++;
+            }
+        }
+        System.out.printf("%s: groups=%d odd=%d small=%d cars=%d waste=%d%n",
+                label, uses.size(), odd, small, cars, waste);
+    }
+
     /** 该列的每个宽度配置能否被 widthOptions 在给定截断参数下生成。 */
     private boolean configGeneratable(Column column,
             Map<Integer, Map<String, Integer>> demandByWidth, int bufferCount, int maxOptions) {
