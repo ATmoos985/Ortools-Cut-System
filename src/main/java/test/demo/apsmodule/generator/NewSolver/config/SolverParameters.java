@@ -35,6 +35,7 @@ public class SolverParameters {
      * lower sequence-group 花型集 (e.g. 79→73 on T9EST188). Default 0 = legacy.
      */
     private int aLayerScipSeed = 0;
+    private double aLayerAlignmentLambda = 0.0;
 
     private double seqGroupAlpha = 1.0;
     private double seqGroupBeta = 0.0;
@@ -151,6 +152,14 @@ public class SolverParameters {
         this.aLayerScipSeed = aLayerScipSeed;
     }
 
+    public double getALayerAlignmentLambda() {
+        return aLayerAlignmentLambda;
+    }
+
+    public void setALayerAlignmentLambda(double aLayerAlignmentLambda) {
+        this.aLayerAlignmentLambda = aLayerAlignmentLambda;
+    }
+
     public void setStage4TimeLimit(long stage4TimeLimit) {
         this.stage4TimeLimit = stage4TimeLimit;
     }
@@ -230,6 +239,7 @@ public class SolverParameters {
         copy.timeoutMs = this.timeoutMs;
         copy.stage4TimeLimit = this.stage4TimeLimit;
         copy.aLayerScipSeed = this.aLayerScipSeed;
+        copy.aLayerAlignmentLambda = this.aLayerAlignmentLambda;
         copy.seqGroupAlpha = this.seqGroupAlpha;
         copy.seqGroupBeta = this.seqGroupBeta;
         copy.useOptimizedAssignment = this.useOptimizedAssignment;
@@ -244,6 +254,9 @@ public class SolverParameters {
         }
         if (forceAllowOverWidths == null) {
             forceAllowOverWidths = new HashSet<>();
+        }
+        if (aLayerAlignmentLambda < 0.0 || Double.isNaN(aLayerAlignmentLambda)) {
+            aLayerAlignmentLambda = 0.0;
         }
     }
 
@@ -261,6 +274,7 @@ public class SolverParameters {
                 ", maxIterations=" + maxIterations +
                 ", timeoutMs=" + timeoutMs +
                 ", stage4TimeLimit=" + stage4TimeLimit +
+                ", aLayerAlignmentLambda=" + aLayerAlignmentLambda +
                 ", seqGroupAlpha=" + seqGroupAlpha +
                 ", seqGroupBeta=" + seqGroupBeta +
                 ", useOptimizedAssignment=" + useOptimizedAssignment +

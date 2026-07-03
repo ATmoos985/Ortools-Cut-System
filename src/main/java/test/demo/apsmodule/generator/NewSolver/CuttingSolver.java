@@ -7,6 +7,7 @@ import org.springframework.stereotype.Component;
 import test.demo.apsmodule.generator.NewSolver.colgen.ColumnGenerationSolver;
 import test.demo.apsmodule.generator.NewSolver.config.SolverParameters;
 import test.demo.apsmodule.generator.NewSolver.mip.MultiStageMIPSolver;
+import test.demo.apsmodule.generator.NewSolver.mip.PatternAlignmentContext;
 import test.demo.apsmodule.generator.NewSolver.model.PatternCandidate;
 import test.demo.apsmodule.generator.NewSolver.model.SolverResult;
 import test.demo.apsmodule.generator.NewSolver.output.InstructionConverter;
@@ -114,6 +115,7 @@ public class CuttingSolver implements CuttingSolverAlgorithm {
                 }
 
                 Set<Integer> allowOverSet = buildAllowOverSet(demands, params);
+                PatternAlignmentContext alignmentContext = PatternAlignmentContext.from(groupItems);
                 report.beginGroup(groupKey, groupItems, demands, allowOverSet, totalGroups);
                 log.debug("Allow-over widths: {}", allowOverSet);
 
@@ -128,6 +130,7 @@ public class CuttingSolver implements CuttingSolverAlgorithm {
                 List<MultiStageMIPSolver.SolveCandidate> solveCandidates = new ArrayList<>();
                 java.util.Set<String> seenCandidateSigs = new java.util.HashSet<>();
                 List<Map<Integer, Integer>> demandOrders = buildDemandOrders(demands);
+                double[] alignmentLambdas = aLayerAlignmentLambdas();
                 for (int orderIdx = 0; orderIdx < demandOrders.size(); orderIdx++) {
                     Map<Integer, Integer> orderedDemands = demandOrders.get(orderIdx);
                     // Every order: cheap primary (legacy) only, swept over a small set of
@@ -139,12 +142,35 @@ public class CuttingSolver implements CuttingSolverAlgorithm {
                     // gain. Distinct 花型集 are deduped by signature so the B-layer assignment
                     // runs once per genuinely different set, not once per (order, seed).
                     List<MultiStageMIPSolver.SolveCandidate> orderCandidates = new ArrayList<>();
+                    double[] parityPenalties = aLayerParityPenalties();
                     for (int seed : A_LAYER_SEEDS) {
-                        MultiStageMIPSolver.SolveCandidate primary = mipSolver.solvePrimaryOnly(
-                                new ArrayList<>(patterns), orderedDemands, allowOverSet, seed);
-                        if (primary != null) {
-                            orderCandidates.add(new MultiStageMIPSolver.SolveCandidate(
-                                    "s" + seed + "-" + primary.name(), primary.result()));
+                        for (double alignmentLambda : alignmentLambdas) {
+                            for (double parityPenalty : parityPenalties) {
+                                // parity 经系统属性注入（LegacyOrderPatternSelectionSolver
+                                // 的 parityPenalty() 读取），调用后立即还原
+                                String prevParity = System.getProperty("cutting.aLayerParityPenalty");
+                                System.setProperty("cutting.aLayerParityPenalty",
+                                        Double.toString(parityPenalty));
+                                MultiStageMIPSolver.SolveCandidate primary;
+                                try {
+                                    primary = mipSolver.solvePrimaryOnly(
+                                            new ArrayList<>(patterns), orderedDemands, allowOverSet,
+                                            seed, alignmentLambda, alignmentContext);
+                                } finally {
+                                    if (prevParity == null) {
+                                        System.clearProperty("cutting.aLayerParityPenalty");
+                                    } else {
+                                        System.setProperty("cutting.aLayerParityPenalty", prevParity);
+                                    }
+                                }
+                                if (primary != null) {
+                                    orderCandidates.add(new MultiStageMIPSolver.SolveCandidate(
+                                            "s" + seed + "-a" + formatLambda(alignmentLambda)
+                                                    + "-p" + formatLambda(parityPenalty)
+                                                    + "-" + primary.name(),
+                                            primary.result()));
+                                }
+                            }
                         }
                     }
                     for (MultiStageMIPSolver.SolveCandidate candidate : orderCandidates) {
@@ -316,6 +342,88 @@ public class CuttingSolver implements CuttingSolverAlgorithm {
             }
         }
         return 1;
+    }
+
+    /**
+     * 质量模式总开关（-Dcutting.quality=true 或 API lnsQuality）。展开为：
+     * A层 parity 扫描 {0, 0.1} + B层双 LNS 变体（默认邻域 vs 扩大邻域）评优。
+     * 依据（笔记13终局）：parity0.1 在 sixian 上给出 46大组 但在 t9est188 上 72→94
+     * ——数据集脆弱，绝不能单独当默认；唯一稳健编排是多候选全评估后由
+     * isBetterPlan（车数→组→odd→small）拣优，结构上永不劣于单路径。
+     */
+    public static boolean qualityMode() {
+        return Boolean.parseBoolean(System.getProperty("cutting.quality", "false").trim());
+    }
+
+    /**
+     * A-layer parity 惩罚扫描列表。默认 {0}（不生效）；质量模式默认 {0, 0.1}；
+     * -Dcutting.aLayerParityPenalties=0,0.1,0.2 显式覆盖。
+     */
+    static double[] aLayerParityPenalties() {
+        String raw = System.getProperty("cutting.aLayerParityPenalties");
+        if (raw == null || raw.isBlank()) {
+            return qualityMode() ? new double[] {0.0, 0.1} : new double[] {0.0};
+        }
+        LinkedHashSet<Double> values = new LinkedHashSet<>();
+        for (String part : raw.split(",")) {
+            String trimmed = part.trim();
+            if (trimmed.isEmpty()) {
+                continue;
+            }
+            try {
+                double value = Double.parseDouble(trimmed);
+                if (!Double.isNaN(value) && value >= 0.0) {
+                    values.add(value);
+                }
+            } catch (NumberFormatException ignored) {
+                // Skip bad tokens and keep the rest of the sweep usable.
+            }
+        }
+        if (values.isEmpty()) {
+            values.add(0.0);
+        }
+        double[] result = new double[values.size()];
+        int i = 0;
+        for (double value : values) {
+            result[i++] = value;
+        }
+        return result;
+    }
+
+    /** A-layer alignment lambda sweep. Include 0.0 as the no-alignment baseline. */
+    private double[] aLayerAlignmentLambdas() {
+        String raw = System.getProperty("cutting.aLayerAlignmentLambdas", "0");
+        LinkedHashSet<Double> values = new LinkedHashSet<>();
+        for (String part : raw.split(",")) {
+            String trimmed = part.trim();
+            if (trimmed.isEmpty()) {
+                continue;
+            }
+            try {
+                double value = Double.parseDouble(trimmed);
+                if (!Double.isNaN(value) && value >= 0.0) {
+                    values.add(value);
+                }
+            } catch (NumberFormatException ignored) {
+                // Skip bad tokens and keep the rest of the sweep usable.
+            }
+        }
+        if (values.isEmpty()) {
+            values.add(0.0);
+        }
+        double[] result = new double[values.size()];
+        int i = 0;
+        for (double value : values) {
+            result[i++] = value;
+        }
+        return result;
+    }
+
+    private String formatLambda(double value) {
+        if (Math.rint(value) == value) {
+            return Long.toString(Math.round(value));
+        }
+        return Double.toString(value).replace('.', 'p');
     }
 
     private Map<Integer, Integer> toOrderedMap(List<Map.Entry<Integer, Integer>> entries,

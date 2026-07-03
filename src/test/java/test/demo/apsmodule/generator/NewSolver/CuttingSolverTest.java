@@ -20,6 +20,38 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class CuttingSolverTest {
 
     @Test
+    void paritySweepDefaultsToOffAndExpandsInQualityMode() {
+        String prevQuality = System.getProperty("cutting.quality");
+        String prevList = System.getProperty("cutting.aLayerParityPenalties");
+        try {
+            System.clearProperty("cutting.quality");
+            System.clearProperty("cutting.aLayerParityPenalties");
+            // 快路径：不扫描，与现状完全一致
+            org.junit.jupiter.api.Assertions.assertArrayEquals(
+                    new double[] {0.0}, CuttingSolver.aLayerParityPenalties());
+            // 质量模式：默认展开为 {0, 0.1}
+            System.setProperty("cutting.quality", "true");
+            org.junit.jupiter.api.Assertions.assertArrayEquals(
+                    new double[] {0.0, 0.1}, CuttingSolver.aLayerParityPenalties());
+            // 显式列表覆盖质量默认，去重且过滤非法项
+            System.setProperty("cutting.aLayerParityPenalties", "0, 0.2, 0.2, x, -1");
+            org.junit.jupiter.api.Assertions.assertArrayEquals(
+                    new double[] {0.0, 0.2}, CuttingSolver.aLayerParityPenalties());
+        } finally {
+            restore("cutting.quality", prevQuality);
+            restore("cutting.aLayerParityPenalties", prevList);
+        }
+    }
+
+    private static void restore(String key, String previous) {
+        if (previous == null) {
+            System.clearProperty(key);
+        } else {
+            System.setProperty(key, previous);
+        }
+    }
+
+    @Test
     void mergeFromCopiesForcedAllowOverWidths() {
         SolverConfig config = new SolverConfig();
         config.setStepSize(10);

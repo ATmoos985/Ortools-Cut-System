@@ -27,6 +27,10 @@ public class OptimizationRequest {
     private double newSolverSeqGroupBeta = 0.0;
     private boolean newSolverUseOptimizedAssignment = true;
     private double newSolverUnderPenalty = 1e6;
+    private boolean lnsEnabled = true;
+    private boolean lnsEnrichPatterns = false;
+    /** 质量模式：A层 parity{0,0.1} × B层双LNS邻域 多候选评优（isBetterPlan 拣优，永不劣于快路径；耗时约×2）。 */
+    private boolean qualityMode = false;
     private List<ExcelImportService.OrderItem> orderItems;
 
     // Getters and Setters
@@ -213,5 +217,29 @@ public class OptimizationRequest {
 
     public void setNewSolverUnderPenalty(double newSolverUnderPenalty) {
         this.newSolverUnderPenalty = newSolverUnderPenalty;
+    }
+
+    public boolean isLnsEnabled() {
+        return lnsEnabled;
+    }
+
+    public void setLnsEnabled(boolean lnsEnabled) {
+        this.lnsEnabled = lnsEnabled;
+    }
+
+    public boolean isLnsEnrichPatterns() {
+        return lnsEnrichPatterns;
+    }
+
+    public boolean isQualityMode() {
+        return qualityMode;
+    }
+
+    public void setQualityMode(boolean qualityMode) {
+        this.qualityMode = qualityMode;
+    }
+
+    public void setLnsEnrichPatterns(boolean lnsEnrichPatterns) {
+        this.lnsEnrichPatterns = lnsEnrichPatterns;
     }
 }

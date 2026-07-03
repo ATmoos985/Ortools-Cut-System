@@ -96,23 +96,28 @@ public class InstructionConverter {
         if (mipAssignment != null) {
             List<CuttingInstruction> mipInstructions = buildFromMIPAssignment(solution, groupKey, groupItems, mipAssignment);
             addCandidate(candidates, "stage5-mip", mipInstructions);
-            addPostProcessedCandidate(candidates, "stage5-mip-post", mipInstructions);
         }
 
-        try {
-            log.info("Evaluating Phase2 sequence-group candidate");
-            Phase2SequenceGroupSolver.SolveResult phase2Result =
-                    solveSequenceGroupsWithPhase2(solution, groupItems, mipAssignment);
-            if (phase2Result != null && !phase2Result.solution().isEmpty() && !phase2Result.assignments().isEmpty()) {
-                List<CuttingInstruction> phase2Instructions = buildFromMIPAssignment(
-                        phase2Result.solution(), groupKey, groupItems, phase2Result.assignments());
-                addCandidate(candidates, "phase2-cg", phase2Instructions);
-                addPostProcessedCandidate(candidates, "phase2-cg-post", phase2Instructions);
-            } else {
-                log.info("Phase2 sequence-group candidate produced no usable plan");
+        // Phase2 is an experimental second assignment candidate (~5s/group). It has not
+        // beaten the Stage5+LNS production path on the measured T9EST cases, so keep it
+        // off by default. Enable only for diagnostics: -Dcutting.phase2.enabled=true.
+        if (phase2Enabled()) {
+            try {
+                log.info("Evaluating Phase2 sequence-group candidate");
+                Phase2SequenceGroupSolver.SolveResult phase2Result =
+                        solveSequenceGroupsWithPhase2(solution, groupItems, mipAssignment);
+                if (phase2Result != null && !phase2Result.solution().isEmpty() && !phase2Result.assignments().isEmpty()) {
+                    List<CuttingInstruction> phase2Instructions = buildFromMIPAssignment(
+                            phase2Result.solution(), groupKey, groupItems, phase2Result.assignments());
+                    addCandidate(candidates, "phase2-cg", phase2Instructions);
+                } else {
+                    log.info("Phase2 sequence-group candidate produced no usable plan");
+                }
+            } catch (Exception e) {
+                log.warn("Phase2 sequence-group candidate failed, other candidates will still be evaluated", e);
             }
-        } catch (Exception e) {
-            log.warn("Phase2 sequence-group candidate failed, other candidates will still be evaluated", e);
+        } else {
+            log.info("Phase2 sequence-group candidate disabled (cutting.phase2.enabled=false)");
         }
 
         // Greedy is a FALLBACK ONLY. Across every measured run it never beats the Stage5/Phase2
@@ -124,12 +129,10 @@ public class InstructionConverter {
             List<CuttingInstruction> greedyInstructions = buildFromGreedyAssignment(
                     solution, groupKey, groupItems, OrderAssignmentOptimizer.GreedyStrategy.BATCH_FIRST);
             addCandidate(candidates, "greedy", greedyInstructions);
-            addPostProcessedCandidate(candidates, "greedy-post", greedyInstructions);
 
             List<CuttingInstruction> reuseGreedyInstructions = buildFromGreedyAssignment(
                     solution, groupKey, groupItems, OrderAssignmentOptimizer.GreedyStrategy.REUSE_FIRST);
             addCandidate(candidates, "greedy-reuse", reuseGreedyInstructions);
-            addPostProcessedCandidate(candidates, "greedy-reuse-post", reuseGreedyInstructions);
         }
 
         if (candidates.isEmpty()) {
@@ -143,11 +146,12 @@ public class InstructionConverter {
         List<SequenceCandidateRow> candidateRows = new ArrayList<>(
                 buildSequenceCandidateRows(candidates, selectedName));
 
-        if (LocalNeighborhoodSequenceOptimizer.isEnabled()) {
+        if (LocalNeighborhoodSequenceOptimizer.isEnabled()
+                || test.demo.apsmodule.generator.NewSolver.CuttingSolver.qualityMode()) {
             LocalNeighborhoodSequenceOptimizer optimizer =
                     new LocalNeighborhoodSequenceOptimizer(params, this::arrangeForSequenceGroups);
             LocalNeighborhoodSequenceOptimizer.LnsResult lnsResult =
-                    optimizer.improve(selectedInstructions, groupItems);
+                    runLnsVariants(optimizer, selectedInstructions, groupItems);
             if (lnsResult.improved()) {
                 selectedInstructions = lnsResult.instructions();
                 selectedName = selectedName + "+lns";
@@ -166,6 +170,18 @@ public class InstructionConverter {
                         true));
                 log.info("LNS improved selected sequence plan: groups {} -> {}",
                         lnsResult.beforeGroups(), lnsResult.afterGroups());
+
+                // Phase O（组数封顶的奇偶修复）：LNS 的移动会破坏 build 阶段做过的 family
+                // repack，所以 LNS 输出常带着本可避免的奇数车块。在 LNS 结果上重跑一次
+                // repack MIP（权重 块10000 > 奇100 > 小10，结构上不可能增加块数），只接受
+                // 字典序（组→奇→小）严格变好且需求/车数/废边守恒的结果——组数地板绝不回吐。
+                List<CuttingInstruction> repaired = oddRepairPass(selectedInstructions);
+                if (repaired != null) {
+                    selectedInstructions = repaired;
+                    selectedName = selectedName + "+oddfix";
+                    selectedGroups = SequenceGroupPostProcessor
+                            .computeGroupStats(selectedInstructions).groups();
+                }
             } else {
                 log.info("LNS produced no accepted improvement: {}", lnsResult.reason());
             }
@@ -178,6 +194,106 @@ public class InstructionConverter {
                 selectedName,
                 selectedGroups,
                 candidateRows);
+    }
+
+    /**
+     * B 层 LNS 变体评优。快路径：按全局属性单跑（现状不变）。质量模式
+     * （cutting.quality=true）：默认邻域与扩大邻域（12/20/40/60）各跑一遍，
+     * 按 组→odd→small 字典序拣优——两套邻域参数在不同数据集上互有胜负
+     * （sixian 扩大邻域胜，t9est188 默认邻域胜 69 vs 72，笔记13），
+     * 单一调参路径不可靠，评优后结构上永不劣于任一单路径。
+     */
+    private LocalNeighborhoodSequenceOptimizer.LnsResult runLnsVariants(
+            LocalNeighborhoodSequenceOptimizer optimizer,
+            List<CuttingInstruction> instructions,
+            List<SolverOrderItem> groupItems) {
+        if (!test.demo.apsmodule.generator.NewSolver.CuttingSolver.qualityMode()) {
+            return optimizer.improve(instructions, groupItems);
+        }
+        Map<String, String> defaultVariant = Map.of("cutting.lns.enabled", "true");
+        Map<String, String> qualityVariant = Map.of(
+                "cutting.lns.enabled", "true",
+                "cutting.lns.maxFreeOrders", "12",
+                "cutting.lns.maxFreePatterns", "20",
+                "cutting.lns.maxFreeCars", "40",
+                "cutting.lns.maxNeighborhoods", "60");
+        LocalNeighborhoodSequenceOptimizer.LnsResult resultDefault =
+                LocalNeighborhoodSequenceOptimizer.withPropertyOverrides(defaultVariant,
+                        () -> optimizer.improve(instructions, groupItems));
+        LocalNeighborhoodSequenceOptimizer.LnsResult resultQuality =
+                LocalNeighborhoodSequenceOptimizer.withPropertyOverrides(qualityVariant,
+                        () -> optimizer.improve(instructions, groupItems));
+        SequenceGroupPostProcessor.GroupStats statsDefault =
+                SequenceGroupPostProcessor.computeGroupStats(resultDefault.instructions());
+        SequenceGroupPostProcessor.GroupStats statsQuality =
+                SequenceGroupPostProcessor.computeGroupStats(resultQuality.instructions());
+        boolean qualityWins = statsQuality.groups() < statsDefault.groups()
+                || (statsQuality.groups() == statsDefault.groups()
+                        && (statsQuality.oddCarGroups() < statsDefault.oddCarGroups()
+                                || (statsQuality.oddCarGroups() == statsDefault.oddCarGroups()
+                                        && statsQuality.smallCarGroups() < statsDefault.smallCarGroups())));
+        log.info("LNS variants: default={}/{}/{} quality={}/{}/{} -> winner={}",
+                statsDefault.groups(), statsDefault.oddCarGroups(), statsDefault.smallCarGroups(),
+                statsQuality.groups(), statsQuality.oddCarGroups(), statsQuality.smallCarGroups(),
+                qualityWins ? "quality" : "default");
+        return qualityWins ? resultQuality : resultDefault;
+    }
+
+    /**
+     * Phase O：LNS 之后的奇偶修复。对 LNS 输出重跑 family repack（optimizeInstructionFamilies），
+     * 用字典序（组数 → 奇数车组 → 小车组）+ 需求/车数/废边守恒做全局验收；任一维度回退即整体放弃。
+     * 返回 null 表示未接受（保持原结果）。同时打印 odd 理论下界 = usage 为奇数的花型族个数
+     * （每族块大小之和 = 族车数，奇数车数至少留一个奇块，B 层任何重排都破不了这个底）。
+     */
+    private List<CuttingInstruction> oddRepairPass(List<CuttingInstruction> instructions) {
+        if (instructions == null || instructions.isEmpty()) {
+            return null;
+        }
+        SequenceGroupPostProcessor.GroupStats before = SequenceGroupPostProcessor.computeGroupStats(instructions);
+        int beforeCars = instructions.stream().mapToInt(CuttingInstruction::getUsageCount).sum();
+        int beforeWaste = instructions.stream()
+                .mapToInt(i -> i.getWaste() * i.getUsageCount()).sum();
+        Map<String, Integer> beforeDemand = countAssignmentsByDemandKey(instructions);
+        int oddFloor = oddCarFloor(instructions);
+
+        List<CuttingInstruction> candidate = cloneInstructions(instructions);
+        candidate = optimizeInstructionFamilies(candidate);
+        compactInstructionRollOrder(candidate);
+        reorderInstructionsForSequenceGroups(candidate);
+
+        SequenceGroupPostProcessor.GroupStats after = SequenceGroupPostProcessor.computeGroupStats(candidate);
+        int afterCars = candidate.stream().mapToInt(CuttingInstruction::getUsageCount).sum();
+        int afterWaste = candidate.stream()
+                .mapToInt(i -> i.getWaste() * i.getUsageCount()).sum();
+        boolean conserved = afterCars == beforeCars
+                && afterWaste == beforeWaste
+                && beforeDemand.equals(countAssignmentsByDemandKey(candidate));
+        boolean lexBetter = after.groups() < before.groups()
+                || (after.groups() == before.groups()
+                        && (after.oddCarGroups() < before.oddCarGroups()
+                                || (after.oddCarGroups() == before.oddCarGroups()
+                                        && after.smallCarGroups() < before.smallCarGroups())));
+        log.info("Odd-repair pass: groups {}->{}, odd {}->{} (floor={}), small {}->{}, conserved={}, accepted={}",
+                before.groups(), after.groups(),
+                before.oddCarGroups(), after.oddCarGroups(), oddFloor,
+                before.smallCarGroups(), after.smallCarGroups(),
+                conserved, conserved && lexBetter);
+        return conserved && lexBetter ? candidate : null;
+    }
+
+    /** odd 理论下界：usage 合计为奇数的花型族（宽度多重集）个数。 */
+    private int oddCarFloor(List<CuttingInstruction> instructions) {
+        Map<String, Integer> carsByFamily = new LinkedHashMap<>();
+        for (CuttingInstruction instruction : instructions) {
+            carsByFamily.merge(instructionPatternSignature(instruction), instruction.getUsageCount(), Integer::sum);
+        }
+        return (int) carsByFamily.values().stream().filter(u -> u % 2 != 0).count();
+    }
+
+    /** Whether the Phase2 sequence-group candidate is evaluated. Default false. */
+    private boolean phase2Enabled() {
+        return Boolean.parseBoolean(
+                System.getProperty("cutting.phase2.enabled", "false").trim());
     }
 
     protected Map<PatternCandidate, List<AssignmentMIPSolver.AssignmentBlock>> solveAssignmentWithMip(
@@ -378,29 +494,20 @@ public class InstructionConverter {
             return;
         }
 
-        SequenceGroupPostProcessor.GroupStats stats = SequenceGroupPostProcessor.computeGroupStats(instructions);
-        candidates.add(new ScoredInstructionPlan(
-                name, instructions, stats.groups(), stats.oddCarGroups(), stats.smallCarGroups()));
-        log.info("Sequence-group candidate: {} groups={} oddCars={} smallCars={} instructions={}",
-                name, stats.groups(), stats.oddCarGroups(), stats.smallCarGroups(), instructions.size());
-    }
-
-    private void addPostProcessedCandidate(List<ScoredInstructionPlan> candidates, String name,
-            List<CuttingInstruction> baseInstructions) {
-        if (baseInstructions == null || baseInstructions.isEmpty()) {
-            return;
-        }
-
-        List<CuttingInstruction> candidate = cloneInstructions(baseInstructions);
+        List<CuttingInstruction> candidate = cloneInstructions(instructions);
         Map<String, Integer> before = countAssignmentsByDemandKey(candidate);
-        optimizeSequenceGroups(candidate);
+        arrangeForSequenceGroups(candidate);
         Map<String, Integer> after = countAssignmentsByDemandKey(candidate);
         if (!before.equals(after)) {
-            log.warn("Sequence-group postprocess rejected for {} because width-message counts changed", name);
+            log.warn("Sequence-group candidate rejected for {} because width-message counts changed", name);
             return;
         }
 
-        addCandidate(candidates, name, candidate);
+        SequenceGroupPostProcessor.GroupStats stats = SequenceGroupPostProcessor.computeGroupStats(candidate);
+        candidates.add(new ScoredInstructionPlan(
+                name, candidate, stats.groups(), stats.oddCarGroups(), stats.smallCarGroups()));
+        log.info("Sequence-group candidate: {} groups={} oddCars={} smallCars={} instructions={}",
+                name, stats.groups(), stats.oddCarGroups(), stats.smallCarGroups(), candidate.size());
     }
 
     private Map<String, Integer> countAssignmentsByDemandKey(List<CuttingInstruction> instructions) {
@@ -1404,13 +1511,9 @@ public class InstructionConverter {
     private int candidatePreference(String name) {
         return switch (name) {
             case "stage5-mip" -> 0;
-            case "stage5-mip-post" -> 1;
-            case "phase2-cg" -> 2;
-            case "phase2-cg-post" -> 3;
-            case "greedy" -> 4;
-            case "greedy-post" -> 5;
-            case "greedy-reuse" -> 6;
-            case "greedy-reuse-post" -> 7;
+            case "phase2-cg" -> 1;
+            case "greedy" -> 2;
+            case "greedy-reuse" -> 3;
             default -> Integer.MAX_VALUE;
         };
     }

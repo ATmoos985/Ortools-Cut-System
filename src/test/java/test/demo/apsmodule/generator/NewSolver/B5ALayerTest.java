@@ -5,6 +5,7 @@ import org.junit.jupiter.api.Test;
 import test.demo.apsmodule.generator.NewSolver.colgen.ColumnGenerationSolver;
 import test.demo.apsmodule.generator.NewSolver.config.SolverParameters;
 import test.demo.apsmodule.generator.NewSolver.mip.MultiStageMIPSolver;
+import test.demo.apsmodule.generator.NewSolver.mip.PatternAlignmentContext;
 import test.demo.apsmodule.generator.NewSolver.model.PatternCandidate;
 import test.demo.apsmodule.service.SolverConfig;
 import test.demo.apsmodule.service.SolverOrderItem;
@@ -66,6 +67,51 @@ class B5ALayerTest {
         System.out.println("#####################################\n");
     }
 
+    @Test
+    void aLayerAlignmentLambdaSweep() throws Exception {
+        Loader.loadNativeLibraries();
+        List<SolverOrderItem> items = loadItems();
+        SolverConfig config = buildConfig();
+        SolverParameters params = SolverParameters.createDefault();
+        params.mergeFrom(config);
+
+        Map<Integer, Integer> demands = new java.util.TreeMap<>();
+        for (SolverOrderItem it : items) {
+            demands.merge(it.getWidth(), it.getDemand(), Integer::sum);
+        }
+        Set<Integer> allowOver = demands.entrySet().stream()
+                .sorted((a, b) -> Integer.compare(b.getValue(), a.getValue()))
+                .limit(params.getTopK())
+                .map(Map.Entry::getKey)
+                .collect(Collectors.toCollection(LinkedHashSet::new));
+
+        PatternGeneratorWrap pg = new PatternGeneratorWrap(params);
+        List<PatternCandidate> generated = pg.generate(demands);
+        ColumnGenerationSolver cg = new ColumnGenerationSolver(params);
+        List<PatternCandidate> patterns = cg.solve(generated, demands, allowOver);
+        PatternAlignmentContext alignmentContext = PatternAlignmentContext.from(items);
+
+        System.out.println("\n##### A-LAYER ALIGNMENT LAMBDA SWEEP #####");
+        for (double lambda : List.of(0.0, 0.2, 0.5, 1.0)) {
+            MultiStageMIPSolver mip = new MultiStageMIPSolver(params);
+            MultiStageMIPSolver.SolveCandidate candidate = mip.solvePrimaryOnly(
+                    new ArrayList<>(patterns), demands, allowOver, 1, lambda, alignmentContext);
+            if (candidate == null) {
+                System.out.printf("lambda=%.1f no-candidate%n", lambda);
+                continue;
+            }
+            String sig = solutionSignature(candidate);
+            System.out.printf("lambda=%.1f name=%s patterns=%d rolls=%d waste=%d sig#%d%n",
+                    lambda,
+                    candidate.name(),
+                    candidate.result().getPatternCount(),
+                    candidate.result().getTotalRolls(),
+                    candidate.result().getTotalWaste(),
+                    sig.hashCode());
+        }
+        System.out.println("###########################################\n");
+    }
+
     private List<String> aLayerSignatures(SolverParameters params,
             Map<Integer, Integer> demands, Set<Integer> allowOver, List<SolverOrderItem> items) {
         PatternGeneratorWrap pg = new PatternGeneratorWrap(params);
@@ -74,17 +120,24 @@ class B5ALayerTest {
         patterns = cg.solve(patterns, demands, allowOver);
         MultiStageMIPSolver mip = new MultiStageMIPSolver(params);
         // Production path is solvePrimaryOnly (the diverse solveCandidates path was removed).
-        MultiStageMIPSolver.SolveCandidate primary = mip.solvePrimaryOnly(patterns, demands, allowOver);
+        MultiStageMIPSolver.SolveCandidate primary = mip.solvePrimaryOnly(
+                patterns, demands, allowOver,
+                params.getALayerScipSeed(), params.getALayerAlignmentLambda(),
+                PatternAlignmentContext.from(items));
         List<MultiStageMIPSolver.SolveCandidate> cands = primary == null ? List.of() : List.of(primary);
         List<String> sigs = new ArrayList<>();
         for (MultiStageMIPSolver.SolveCandidate c : cands) {
-            String sig = c.result().getSolution().entrySet().stream()
-                    .map(e -> e.getKey().signature() + "x" + e.getValue())
-                    .sorted()
-                    .collect(Collectors.joining("|"));
+            String sig = solutionSignature(c);
             sigs.add(c.name() + " patterns=" + c.result().getSolution().size() + " sig#" + sig.hashCode());
         }
         return sigs;
+    }
+
+    private String solutionSignature(MultiStageMIPSolver.SolveCandidate candidate) {
+        return candidate.result().getSolution().entrySet().stream()
+                .map(e -> e.getKey().signature() + "x" + e.getValue())
+                .sorted()
+                .collect(Collectors.joining("|"));
     }
 
     // PatternGenerator lives in a sibling package; alias via import-free wrapper.

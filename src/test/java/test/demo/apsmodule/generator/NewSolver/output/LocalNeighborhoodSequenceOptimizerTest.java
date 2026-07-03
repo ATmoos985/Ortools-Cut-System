@@ -6,15 +6,41 @@ import test.demo.apsmodule.service.CuttingInstruction;
 import test.demo.apsmodule.service.SolverOrderItem;
 import test.demo.apsmodule.service.StationAssignment;
 
+import java.lang.reflect.Constructor;
+import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class LocalNeighborhoodSequenceOptimizerTest {
+
+    @Test
+    void propertyOverridesAreScopedToCurrentCall() {
+        String previous = System.getProperty("cutting.lns.enabled");
+        System.clearProperty("cutting.lns.enabled");
+        try {
+            assertFalse(LocalNeighborhoodSequenceOptimizer.isEnabled());
+
+            boolean enabledInside = LocalNeighborhoodSequenceOptimizer.withPropertyOverrides(
+                    Map.of("cutting.lns.enabled", "true"),
+                    LocalNeighborhoodSequenceOptimizer::isEnabled);
+
+            assertTrue(enabledInside);
+            assertFalse(LocalNeighborhoodSequenceOptimizer.isEnabled());
+        } finally {
+            if (previous == null) {
+                System.clearProperty("cutting.lns.enabled");
+            } else {
+                System.setProperty("cutting.lns.enabled", previous);
+            }
+        }
+    }
 
     @Test
     void improvesClosedNeighborhoodWithoutChangingCarsWasteOrDemand() {
@@ -42,6 +68,45 @@ class LocalNeighborhoodSequenceOptimizerTest {
         assertEquals(4, totalCars(result.instructions()));
         assertEquals(totalWaste(before), totalWaste(result.instructions()));
         assertEquals(assignmentCounts(before), assignmentCounts(result.instructions()));
+    }
+
+    @Test
+    void moveRankingPrefersOddCarGroupsBeforeFragmentation() throws Exception {
+        LocalNeighborhoodSequenceOptimizer optimizer =
+                new LocalNeighborhoodSequenceOptimizer(SolverParameters.createDefault());
+        Object worseOdd = move(stats(8, 3, 3), 1);
+        Object betterOdd = move(stats(8, 2, 4), 9);
+
+        Method method = LocalNeighborhoodSequenceOptimizer.class
+                .getDeclaredMethod("betterMove", moveClass(), moveClass());
+        method.setAccessible(true);
+
+        Object selected = LocalNeighborhoodSequenceOptimizer.withPropertyOverrides(
+                Map.of("cutting.lns.balanceTiebreak", "true"),
+                () -> {
+                    try {
+                        return method.invoke(optimizer, worseOdd, betterOdd);
+                    } catch (ReflectiveOperationException e) {
+                        throw new AssertionError(e);
+                    }
+                });
+
+        assertSame(betterOdd, selected);
+    }
+
+    @Test
+    void groupGainGuardRejectsOddRegressionAndAllowsSmallImprovement() throws Exception {
+        LocalNeighborhoodSequenceOptimizer optimizer =
+                new LocalNeighborhoodSequenceOptimizer(SolverParameters.createDefault());
+        Method method = LocalNeighborhoodSequenceOptimizer.class.getDeclaredMethod(
+                "groupGainRegressionAllowed",
+                SequenceGroupPostProcessor.GroupStats.class,
+                SequenceGroupPostProcessor.GroupStats.class);
+        method.setAccessible(true);
+
+        assertFalse((Boolean) method.invoke(optimizer, stats(10, 2, 4), stats(9, 3, 2)));
+        assertTrue((Boolean) method.invoke(optimizer, stats(10, 2, 4), stats(9, 2, 2)));
+        assertTrue((Boolean) method.invoke(optimizer, stats(10, 4, 4), stats(2, 0, 2)));
     }
 
     private Map<Integer, Integer> pattern(int... widths) {
@@ -90,6 +155,25 @@ class LocalNeighborhoodSequenceOptimizerTest {
         item.setSurfaceTreatment("N");
         item.setGroupKey("1350m+N");
         return item;
+    }
+
+    private SequenceGroupPostProcessor.GroupStats stats(int groups, int odd, int small) {
+        return new SequenceGroupPostProcessor.GroupStats(groups, odd, small);
+    }
+
+    private Class<?> moveClass() throws ClassNotFoundException {
+        return Class.forName(LocalNeighborhoodSequenceOptimizer.class.getName() + "$MoveCandidate");
+    }
+
+    private Object move(SequenceGroupPostProcessor.GroupStats stats, int fragmentation) throws Exception {
+        Constructor<?> constructor = moveClass().getDeclaredConstructor(
+                List.class,
+                Class.forName(LocalNeighborhoodSequenceOptimizer.class.getName() + "$Neighborhood"),
+                Class.forName(LocalNeighborhoodSequenceOptimizer.class.getName() + "$SolveAttempt"),
+                SequenceGroupPostProcessor.GroupStats.class,
+                int.class);
+        constructor.setAccessible(true);
+        return constructor.newInstance(List.of(), null, null, stats, fragmentation);
     }
 
     private int totalCars(List<CuttingInstruction> instructions) {

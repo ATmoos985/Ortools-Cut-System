@@ -159,7 +159,9 @@ public class LocalNeighborhoodSequenceOptimizer {
 
         List<CuttingInstruction> current = cloneInstructions(originalInstructions);
         arranger.accept(current);
-        int originalGroups = SequenceGroupPostProcessor.computeGroupStats(current).groups();
+        SequenceGroupPostProcessor.GroupStats originalStats =
+                SequenceGroupPostProcessor.computeGroupStats(current);
+        int originalGroups = originalStats.groups();
         int originalCars = totalCars(current);
         int originalWaste = totalWaste(current);
         Map<String, Integer> originalDemand = countAssignmentsByDemandKey(current);
@@ -180,9 +182,10 @@ public class LocalNeighborhoodSequenceOptimizer {
         int noImproveStreak = 0;
         boolean improved = false;
         String lastReason = "no-improving-neighborhood";
+        Diagnostics diagnostics = Diagnostics.create();
 
         List<CuttingInstruction> bestEver = cloneInstructions(current);
-        int bestEverGroups = originalGroups;
+        SequenceGroupPostProcessor.GroupStats bestEverStats = originalStats;
         // Visited-solution tabu: forbids moves that return to an already-seen assignment.
         // Without it the escape step oscillates in a 2-cycle (escape up, best move undoes it).
         Set<String> visited = new HashSet<>();
@@ -195,7 +198,9 @@ public class LocalNeighborhoodSequenceOptimizer {
         // sixian (49) and t9est188 (69); ON by default — set -Dcutting.lns.parallel=false for serial.
         boolean parallel = booleanProperty("cutting.lns.parallel", true);
         for (int iteration = 0; iteration < maxIterations; iteration++) {
-            int beforeGroups = SequenceGroupPostProcessor.computeGroupStats(current).groups();
+            SequenceGroupPostProcessor.GroupStats beforeStats =
+                    SequenceGroupPostProcessor.computeGroupStats(current);
+            int beforeGroups = beforeStats.groups();
             int beforeFragmentation = fragmentationScore(current);
             List<RollRecord> rolls = decompose(current);
             List<Neighborhood> neighborhoods = buildNeighborhoods(rolls, maxNeighborhoods);
@@ -217,7 +222,32 @@ public class LocalNeighborhoodSequenceOptimizer {
                 SolveAttempt attempt = presolved != null
                         ? presolved.get(ni) : solveNeighborhood(neighborhood);
                 lastReason = attempt.reason();
+                int beforeProxy = currentActiveColumns(neighborhood);
                 if (!attempt.feasible()) {
+                    diagnostics.record(new DiagnosticRow(
+                            iteration,
+                            ni,
+                            neighborhood.seedKeys(),
+                            neighborhood.freeDemand().size(),
+                            neighborhood.patterns().size(),
+                            neighborhood.cars(),
+                            attempt.columns().size(),
+                            beforeProxy,
+                            0,
+                            beforeStats.groups(),
+                            beforeStats.oddCarGroups(),
+                            beforeStats.smallCarGroups(),
+                            beforeFragmentation,
+                            beforeStats.groups(),
+                            beforeStats.oddCarGroups(),
+                            beforeStats.smallCarGroups(),
+                            beforeFragmentation,
+                            false,
+                            false,
+                            false,
+                            false,
+                            false,
+                            attempt.status()));
                     continue;
                 }
 
@@ -226,39 +256,98 @@ public class LocalNeighborhoodSequenceOptimizer {
                 int candidateCars = totalCars(candidate);
                 int candidateWaste = totalWaste(candidate);
                 Map<String, Integer> candidateDemand = countAssignmentsByDemandKey(candidate);
-                int afterGroups = SequenceGroupPostProcessor.computeGroupStats(candidate).groups();
+                SequenceGroupPostProcessor.GroupStats afterStats =
+                        SequenceGroupPostProcessor.computeGroupStats(candidate);
                 int afterFragmentation = fragmentationScore(candidate);
 
                 if (candidateCars == originalCars
                         && candidateWaste == originalWaste
                         && originalDemand.equals(candidateDemand)) {
-                    boolean promisingRaw = afterGroups <= beforeGroups || afterFragmentation < beforeFragmentation;
+                    boolean promisingRaw = afterStats.groups() <= beforeGroups
+                            || afterFragmentation < beforeFragmentation;
                     long postTimeBudgetMs = longProperty(
                             "cutting.lns.postTimeBudgetMs", DEFAULT_POST_TIME_BUDGET_MS);
                     if (promisingRaw && postTimeBudgetMs > 0L) {
                         SequenceGroupPostProcessor.optimize(candidate,
                                 postTimeBudgetMs, false);
-                        afterGroups = SequenceGroupPostProcessor.computeGroupStats(candidate).groups();
+                        afterStats = SequenceGroupPostProcessor.computeGroupStats(candidate);
                         afterFragmentation = fragmentationScore(candidate);
                     }
-                    if (!visited.contains(solutionSignature(candidate))) {
+                    boolean visitedSolution = visited.contains(solutionSignature(candidate));
+                    boolean guardOk = groupGainRegressionAllowed(beforeStats, afterStats)
+                            && groupGainRegressionAllowed(originalStats, afterStats);
+                    diagnostics.record(new DiagnosticRow(
+                            iteration,
+                            ni,
+                            neighborhood.seedKeys(),
+                            neighborhood.freeDemand().size(),
+                            neighborhood.patterns().size(),
+                            neighborhood.cars(),
+                            attempt.columns().size(),
+                            beforeProxy,
+                            attempt.activeColumns(),
+                            beforeStats.groups(),
+                            beforeStats.oddCarGroups(),
+                            beforeStats.smallCarGroups(),
+                            beforeFragmentation,
+                            afterStats.groups(),
+                            afterStats.oddCarGroups(),
+                            afterStats.smallCarGroups(),
+                            afterFragmentation,
+                            true,
+                            true,
+                            !visitedSolution,
+                            visitedSolution,
+                            guardOk,
+                            attempt.status()));
+                    if (!visitedSolution && guardOk) {
                         MoveCandidate move = new MoveCandidate(candidate, neighborhood, attempt,
-                                afterGroups, afterFragmentation);
-                        if (afterGroups < beforeGroups) {
+                                afterStats, afterFragmentation);
+                        if (afterStats.groups() < beforeGroups) {
                             bestImprovement = betterMove(bestImprovement, move);
-                        } else if (afterGroups == beforeGroups) {
-                            if (allowPlateau && afterFragmentation < beforeFragmentation) {
+                        } else if (afterStats.groups() == beforeGroups) {
+                            if (allowPlateau && improvesPlateau(beforeStats, beforeFragmentation,
+                                    afterStats, afterFragmentation)) {
                                 bestPlateau = betterMove(bestPlateau, move);
                             }
                         } else {
                             bestWorsening = betterMove(bestWorsening, move);
                         }
                     }
+                } else {
+                    diagnostics.record(new DiagnosticRow(
+                            iteration,
+                            ni,
+                            neighborhood.seedKeys(),
+                            neighborhood.freeDemand().size(),
+                            neighborhood.patterns().size(),
+                            neighborhood.cars(),
+                            attempt.columns().size(),
+                            beforeProxy,
+                            attempt.activeColumns(),
+                            beforeStats.groups(),
+                            beforeStats.oddCarGroups(),
+                            beforeStats.smallCarGroups(),
+                            beforeFragmentation,
+                            afterStats.groups(),
+                            afterStats.oddCarGroups(),
+                            afterStats.smallCarGroups(),
+                            afterFragmentation,
+                            true,
+                            false,
+                            false,
+                            false,
+                            false,
+                            attempt.status()));
                 }
 
-                log.debug("LNS rejected: groups {} -> {}, frag {}->{}, cars {}->{}, waste {}->{}, demandOk={}, seeds={}, columns={}, status={}",
+                log.debug("LNS rejected: groups {} -> {}, odd {}->{}, small {}->{}, frag {}->{}, cars {}->{}, waste {}->{}, demandOk={}, seeds={}, columns={}, status={}",
                         beforeGroups,
-                        afterGroups,
+                        afterStats.groups(),
+                        beforeStats.oddCarGroups(),
+                        afterStats.oddCarGroups(),
+                        beforeStats.smallCarGroups(),
+                        afterStats.smallCarGroups(),
                         beforeFragmentation,
                         afterFragmentation,
                         originalCars,
@@ -276,7 +365,7 @@ public class LocalNeighborhoodSequenceOptimizer {
             if (accepted == null) {
                 // No descending/plateau move. Try a bounded escape step to leave the local optimum.
                 if (escape && bestWorsening != null
-                        && bestWorsening.afterGroups() <= bestEverGroups + worseningTolerance) {
+                        && bestWorsening.afterGroups() <= bestEverStats.groups() + worseningTolerance) {
                     accepted = bestWorsening;
                     escapeStep = true;
                 } else {
@@ -284,10 +373,14 @@ public class LocalNeighborhoodSequenceOptimizer {
                 }
             }
 
-            log.info("LNS {}: groups {} -> {}, frag {}->{}, waste={} cars={}, seeds={}, orders={}, patterns={}, columns={}, status={}, elapsed={}ms",
+            log.info("LNS {}: groups {} -> {}, odd {}->{}, small {}->{}, frag {}->{}, waste={} cars={}, seeds={}, orders={}, patterns={}, columns={}, status={}, elapsed={}ms",
                     escapeStep ? "escape" : "accepted",
                     beforeGroups,
                     accepted.afterGroups(),
+                    beforeStats.oddCarGroups(),
+                    accepted.afterOddCarGroups(),
+                    beforeStats.smallCarGroups(),
+                    accepted.afterSmallCarGroups(),
                     beforeFragmentation,
                     accepted.afterFragmentation(),
                     totalWaste(accepted.instructions()),
@@ -300,9 +393,9 @@ public class LocalNeighborhoodSequenceOptimizer {
                     accepted.attempt().elapsedMs());
             current = accepted.instructions();
             visited.add(solutionSignature(current));
-            if (accepted.afterGroups() < bestEverGroups) {
+            if (betterStats(accepted.afterStats(), bestEverStats)) {
                 bestEver = cloneInstructions(current);
-                bestEverGroups = accepted.afterGroups();
+                bestEverStats = accepted.afterStats();
                 improved = true;
                 noImproveStreak = 0;
             } else if (++noImproveStreak >= maxNoImprove) {
@@ -311,10 +404,18 @@ public class LocalNeighborhoodSequenceOptimizer {
             }
         }
 
-        if (improved && bestEverGroups < originalGroups) {
-            return new LnsResult(true, bestEver, originalGroups, bestEverGroups, "improved");
+        diagnostics.logSummary(originalStats);
+        if (improved && betterStats(bestEverStats, originalStats)) {
+            return new LnsResult(true, bestEver, originalGroups, bestEverStats.groups(), "improved");
         }
         return LnsResult.notImproved(originalInstructions, lastReason);
+    }
+
+    private int currentActiveColumns(Neighborhood neighborhood) {
+        return (int) neighborhood.selectedRolls().stream()
+                .map(roll -> new Column(roll.pattern(), roll.config(), roll.demandCounts(), true).signature())
+                .distinct()
+                .count();
     }
 
     private static synchronized boolean loadOrTools() {
@@ -722,8 +823,24 @@ public class LocalNeighborhoodSequenceOptimizer {
         if (candidate.afterGroups() != current.afterGroups()) {
             return candidate.afterGroups() < current.afterGroups() ? candidate : current;
         }
+        if (balanceTiebreakEnabled()) {
+            if (betterSecondaryStats(candidate.afterStats(), current.afterStats())) {
+                return candidate;
+            }
+            if (betterSecondaryStats(current.afterStats(), candidate.afterStats())) {
+                return current;
+            }
+        }
         if (candidate.afterFragmentation() != current.afterFragmentation()) {
             return candidate.afterFragmentation() < current.afterFragmentation() ? candidate : current;
+        }
+        if (!balanceTiebreakEnabled()) {
+            if (betterSecondaryStats(candidate.afterStats(), current.afterStats())) {
+                return candidate;
+            }
+            if (betterSecondaryStats(current.afterStats(), candidate.afterStats())) {
+                return current;
+            }
         }
         if (candidate.neighborhood().cars() != current.neighborhood().cars()) {
             return candidate.neighborhood().cars() > current.neighborhood().cars() ? candidate : current;
@@ -732,6 +849,61 @@ public class LocalNeighborhoodSequenceOptimizer {
             return candidate.attempt().columns().size() > current.attempt().columns().size() ? candidate : current;
         }
         return current;
+    }
+
+    private boolean balanceTiebreakEnabled() {
+        return booleanProperty("cutting.lns.balanceTiebreak", false);
+    }
+
+    private boolean improvesPlateau(
+            SequenceGroupPostProcessor.GroupStats beforeStats,
+            int beforeFragmentation,
+            SequenceGroupPostProcessor.GroupStats afterStats,
+            int afterFragmentation) {
+        if (afterStats.groups() != beforeStats.groups()) {
+            return false;
+        }
+        if (afterStats.oddCarGroups() != beforeStats.oddCarGroups()) {
+            return afterStats.oddCarGroups() < beforeStats.oddCarGroups();
+        }
+        if (afterStats.smallCarGroups() != beforeStats.smallCarGroups()) {
+            return afterStats.smallCarGroups() < beforeStats.smallCarGroups();
+        }
+        return afterFragmentation < beforeFragmentation;
+    }
+
+    private boolean groupGainRegressionAllowed(
+            SequenceGroupPostProcessor.GroupStats reference,
+            SequenceGroupPostProcessor.GroupStats candidate) {
+        if (candidate.groups() >= reference.groups()) {
+            return true;
+        }
+        int maxOddRegression = intProperty("cutting.lns.maxOddRegressionOnGroupGain", 0);
+        int maxSmallRegression = intProperty(
+                "cutting.lns.maxSmallRegressionOnGroupGain", Integer.MAX_VALUE);
+        return candidate.oddCarGroups() <= (long) reference.oddCarGroups() + maxOddRegression
+                && candidate.smallCarGroups() <= (long) reference.smallCarGroups() + maxSmallRegression;
+    }
+
+    private boolean betterStats(
+            SequenceGroupPostProcessor.GroupStats candidate,
+            SequenceGroupPostProcessor.GroupStats current) {
+        if (candidate.groups() != current.groups()) {
+            return candidate.groups() < current.groups();
+        }
+        return betterSecondaryStats(candidate, current);
+    }
+
+    private boolean betterSecondaryStats(
+            SequenceGroupPostProcessor.GroupStats candidate,
+            SequenceGroupPostProcessor.GroupStats current) {
+        if (candidate.oddCarGroups() != current.oddCarGroups()) {
+            return candidate.oddCarGroups() < current.oddCarGroups();
+        }
+        if (candidate.smallCarGroups() != current.smallCarGroups()) {
+            return candidate.smallCarGroups() < current.smallCarGroups();
+        }
+        return false;
     }
 
     /**
@@ -1335,8 +1507,20 @@ public class LocalNeighborhoodSequenceOptimizer {
             List<CuttingInstruction> instructions,
             Neighborhood neighborhood,
             SolveAttempt attempt,
-            int afterGroups,
+            SequenceGroupPostProcessor.GroupStats afterStats,
             int afterFragmentation) {
+
+        int afterGroups() {
+            return afterStats.groups();
+        }
+
+        int afterOddCarGroups() {
+            return afterStats.oddCarGroups();
+        }
+
+        int afterSmallCarGroups() {
+            return afterStats.smallCarGroups();
+        }
     }
 
     private record SolveAttempt(
@@ -1353,9 +1537,189 @@ public class LocalNeighborhoodSequenceOptimizer {
         String reason() {
             return status;
         }
+
+        int activeColumns() {
+            return counts.size();
+        }
     }
 
     private record SolveSolution(String status, Map<Integer, Integer> counts, int activeColumns) {
+    }
+
+    private record DiagnosticRow(
+            int iteration,
+            int neighborhoodIndex,
+            List<String> seeds,
+            int freeOrders,
+            int patterns,
+            int cars,
+            int columns,
+            int beforeProxy,
+            int afterProxy,
+            int beforeGroups,
+            int beforeOddCarGroups,
+            int beforeSmallCarGroups,
+            int beforeFragmentation,
+            int afterGroups,
+            int afterOddCarGroups,
+            int afterSmallCarGroups,
+            int afterFragmentation,
+            boolean feasible,
+            boolean valid,
+            boolean unique,
+            boolean visited,
+            boolean guardOk,
+            String status) {
+
+        int proxyDelta() {
+            return beforeProxy - afterProxy;
+        }
+
+        int groupDelta() {
+            return beforeGroups - afterGroups;
+        }
+
+        int fragmentationDelta() {
+            return beforeFragmentation - afterFragmentation;
+        }
+
+        int oddDelta() {
+            return beforeOddCarGroups - afterOddCarGroups;
+        }
+
+        int smallDelta() {
+            return beforeSmallCarGroups - afterSmallCarGroups;
+        }
+    }
+
+    private static final class Diagnostics {
+        private final boolean enabled;
+        private final List<DiagnosticRow> rows = new ArrayList<>();
+
+        private Diagnostics(boolean enabled) {
+            this.enabled = enabled;
+        }
+
+        static Diagnostics create() {
+            return new Diagnostics(booleanProperty("cutting.lns.diagnostics", false));
+        }
+
+        void record(DiagnosticRow row) {
+            if (enabled) {
+                rows.add(row);
+            }
+        }
+
+        void logSummary(SequenceGroupPostProcessor.GroupStats originalStats) {
+            if (!enabled || rows.isEmpty()) {
+                return;
+            }
+            long feasible = rows.stream().filter(DiagnosticRow::feasible).count();
+            long valid = rows.stream().filter(DiagnosticRow::valid).count();
+            long unique = rows.stream().filter(DiagnosticRow::unique).count();
+            long guardBlocked = rows.stream()
+                    .filter(row -> row.valid() && row.unique() && !row.guardOk())
+                    .count();
+            long proxyImproved = rows.stream()
+                    .filter(row -> row.valid() && row.proxyDelta() > 0)
+                    .count();
+            long trueImproved = rows.stream()
+                    .filter(row -> row.valid() && row.groupDelta() > 0)
+                    .count();
+            long proxyOnly = rows.stream()
+                    .filter(row -> row.valid() && row.proxyDelta() > 0 && row.groupDelta() <= 0)
+                    .count();
+            int bestGroups = rows.stream()
+                    .filter(DiagnosticRow::valid)
+                    .mapToInt(DiagnosticRow::afterGroups)
+                    .min()
+                    .orElse(originalStats.groups());
+            int bestOdd = rows.stream()
+                    .filter(row -> row.valid() && row.afterGroups() == bestGroups)
+                    .mapToInt(DiagnosticRow::afterOddCarGroups)
+                    .min()
+                    .orElse(Integer.MAX_VALUE);
+            int bestSmall = rows.stream()
+                    .filter(row -> row.valid()
+                            && row.afterGroups() == bestGroups
+                            && row.afterOddCarGroups() == bestOdd)
+                    .mapToInt(DiagnosticRow::afterSmallCarGroups)
+                    .min()
+                    .orElse(Integer.MAX_VALUE);
+            int bestFragmentation = rows.stream()
+                    .filter(row -> row.valid()
+                            && row.afterGroups() == bestGroups
+                            && row.afterOddCarGroups() == bestOdd
+                            && row.afterSmallCarGroups() == bestSmall)
+                    .mapToInt(DiagnosticRow::afterFragmentation)
+                    .min()
+                    .orElse(Integer.MAX_VALUE);
+
+            log.info("LNS diagnostics: rows={}, feasible={}, valid={}, unique={}, guardBlocked={}, proxyImproved={}, trueImproved={}, proxyOnly={}, bestGroups={}, bestOdd={}, bestSmall={}, bestFrag={}",
+                    rows.size(), feasible, valid, unique, guardBlocked, proxyImproved, trueImproved, proxyOnly,
+                    bestGroups, bestOdd, bestSmall, bestFragmentation);
+            logTop("LNS diagnostics best true moves", rows.stream()
+                    .filter(row -> row.valid() && row.unique() && row.guardOk())
+                    .sorted(Comparator
+                            .comparingInt(DiagnosticRow::afterGroups)
+                            .thenComparingInt(DiagnosticRow::afterOddCarGroups)
+                            .thenComparingInt(DiagnosticRow::afterSmallCarGroups)
+                            .thenComparingInt(DiagnosticRow::afterFragmentation)
+                            .thenComparing(Comparator.comparingInt(DiagnosticRow::proxyDelta).reversed()))
+                    .limit(intProperty("cutting.lns.diagnosticsTop", 8))
+                    .toList());
+            logTop("LNS diagnostics guard-blocked moves", rows.stream()
+                    .filter(row -> row.valid() && row.unique() && !row.guardOk())
+                    .sorted(Comparator
+                            .comparingInt(DiagnosticRow::afterGroups)
+                            .thenComparingInt(DiagnosticRow::afterOddCarGroups)
+                            .thenComparingInt(DiagnosticRow::afterSmallCarGroups)
+                            .thenComparingInt(DiagnosticRow::afterFragmentation))
+                    .limit(intProperty("cutting.lns.diagnosticsTop", 8))
+                    .toList());
+            logTop("LNS diagnostics proxy-only moves", rows.stream()
+                    .filter(row -> row.valid() && row.guardOk() && row.proxyDelta() > 0 && row.groupDelta() <= 0)
+                    .sorted(Comparator
+                            .comparingInt(DiagnosticRow::groupDelta)
+                            .thenComparing(Comparator.comparingInt(DiagnosticRow::proxyDelta).reversed())
+                            .thenComparingInt(DiagnosticRow::afterOddCarGroups)
+                            .thenComparingInt(DiagnosticRow::afterSmallCarGroups)
+                            .thenComparingInt(DiagnosticRow::afterFragmentation))
+                    .limit(intProperty("cutting.lns.diagnosticsTop", 8))
+                    .toList());
+        }
+
+        private void logTop(String title, List<DiagnosticRow> selected) {
+            if (selected.isEmpty()) {
+                log.info("{}: none", title);
+                return;
+            }
+            log.info("{}:", title);
+            for (DiagnosticRow row : selected) {
+                log.info("  iter={} n={} seeds={} groups {}->{} odd {}->{} small {}->{} frag {}->{} proxy {}->{} freeOrders={} patterns={} cars={} columns={} status={} unique={} visited={} guardOk={}",
+                        row.iteration(),
+                        row.neighborhoodIndex(),
+                        row.seeds(),
+                        row.beforeGroups(),
+                        row.afterGroups(),
+                        row.beforeOddCarGroups(),
+                        row.afterOddCarGroups(),
+                        row.beforeSmallCarGroups(),
+                        row.afterSmallCarGroups(),
+                        row.beforeFragmentation(),
+                        row.afterFragmentation(),
+                        row.beforeProxy(),
+                        row.afterProxy(),
+                        row.freeOrders(),
+                        row.patterns(),
+                        row.cars(),
+                        row.columns(),
+                        row.status(),
+                        row.unique(),
+                        row.visited(),
+                        row.guardOk());
+            }
+        }
     }
 
     private record RollRecord(

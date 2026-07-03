@@ -29,7 +29,8 @@ public class MultiStageMIPSolver {
     public SolveCandidate solvePrimaryOnly(List<PatternCandidate> patterns,
             Map<Integer, Integer> demands,
             Set<Integer> allowOverSet) {
-        return solvePrimaryOnly(patterns, demands, allowOverSet, params.getALayerScipSeed());
+        return solvePrimaryOnly(patterns, demands, allowOverSet,
+                params.getALayerScipSeed(), params.getALayerAlignmentLambda(), PatternAlignmentContext.empty());
     }
 
     /**
@@ -41,9 +42,22 @@ public class MultiStageMIPSolver {
             Map<Integer, Integer> demands,
             Set<Integer> allowOverSet,
             int seed) {
+        return solvePrimaryOnly(patterns, demands, allowOverSet,
+                seed, params.getALayerAlignmentLambda(), PatternAlignmentContext.empty());
+    }
+
+    public SolveCandidate solvePrimaryOnly(List<PatternCandidate> patterns,
+            Map<Integer, Integer> demands,
+            Set<Integer> allowOverSet,
+            int seed,
+            double alignmentLambda,
+            PatternAlignmentContext alignmentContext) {
         SolverParameters seededParams = params.copy();
         seededParams.setALayerScipSeed(seed);
-        LegacyOrderPatternSelectionSolver legacySolver = new LegacyOrderPatternSelectionSolver(seededParams);
+        seededParams.setALayerAlignmentLambda(alignmentLambda);
+        seededParams.sanitize();
+        LegacyOrderPatternSelectionSolver legacySolver = new LegacyOrderPatternSelectionSolver(
+                seededParams, alignmentContext);
         List<LegacyOrderPatternSelectionSolver.Result> results = legacySolver.solveCandidates(
                 patterns, demands, allowOverSet);
         if (results.isEmpty()) {

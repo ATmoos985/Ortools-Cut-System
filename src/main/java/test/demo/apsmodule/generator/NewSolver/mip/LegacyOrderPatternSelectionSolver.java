@@ -55,9 +55,36 @@ class LegacyOrderPatternSelectionSolver {
     private static final double SMALL_USAGE_PENALTY = 0.02;
 
     private final SolverParameters params;
+    private final PatternAlignmentScorer alignmentScorer;
 
     LegacyOrderPatternSelectionSolver(SolverParameters params) {
+        this(params, PatternAlignmentContext.empty());
+    }
+
+    LegacyOrderPatternSelectionSolver(SolverParameters params, PatternAlignmentContext alignmentContext) {
         this.params = params;
+        this.alignmentScorer = new PatternAlignmentScorer(alignmentContext);
+    }
+
+    /**
+     * Stage4 奇偶 tie-break 权重。默认 0（关闭）。实验开关：-Dcutting.aLayerParityPenalty=0.02。
+     * 权重须远小于 1（花型数单位代价），保证只在花型数平局的最优解之间挑奇偶更好的。
+     */
+    private static double parityPenalty() {
+        try {
+            return Double.parseDouble(System.getProperty("cutting.aLayerParityPenalty", "0").trim());
+        } catch (NumberFormatException e) {
+            return 0.0;
+        }
+    }
+
+    private static long longProperty(String key, long defaultValue) {
+        try {
+            String raw = System.getProperty(key);
+            return raw == null || raw.isBlank() ? defaultValue : Long.parseLong(raw.trim());
+        } catch (NumberFormatException e) {
+            return defaultValue;
+        }
     }
 
     List<Result> solveCandidates(List<PatternCandidate> patterns,
@@ -165,10 +192,21 @@ class LegacyOrderPatternSelectionSolver {
                 stage3Rolls, totalWaste, wasteSlack, totalWaste + wasteSlack);
 
         remaining = Math.max(2000, deadlineMs - System.currentTimeMillis());
-        long stage4Time = Math.min(remaining, 40_000L);
-        List<PatternCandidate> stage3SelectedPatterns = new ArrayList<>(stage3Solution.keySet());
+        // 40s 是快路径默认；-Dcutting.aLayerStage4CapMs 可整体抬高（含 solveMIPStage4 内层帽）。
+        // 注意：墙钟截断的 FEASIBLE 解是负载相关的（同参数两次运行可落在不同平局最优上），
+        // 参数敏感实验应结合 SCIP limits/nodes 才能完全确定。
+        long stage4Time = Math.min(remaining, Math.max(40_000L, longProperty("cutting.aLayerStage4CapMs", 40_000L)));
+        // 对齐 λ 或奇偶 tie-break 生效时给 Stage4 全池：奇偶翻转需要备选花型做需求等式的
+        // 补偿交换，stage3 精选池往往没有腾挪空间。
+        boolean stage4NeedsFullPool = params.getALayerAlignmentLambda() > 0.0 || parityPenalty() > 0.0;
+        List<PatternCandidate> stage4PatternPool = stage4NeedsFullPool
+                ? patterns
+                : new ArrayList<>(stage3Solution.keySet());
+        if (stage4NeedsFullPool) {
+            log.info("Legacy Stage4 uses full pattern pool: {} patterns", stage4PatternPool.size());
+        }
         Map<PatternCandidate, Integer> stage4Solution = solveMIPStage4(
-                stage3SelectedPatterns, demands, allowOverSet, optimalOver, stage3Rolls, totalWaste, stage4Time);
+                stage4PatternPool, demands, allowOverSet, optimalOver, stage3Rolls, totalWaste, stage4Time);
         if (stage4Solution == null || stage4Solution.isEmpty()) {
             log.info("Legacy Stage4 failed, using Stage3 solution");
             return stage3Solution;
@@ -477,21 +515,61 @@ class LegacyOrderPatternSelectionSolver {
                 minUse.setCoefficient(yVars.get(i), -MIN_USAGE_THRESHOLD);
             }
 
+            // 奇偶 tie-break：odd 序号组的理论下界 = usage 为奇数的花型族个数（每族块大小
+            // 之和 = 族车数，奇数至少留一个奇块，B 层不可突破——人工方案 odd=2 恰好打到
+            // 自己花型集的下界）。x_i = 2·h_i + o_i 提取 usage 奇偶性，o_i 进目标做小权重
+            // 惩罚，在车数/废边/花型数平局的最优解中偏好偶 usage 的花型集，把下界往
+            // 理论极限（总车数奇偶性决定，本数据集=每分组1）压。
+            double parityPenalty = parityPenalty();
+            List<MPVariable> oVars = new ArrayList<>();
+            if (parityPenalty > 0.0) {
+                for (int i = 0; i < patterns.size(); i++) {
+                    MPVariable hVar = solver.makeIntVar(0, totalDemand + params.getTotalOverCap(), "h_" + i);
+                    MPVariable oVar = solver.makeBoolVar("o_" + i);
+                    MPConstraint parity = solver.makeConstraint(0, 0, "parity_" + i);
+                    parity.setCoefficient(xVars.get(i), 1);
+                    parity.setCoefficient(hVar, -2);
+                    parity.setCoefficient(oVar, -1);
+                    oVars.add(oVar);
+                }
+            }
+
             int maxWidthCount = patterns.stream()
                     .mapToInt(PatternCandidate::getWidthCount)
                     .max()
                     .orElse(1);
 
             MPObjective objective = solver.objective();
+            double alignmentLambda = params.getALayerAlignmentLambda();
+            double alignmentCostSum = 0.0;
+            double alignmentCostMax = 0.0;
             for (int i = 0; i < patterns.size(); i++) {
-                objective.setCoefficient(yVars.get(i), LEGACY_SEQ_GROUP_ALPHA);
+                double alignmentCost = alignmentLambda > 0.0
+                        ? alignmentScorer.cost(patterns.get(i))
+                        : 0.0;
+                alignmentCostSum += alignmentCost;
+                alignmentCostMax = Math.max(alignmentCostMax, alignmentCost);
+                objective.setCoefficient(yVars.get(i),
+                        LEGACY_SEQ_GROUP_ALPHA + alignmentLambda * alignmentCost);
                 double groupCost = (double) patterns.get(i).getWidthCount() / maxWidthCount;
                 objective.setCoefficient(xVars.get(i), LEGACY_SEQ_GROUP_BETA * groupCost);
                 objective.setCoefficient(sVars.get(i), SMALL_USAGE_PENALTY);
             }
+            for (MPVariable oVar : oVars) {
+                objective.setCoefficient(oVar, parityPenalty);
+            }
             objective.setMinimization();
+            if (alignmentLambda > 0.0 && !patterns.isEmpty()) {
+                log.info("Legacy Stage4 alignment: lambda={}, avgCost={}, maxCost={}",
+                        alignmentLambda,
+                        alignmentCostSum / patterns.size(),
+                        alignmentCostMax);
+            }
 
-            long stage4TimeLimit = Math.min(timeLimitMs, 20_000L);
+            // 20s 是快路径顶帽；全池+奇偶变量的模型 20s 常 NOT_SOLVED/FEASIBLE 截断
+            // （截断时奇偶项来不及优化）。实验可用 -Dcutting.aLayerStage4CapMs 放宽。
+            long stage4Cap = longProperty("cutting.aLayerStage4CapMs", 20_000L);
+            long stage4TimeLimit = Math.min(timeLimitMs, stage4Cap);
             solver.setHint(new MPVariable[] {}, new double[] {});
             solver.setTimeLimit(stage4TimeLimit);
 
@@ -501,7 +579,13 @@ class LegacyOrderPatternSelectionSolver {
                 return null;
             }
 
-            return extractSolution(patterns, xVars);
+            Map<PatternCandidate, Integer> solution = extractSolution(patterns, xVars);
+            if (parityPenalty > 0.0) {
+                long oddUsageFamilies = solution.values().stream().filter(u -> u % 2 != 0).count();
+                log.info("Legacy Stage4 parity: penalty={}, oddUsageFamilies={} (odd 序号组下界), status={}",
+                        parityPenalty, oddUsageFamilies, status);
+            }
+            return solution;
         } catch (Exception e) {
             log.error("Legacy-order Stage4 failed", e);
             return null;
