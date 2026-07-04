@@ -851,8 +851,106 @@ class B6UnifiedSetPartitionTest {
         List<UnifiedSetPartitionSolver.ColumnUse> current = new ArrayList<>(runPipelineBigGroup());
         printBlockStats("Level12b start (pipeline)", current);
 
-        int accepted = 0;
-        for (int pass = 1; pass <= 3; pass++) {
+        current = microIterate(current, 3, 30_000, 3, "Level12b");
+        verifyMerged("Level12b micro iteration (start 47/3/13, ref 46/1)", current, demand);
+    }
+
+    /**
+     * Level 12c（合并推进段）：L12b 把 odd 修到 1 后，组数 47→46 需要 k→k−1 合并
+     * ——4 块微邻域内无组数 accept，扩到 1 目标 + 5 捐赠（约 6 块/60-150 车）60s 子解。
+     * 两段式：先跑 L12b 同参奇偶段，再推合并；同一严格改善接受（组减 > 组平且odd减）。
+     */
+    @Test
+    void level12cGroupsMergePush() throws Exception {
+        Map<String, Integer> demand = loadBigGroupDemand();
+        List<UnifiedSetPartitionSolver.ColumnUse> current;
+        if (java.nio.file.Files.exists(PIPELINE_SNAPSHOT)) {
+            current = new ArrayList<>(loadPipelineSnapshot());
+            System.out.println("Level12c start from snapshot: " + PIPELINE_SNAPSHOT);
+        } else {
+            current = new ArrayList<>(runPipelineBigGroup());
+        }
+        printBlockStats("Level12c start", current);
+        current = microIterate(current, 3, 30_000, 3, "Level12c-parity");
+        printBlockStats("Level12c after parity stage", current);
+        current = microIterate(current, 5, 60_000, 2, "Level12c-merge");
+        verifyMerged("Level12c merge push (parity目标46/1)", current, demand);
+    }
+
+    private static final java.nio.file.Path PIPELINE_SNAPSHOT =
+            java.nio.file.Path.of("src/test/resources/pipeline_big_group_snapshot.csv");
+
+    /**
+     * 工具测试：跑一次管线并把 1350m 大组解快照到 CSV（count;signature）。
+     * 管线墙钟截断非确定（两日实测 47/3/13 vs 52/7/19），微邻域实验必须冻结好起点。
+     * 仅当无快照或候选更优（组少，平则 odd 少）时覆盖——可反复重掷直到抽到好起点。
+     */
+    @Test
+    void dumpPipelineBigGroupSnapshot() throws Exception {
+        List<UnifiedSetPartitionSolver.ColumnUse> candidate = runPipelineBigGroup();
+        printBlockStats("snapshot candidate", candidate);
+        if (java.nio.file.Files.exists(PIPELINE_SNAPSHOT)) {
+            List<UnifiedSetPartitionSolver.ColumnUse> existing = loadPipelineSnapshot();
+            int[] prev = groupsOdd(existing);
+            int[] cand = groupsOdd(candidate);
+            if (prev[0] < cand[0] || (prev[0] == cand[0] && prev[1] <= cand[1])) {
+                System.out.printf("KEEP existing snapshot %d/%d (candidate %d/%d worse-or-equal)%n",
+                        prev[0], prev[1], cand[0], cand[1]);
+                return;
+            }
+        }
+        StringBuilder sb = new StringBuilder();
+        for (UnifiedSetPartitionSolver.ColumnUse use : candidate) {
+            sb.append(use.count()).append(';').append(use.column().signature()).append('\n');
+        }
+        java.nio.file.Files.createDirectories(PIPELINE_SNAPSHOT.getParent());
+        java.nio.file.Files.writeString(PIPELINE_SNAPSHOT, sb.toString(), StandardCharsets.UTF_8);
+        System.out.println("SNAPSHOT WRITTEN: " + PIPELINE_SNAPSHOT);
+    }
+
+    /** 快照加载：signature 完整可逆（config → pattern=各宽度工位数）。 */
+    private List<UnifiedSetPartitionSolver.ColumnUse> loadPipelineSnapshot() throws Exception {
+        List<UnifiedSetPartitionSolver.ColumnUse> uses = new ArrayList<>();
+        for (String line : java.nio.file.Files.readAllLines(PIPELINE_SNAPSHOT, StandardCharsets.UTF_8)) {
+            if (line.isBlank()) {
+                continue;
+            }
+            int sep = line.indexOf(';');
+            int count = Integer.parseInt(line.substring(0, sep));
+            Map<Integer, List<String>> config = new TreeMap<>();
+            Map<Integer, Integer> pattern = new TreeMap<>();
+            for (String part : line.substring(sep + 1).split("\\|")) {
+                int eq = part.indexOf('=');
+                int width = Integer.parseInt(part.substring(0, eq));
+                List<String> messages = new ArrayList<>(List.of(part.substring(eq + 1).split(",")));
+                config.put(width, messages);
+                pattern.put(width, messages.size());
+            }
+            uses.add(new UnifiedSetPartitionSolver.ColumnUse(Column.of(pattern, config), count));
+        }
+        return uses;
+    }
+
+    private int[] groupsOdd(List<UnifiedSetPartitionSolver.ColumnUse> uses) {
+        int odd = 0;
+        for (UnifiedSetPartitionSolver.ColumnUse use : uses) {
+            if (use.count() % 2 != 0) {
+                odd++;
+            }
+        }
+        return new int[] {uses.size(), odd};
+    }
+
+    /**
+     * 微邻域迭代主循环：每次 1 目标块（odd 优先，其次 small≤5）+ donorCount 个捐赠块
+     * （共享需求键×2+共享宽度打分），残差精确重建，严格改善（组减，或组平 odd 减）接受，
+     * pass 无改善即收敛退出。
+     */
+    private List<UnifiedSetPartitionSolver.ColumnUse> microIterate(
+            List<UnifiedSetPartitionSolver.ColumnUse> start,
+            int donorCount, long budgetMs, int maxPasses, String label) {
+        List<UnifiedSetPartitionSolver.ColumnUse> current = new ArrayList<>(start);
+        for (int pass = 1; pass <= maxPasses; pass++) {
             boolean improvedThisPass = false;
             // 目标快照（odd 优先，其次 small；按值定位，块可能已被前面的重建消耗）
             List<UnifiedSetPartitionSolver.ColumnUse> targets = new ArrayList<>();
@@ -871,7 +969,6 @@ class B6UnifiedSetPartitionTest {
                 if (targetIdx < 0) {
                     continue;
                 }
-                // 捐赠块：共享需求键×2 + 共享宽度，取 top3
                 List<UnifiedSetPartitionSolver.ColumnUse> others = new ArrayList<>(current);
                 others.remove(targetIdx);
                 Map<String, Integer> targetUse = target.column().demandUse();
@@ -892,13 +989,13 @@ class B6UnifiedSetPartitionTest {
                 }));
                 List<UnifiedSetPartitionSolver.ColumnUse> removed = new ArrayList<>();
                 removed.add(target);
-                removed.addAll(others.subList(0, Math.min(3, others.size())));
+                removed.addAll(others.subList(0, Math.min(donorCount, others.size())));
                 List<UnifiedSetPartitionSolver.ColumnUse> kept = new ArrayList<>(current);
                 for (UnifiedSetPartitionSolver.ColumnUse r : removed) {
                     kept.remove(r);
                 }
 
-                Result sub = microRebuild(removed, 30_000);
+                Result sub = microRebuild(removed, budgetMs);
                 if (sub == null || sub.groups() == 0) {
                     continue;
                 }
@@ -911,22 +1008,25 @@ class B6UnifiedSetPartitionTest {
                 boolean better = sub.groups() < removed.size()
                         || (sub.groups() == removed.size() && sub.oddBlocks() < removedOdd);
                 if (better) {
-                    System.out.printf("  ACCEPT pass%d: %d blocks (odd %d) -> %d (odd %d) | target=%d车 %s%n",
-                            pass, removed.size(), removedOdd, sub.groups(), sub.oddBlocks(),
+                    System.out.printf("  ACCEPT %s pass%d: %d blocks (odd %d) -> %d (odd %d) | target=%d车 %s%n",
+                            label, pass, removed.size(), removedOdd, sub.groups(), sub.oddBlocks(),
                             target.count(), target.column().signature());
                     current = kept;
                     current.addAll(sub.uses());
-                    accepted++;
                     improvedThisPass = true;
                 }
             }
-            printBlockStats("Level12b after pass" + pass, current);
+            printBlockStats(label + " after pass" + pass, current);
             if (!improvedThisPass) {
                 break;
             }
         }
+        return current;
+    }
 
-        // 全局守恒验证
+    /** 合并解全局守恒验证（车数等式/废边上限/需求逐键精确）+ 汇报。 */
+    private void verifyMerged(String label,
+            List<UnifiedSetPartitionSolver.ColumnUse> current, Map<String, Integer> demand) {
         int odd = 0;
         int small = 0;
         int cars = 0;
@@ -945,8 +1045,8 @@ class B6UnifiedSetPartitionTest {
         assertEquals(MANUAL_BIG_CARS, cars, "cars conserved");
         assertTrue(waste <= MANUAL_BIG_WASTE, "waste within cap");
         verifyDemandExact(mergedResult, demand);
-        System.out.printf("%n##### Level12b micro iteration: accepted=%d | global %d/%d/%d cars=%d waste=%d (start 47/3/13, ref 46/1)%n",
-                accepted, current.size(), odd, small, cars, waste);
+        System.out.printf("%n##### %s: global %d/%d/%d cars=%d waste=%d%n",
+                label, current.size(), odd, small, cars, waste);
     }
 
     /** 微邻域重建：残差需求 + 比例匹配注入列 + 拆除块兜底，单段求解（odd 已在目标）。 */
