@@ -27,7 +27,8 @@ import java.util.stream.Collectors;
  * 实测证伪，见笔记 11）。奇偶做次级 tie-break（人工解剖：47 块里 45 块偶，唯二奇块是
  * 数学必然，见笔记 12）。
  *
- * <p>实验性代码：不接入生产管线，由 B6UnifiedSetPartitionTest 驱动。
+ * <p>由 B6UnifiedSetPartitionTest（实验驱动）与 SetPartitionRefiner（质量模式精修段，
+ * 微邻域残差注入）使用；快路径不经过本类。
  */
 public class UnifiedSetPartitionSolver {
 

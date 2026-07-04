@@ -187,6 +187,32 @@ public class InstructionConverter {
             }
         }
 
+        // 质量模式第三段：set-partition 微邻域精修（残差导向列注入，笔记13 L12）。
+        // LNS/Phase O 是 B 层花型内重排；本段跨花型重组块（拆弱块+捐赠块，残差上比例
+        // 匹配生成新列，小 MIP 精确重建），B6 L12c 实证 47/3→46/1 追平人工。
+        if (test.demo.apsmodule.generator.NewSolver.CuttingSolver.qualityMode()
+                && SetPartitionRefiner.isEnabled()) {
+            List<CuttingInstruction> refined = setPartitionRefinePass(selectedInstructions);
+            if (refined != null) {
+                selectedInstructions = refined;
+                selectedGroups = SequenceGroupPostProcessor
+                        .computeGroupStats(selectedInstructions).groups();
+                selectedName = selectedName + "+spr";
+                candidateRows = new ArrayList<>(candidateRows.stream()
+                        .map(row -> new SequenceCandidateRow(
+                                row.name(),
+                                row.sequenceGroupCount(),
+                                row.instructions(),
+                                false))
+                        .toList());
+                candidateRows.add(new SequenceCandidateRow(
+                        selectedName,
+                        selectedGroups,
+                        selectedInstructions.size(),
+                        true));
+            }
+        }
+
         log.info("Sequence-group selection: winner={} groups={} candidates={}",
                 selectedName, selectedGroups, summarizeCandidates(candidates));
         return new ConversionResult(
@@ -276,6 +302,49 @@ public class InstructionConverter {
         log.info("Odd-repair pass: groups {}->{}, odd {}->{} (floor={}), small {}->{}, conserved={}, accepted={}",
                 before.groups(), after.groups(),
                 before.oddCarGroups(), after.oddCarGroups(), oddFloor,
+                before.smallCarGroups(), after.smallCarGroups(),
+                conserved, conserved && lexBetter);
+        return conserved && lexBetter ? candidate : null;
+    }
+
+    /**
+     * 质量模式第三段验收（与 oddRepairPass 同款）：SetPartitionRefiner 产出候选指令后，
+     * 走 compact+reorder，需求/车数/废边守恒 + （组→奇→小）字典序严格变好才接受；
+     * 任一维度回退即整体放弃（返回 null 保持原结果）。
+     */
+    private List<CuttingInstruction> setPartitionRefinePass(List<CuttingInstruction> instructions) {
+        if (instructions == null || instructions.isEmpty()) {
+            return null;
+        }
+        SequenceGroupPostProcessor.GroupStats before = SequenceGroupPostProcessor.computeGroupStats(instructions);
+        int beforeCars = instructions.stream().mapToInt(CuttingInstruction::getUsageCount).sum();
+        int beforeWaste = instructions.stream()
+                .mapToInt(i -> i.getWaste() * i.getUsageCount()).sum();
+        Map<String, Integer> beforeDemand = countAssignmentsByDemandKey(instructions);
+
+        List<CuttingInstruction> candidate = SetPartitionRefiner.refine(instructions, params);
+        if (candidate == null) {
+            log.info("Set-partition refine pass: not applicable (structure) — kept original");
+            return null;
+        }
+        compactInstructionRollOrder(candidate);
+        reorderInstructionsForSequenceGroups(candidate);
+
+        SequenceGroupPostProcessor.GroupStats after = SequenceGroupPostProcessor.computeGroupStats(candidate);
+        int afterCars = candidate.stream().mapToInt(CuttingInstruction::getUsageCount).sum();
+        int afterWaste = candidate.stream()
+                .mapToInt(i -> i.getWaste() * i.getUsageCount()).sum();
+        boolean conserved = afterCars == beforeCars
+                && afterWaste == beforeWaste
+                && beforeDemand.equals(countAssignmentsByDemandKey(candidate));
+        boolean lexBetter = after.groups() < before.groups()
+                || (after.groups() == before.groups()
+                        && (after.oddCarGroups() < before.oddCarGroups()
+                                || (after.oddCarGroups() == before.oddCarGroups()
+                                        && after.smallCarGroups() < before.smallCarGroups())));
+        log.info("Set-partition refine pass: groups {}->{}, odd {}->{}, small {}->{}, conserved={}, accepted={}",
+                before.groups(), after.groups(),
+                before.oddCarGroups(), after.oddCarGroups(),
                 before.smallCarGroups(), after.smallCarGroups(),
                 conserved, conserved && lexBetter);
         return conserved && lexBetter ? candidate : null;
