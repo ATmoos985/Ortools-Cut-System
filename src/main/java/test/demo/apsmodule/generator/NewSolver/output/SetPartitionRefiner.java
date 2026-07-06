@@ -40,11 +40,15 @@ public final class SetPartitionRefiner {
 
     // 微邻域参数（B6 L12b/L12c 实证值）
     private static final int PARITY_DONORS = 3;
-    private static final long PARITY_BUDGET_MS = 30_000;
-    private static final int PARITY_PASSES = 3;
+    // 每个子 MIP 的墙钟帽——最陡下降式每轮并行评估全部目标、墙钟=批内最慢，故子帽越小
+    // 每轮越快。实测多数子解 <5s 即 OPTIMAL，帽只兜底少数难解；较串行(30/60s)大幅收窄。
+    private static final long PARITY_BUDGET_MS = 20_000;
     private static final int MERGE_DONORS = 5;
-    private static final long MERGE_BUDGET_MS = 60_000;
-    private static final int MERGE_PASSES = 2;
+    private static final long MERGE_BUDGET_MS = 40_000;
+    // 最陡下降式的最大迭代数（每轮接受 1 个最优移动）；收敛或总预算先到即停。
+    private static final int MAX_ITERATIONS = 40;
+    // SPR 总墙钟预算（默认 5min）：硬上限，保证质量模式单组耗时可预期（UX：绝不失控长跑）。
+    private static final long DEFAULT_SPR_BUDGET_MS = 300_000;
     private static final double ODD_WEIGHT = 0.02;
     private static final int SMALL_MAX_CARS = 5;
 
@@ -84,23 +88,20 @@ public final class SetPartitionRefiner {
      */
     static long budgetMs() {
         try {
-            return Long.parseLong(System.getProperty("cutting.spr.budgetMs", "0").trim());
+            return Long.parseLong(System.getProperty("cutting.spr.budgetMs",
+                    Long.toString(DEFAULT_SPR_BUDGET_MS)).trim());
         } catch (NumberFormatException e) {
-            return 0;
+            return DEFAULT_SPR_BUDGET_MS;
         }
     }
 
     /**
-     * 并行评估微邻域目标块（**默认 OFF**）。每个目标的 microRebuild 是独立 SCIP 子解，
-     * 只读快照、按固定 target 顺序确定性归约。速度极诱人（t9est188 SPR 段 13min→2min，
-     * SPR 占赢家候选耗时 ~60%），**但批量并行会牺牲质量**：所有目标都对"本轮起点"快照
-     * 评估，丢失串行的接受链（先接受 A、B 再借 A 的新块）。A/B 实测（t9est188，节点上限
-     * 毛坯）：串行 72→66（−6），批量并行 75→72（−3），少找一半改善。故默认关。
-     * 质量无损的提速正解 = 最陡下降式（并行评估全部→只应用单个最优→重估重复，LNS 同款
-     * 一次一动），待实现。当前 opt-in 仅供"速度优先可容忍少量组数"的场景。
+     * 并行评估微邻域目标块（默认 ON）。最陡下降式：每轮并行评估全部目标（独立 SCIP 子解、
+     * 只读同一快照），只应用单个最优移动，下一轮对更新后的解重估——保留串行的接受链效应
+     * （质量≈串行），同时把每轮墙钟从 Σ 降到 max。取代旧批量并行（会丢接受链、质量降）。
      */
     static boolean parallelEnabled() {
-        return Boolean.parseBoolean(System.getProperty("cutting.spr.parallel", "false").trim());
+        return Boolean.parseBoolean(System.getProperty("cutting.spr.parallel", "true").trim());
     }
 
     /**
@@ -137,9 +138,9 @@ public final class SetPartitionRefiner {
         // microIterate 每个目标块前检查，到点收工（已接受的改善保留）。
         long budget = budgetMs();
         long deadline = budget > 0 ? System.currentTimeMillis() + budget : Long.MAX_VALUE;
-        List<ColumnUse> improved = microIterate(uses, PARITY_DONORS, PARITY_BUDGET_MS, PARITY_PASSES,
+        List<ColumnUse> improved = microIterate(uses, PARITY_DONORS, PARITY_BUDGET_MS, MAX_ITERATIONS,
                 totalWidth, deadline);
-        improved = microIterate(improved, MERGE_DONORS, MERGE_BUDGET_MS, MERGE_PASSES,
+        improved = microIterate(improved, MERGE_DONORS, MERGE_BUDGET_MS, MAX_ITERATIONS,
                 totalWidth, deadline);
         improved = coalesceBySignature(improved);
         return toInstructions(improved, template, params);
@@ -206,15 +207,21 @@ public final class SetPartitionRefiner {
     }
 
     /**
-     * 微邻域迭代主循环（B6 L12b/L12c 同源）：每次 1 目标块（odd 优先，其次 small≤5）
-     * + donorCount 个捐赠块（共享需求键×2+共享宽度打分），残差精确重建，
-     * 严格改善（组减，或组平 odd 减）接受，pass 无改善即收敛退出。
+     * 微邻域最陡下降主循环（B6 L12b/L12c 机制 + 并行提速）：每轮枚举目标块
+     * （odd 优先，其次 small≤5），**并行**评估各自的残差重建（donorCount 捐赠块、
+     * 共享需求键×2+共享宽度打分），只应用**单个最优改善**移动，下一轮对更新后的解重估。
+     *
+     * <p>一次一动保留串行的接受链效应（后续移动能借前面接受的新块），质量≈串行贪心；
+     * 评估并行把每轮墙钟从 Σ 降到 max。收敛（无改善）、达最大迭代数、或总预算到即停。
      */
     private static List<ColumnUse> microIterate(List<ColumnUse> start,
-            int donorCount, long budgetMs, int maxPasses, int totalWidth, long deadline) {
+            int donorCount, long budgetMs, int maxIterations, int totalWidth, long deadline) {
         List<ColumnUse> current = new ArrayList<>(start);
-        for (int pass = 1; pass <= maxPasses; pass++) {
-            boolean improvedThisPass = false;
+        for (int iter = 1; iter <= maxIterations; iter++) {
+            if (System.currentTimeMillis() >= deadline) {
+                log.info("SPR budget cap reached at iter{}, stopping", iter);
+                break;
+            }
             List<ColumnUse> targets = new ArrayList<>();
             for (ColumnUse use : current) {
                 if (use.count() % 2 != 0) {
@@ -226,52 +233,53 @@ public final class SetPartitionRefiner {
                     targets.add(use);
                 }
             }
-            if (System.currentTimeMillis() >= deadline) {
-                log.info("SPR budget cap reached, stopping micro-iteration early");
-                return current;
+            if (targets.isEmpty()) {
+                break;
             }
-            // 并行评估所有目标块（每个 microRebuild 独立、纯读快照；LNS 同款并行子解），
-            // 再按固定 target 顺序确定性归约应用——parallelStream+collect 保序，选中移动与串行一致。
-            List<ColumnUse> snapshot = new ArrayList<>(current);
+            // 并行评估全部目标（对同一快照 current，纯读、独立 SCIP 子解）。
+            final List<ColumnUse> snapshot = current;
             List<Move> moves;
             if (parallelEnabled()) {
                 moves = targets.parallelStream()
                         .map(t -> evaluateTarget(t, snapshot, donorCount, budgetMs, totalWidth))
                         .collect(java.util.stream.Collectors.toList());
             } else {
-                moves = new ArrayList<>();
+                moves = new ArrayList<>(targets.size());
                 for (ColumnUse t : targets) {
                     moves.add(evaluateTarget(t, snapshot, donorCount, budgetMs, totalWidth));
                 }
             }
-            // 顺序应用：仅当改善且拆除块在当前解中仍全部在场（前面的接受可能已消耗某捐赠块）
-            // 时套用，否则跳过——残缺移动不可用。固定顺序保证确定性。
+            // 选最优改善：组数降幅大 > 奇块降幅大 > target 顺序（稳定，确定）。
+            Move best = null;
+            int bestGroupsCut = 0;
+            int bestOddCut = 0;
             for (Move move : moves) {
                 if (move == null || !move.better()) {
                     continue;
                 }
-                List<ColumnUse> working = new ArrayList<>(current);
-                boolean applicable = true;
-                for (ColumnUse r : move.removed()) {
-                    if (!working.remove(r)) {
-                        applicable = false;
-                        break;
-                    }
+                int groupsCut = move.removed().size() - move.sub().groups();
+                int oddCut = move.removedOdd() - move.sub().oddBlocks();
+                if (best == null || groupsCut > bestGroupsCut
+                        || (groupsCut == bestGroupsCut && oddCut > bestOddCut)) {
+                    best = move;
+                    bestGroupsCut = groupsCut;
+                    bestOddCut = oddCut;
                 }
-                if (!applicable) {
-                    continue;
-                }
-                working.addAll(move.sub().uses());
-                current = working;
-                improvedThisPass = true;
-                log.info("SPR accept pass{}: {} blocks (odd {}) -> {} (odd {}) | target={}cars {}",
-                        pass, move.removed().size(), move.removedOdd(),
-                        move.sub().groups(), move.sub().oddBlocks(),
-                        move.target().count(), move.target().column().signature());
             }
-            if (!improvedThisPass) {
+            if (best == null) {
                 break;
             }
+            // 应用（快照 == current，拆除块必全部在场）。
+            List<ColumnUse> working = new ArrayList<>(current);
+            for (ColumnUse r : best.removed()) {
+                working.remove(r);
+            }
+            working.addAll(best.sub().uses());
+            current = working;
+            log.info("SPR accept iter{}: {} blocks (odd {}) -> {} (odd {}) | target={}cars {}",
+                    iter, best.removed().size(), best.removedOdd(),
+                    best.sub().groups(), best.sub().oddBlocks(),
+                    best.target().count(), best.target().column().signature());
         }
         return current;
     }
