@@ -254,12 +254,16 @@ public class InstructionConverter {
             return optimizer.improve(instructions, groupItems);
         }
         Map<String, String> defaultVariant = Map.of("cutting.lns.enabled", "true");
+        // 扩大邻域变体收敛后长尾空转是新时间瓶颈（t9est188 实测末次改善后仍跑满
+        // maxNoImprove=12 空迭代 ×~35s ≈ 6min）。该变体单迭代重（60 邻域/40 车），
+        // 早停阈值收紧到 6（默认变体与快路径不变）——砍长尾 ~3min，改善多在前段命中。
         Map<String, String> qualityVariant = Map.of(
                 "cutting.lns.enabled", "true",
                 "cutting.lns.maxFreeOrders", "12",
                 "cutting.lns.maxFreePatterns", "20",
                 "cutting.lns.maxFreeCars", "40",
-                "cutting.lns.maxNeighborhoods", "60");
+                "cutting.lns.maxNeighborhoods", "60",
+                "cutting.lns.maxNoImprove", "6");
         LocalNeighborhoodSequenceOptimizer.LnsResult resultDefault =
                 LocalNeighborhoodSequenceOptimizer.withPropertyOverrides(defaultVariant,
                         () -> optimizer.improve(instructions, groupItems));
