@@ -34,11 +34,28 @@ public class AssignmentMIPSolver {
     // Stage5 on only the screened top-K candidates, not from shrinking this budget.
     private static final long DEFAULT_STAGE5_TIME_LIMIT_MS = 30000L;
 
+    // 确定性节点预算（默认 ON）：固定 B&B 节点数上限，让停机点与机器速度无关。
+    // 固定种子只让搜索"顺序"确定，墙钟截断仍在不同节点数处停下（实测同输入 451 vs
+    // 1553 节点、下游序号组 76 vs 78 摇摆）；节点上限则每次都停在同一节点 → 增量解可复现。
+    // 须 > 首个可行解节点数（约 450，注释见 line 31）否则退化贪心；配合放宽的墙钟安全帽，
+    // 保证节点上限先于墙钟触发（=真正的确定性边界）。-1 关闭回退旧墙钟行为（非确定）。
+    private static final long DEFAULT_STAGE5_NODE_LIMIT = 800L;
+    // 墙钟仅作失控保护，放宽到节点上限总能先触发（LNS 同款：节点上限是真边界，墙钟兜底）。
+    private static final long DEFAULT_STAGE5_SAFETY_TIME_LIMIT_MS = 120000L;
+
     /** 固定 SCIP 随机化种子，让 Stage5 装配结果在相同输入下可复现（消除运行间序号组摇摆）。 */
     private static final String SCIP_DETERMINISTIC_PARAMS =
             "randomization/randomseedshift = 42\n"
           + "randomization/permutationseed = 42\n"
           + "randomization/lpseed = 42\n";
+
+    private static long longProperty(String key, long defaultValue) {
+        try {
+            return Long.parseLong(System.getProperty(key, Long.toString(defaultValue)).trim());
+        } catch (NumberFormatException e) {
+            return defaultValue;
+        }
+    }
 
     private final SolverParameters params;
 
@@ -155,7 +172,12 @@ public class AssignmentMIPSolver {
         try {
             MPSolver solver = MPSolver.createSolver("SCIP");
             if (solver != null) {
-                solver.setSolverSpecificParametersAsString(SCIP_DETERMINISTIC_PARAMS);
+                String scipParams = SCIP_DETERMINISTIC_PARAMS;
+                long nodeLimit = longProperty("cutting.stage5.scipNodeLimit", DEFAULT_STAGE5_NODE_LIMIT);
+                if (nodeLimit > 0) {
+                    scipParams = scipParams + "limits/nodes = " + nodeLimit + "\n";
+                }
+                solver.setSolverSpecificParametersAsString(scipParams);
                 // Single-threaded: multi-threaded MIP is a classic non-determinism source
                 // (the other A-layer solvers already do this; Stage5 was missing it).
                 try { solver.setNumThreads(1); } catch (Exception ignored) {}
@@ -256,7 +278,12 @@ public class AssignmentMIPSolver {
             }
             objective.setMinimization();
 
-            long timeLimit = Math.min(DEFAULT_STAGE5_TIME_LIMIT_MS, params.getTimeoutMs());
+            // 节点上限开启时用放宽的安全帽（让节点上限先触发=确定性边界）；关闭时回退旧 30s。
+            long nodeLimit = longProperty("cutting.stage5.scipNodeLimit", DEFAULT_STAGE5_NODE_LIMIT);
+            long wallCap = nodeLimit > 0
+                    ? longProperty("cutting.stage5.safetyTimeLimitMs", DEFAULT_STAGE5_SAFETY_TIME_LIMIT_MS)
+                    : DEFAULT_STAGE5_TIME_LIMIT_MS;
+            long timeLimit = Math.min(wallCap, params.getTimeoutMs());
             solver.setTimeLimit(timeLimit);
 
             log.debug("Stage5 variables={} constraints={}", solver.numVariables(), solver.numConstraints());
@@ -271,8 +298,8 @@ public class AssignmentMIPSolver {
 
             long bbNodes = -1;
             try { bbNodes = solver.nodes(); } catch (Throwable ignored) {}
-            log.info("Stage5 completed: {} ({}ms), proxyBlocks={}, nodes={}, patterns={}",
-                    status, elapsed, (int) objective.value(), bbNodes, patternList.size());
+            log.info("Stage5 completed: {} ({}ms), proxyBlocks={}, nodes={}/{} (nodeLimit; det bound iff nodes<limit&&elapsed<wallCap), patterns={}",
+                    status, elapsed, (int) objective.value(), bbNodes, nodeLimit, patternList.size());
 
             Map<PatternCandidate, List<AssignmentBlock>> result = new LinkedHashMap<>();
 
