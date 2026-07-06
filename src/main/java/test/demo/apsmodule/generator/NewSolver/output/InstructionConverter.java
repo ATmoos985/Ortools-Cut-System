@@ -55,6 +55,13 @@ public class InstructionConverter {
 
     private final SolverParameters params;
 
+    /**
+     * 同 groupKey 已见最好（最少）组数——供 set-partition 精修段的劣候选提前弃修使用。
+     * 一个 CuttingSolver 请求内所有候选共用一个 converter 实例，故按 groupKey 累积；
+     * 候选按序处理，首候选无参照必修。
+     */
+    private final Map<String, Integer> bestGroupsByKey = new HashMap<>();
+
     public InstructionConverter(SolverParameters params) {
         this.params = params;
     }
@@ -192,25 +199,35 @@ public class InstructionConverter {
         // 匹配生成新列，小 MIP 精确重建），B6 L12c 实证 47/3→46/1 追平人工。
         if (test.demo.apsmodule.generator.NewSolver.CuttingSolver.qualityMode()
                 && SetPartitionRefiner.isEnabled()) {
-            List<CuttingInstruction> refined = setPartitionRefinePass(selectedInstructions);
-            if (refined != null) {
-                selectedInstructions = refined;
-                selectedGroups = SequenceGroupPostProcessor
-                        .computeGroupStats(selectedInstructions).groups();
-                selectedName = selectedName + "+spr";
-                candidateRows = new ArrayList<>(candidateRows.stream()
-                        .map(row -> new SequenceCandidateRow(
-                                row.name(),
-                                row.sequenceGroupCount(),
-                                row.instructions(),
-                                false))
-                        .toList());
-                candidateRows.add(new SequenceCandidateRow(
-                        selectedName,
-                        selectedGroups,
-                        selectedInstructions.size(),
-                        true));
+            // 劣候选提前弃修：落后同 groupKey 已见最好组数超过阈值时，精修追不平（实测
+            // 最多追回 9 组），直接跳过——省质量模式约一半耗时且零质量风险。
+            Integer bestSeen = bestGroupsByKey.get(groupKey);
+            int gap = SetPartitionRefiner.skipGapThreshold();
+            if (bestSeen != null && selectedGroups - bestSeen > gap) {
+                log.info("Set-partition refine pass: skipped (candidate {} groups vs best {} > gap {})",
+                        selectedGroups, bestSeen, gap);
+            } else {
+                List<CuttingInstruction> refined = setPartitionRefinePass(selectedInstructions);
+                if (refined != null) {
+                    selectedInstructions = refined;
+                    selectedGroups = SequenceGroupPostProcessor
+                            .computeGroupStats(selectedInstructions).groups();
+                    selectedName = selectedName + "+spr";
+                    candidateRows = new ArrayList<>(candidateRows.stream()
+                            .map(row -> new SequenceCandidateRow(
+                                    row.name(),
+                                    row.sequenceGroupCount(),
+                                    row.instructions(),
+                                    false))
+                            .toList());
+                    candidateRows.add(new SequenceCandidateRow(
+                            selectedName,
+                            selectedGroups,
+                            selectedInstructions.size(),
+                            true));
+                }
             }
+            bestGroupsByKey.merge(groupKey, selectedGroups, Math::min);
         }
 
         log.info("Sequence-group selection: winner={} groups={} candidates={}",

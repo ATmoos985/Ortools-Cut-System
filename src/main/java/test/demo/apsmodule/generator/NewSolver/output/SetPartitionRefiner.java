@@ -65,6 +65,32 @@ public final class SetPartitionRefiner {
     }
 
     /**
+     * 劣候选提前弃修阈值：候选（LNS 后）组数落后同 groupKey 已见最好成绩超过该值时跳过精修。
+     * 实测垃圾候选精修最多追回 9 组（t9est188 109→100 仍被淘汰），默认 15 零质量风险；
+     * 该跳过可省一半质量模式耗时（t9est188 50min 中 ~25min 花在注定淘汰的候选上）。
+     */
+    public static int skipGapThreshold() {
+        try {
+            return Integer.parseInt(System.getProperty("cutting.spr.skipGapThreshold", "15").trim());
+        } catch (NumberFormatException e) {
+            return 15;
+        }
+    }
+
+    /**
+     * 每次 refine 的墙钟预算帽（毫秒），默认 0=不设帽（opt-in）。注意：实测赢家候选的
+     * 精修需 7-10min（sixian 42 组、t9est188 66 组都出自长尾），设帽可能截掉最好成绩，
+     * 仅在对耗时敏感的场景开启。
+     */
+    static long budgetMs() {
+        try {
+            return Long.parseLong(System.getProperty("cutting.spr.budgetMs", "0").trim());
+        } catch (NumberFormatException e) {
+            return 0;
+        }
+    }
+
+    /**
      * 对一个长度组的指令做微邻域精修，返回候选新指令（不修改入参；未做验收）。
      * 结构不适用时返回 null：空组、混合 长度/表面/厚度、工位序号不可重放、块数<2。
      * rollWidth 逐花型不同是正常态（可变母卷宽 = ceilToStep(pw)），写回时按同规则重算。
@@ -94,8 +120,14 @@ public final class SetPartitionRefiner {
             log.info("SPR skip: only {} block(s) in group {}", uses.size(), template.getGroupKey());
             return null;
         }
-        List<ColumnUse> improved = microIterate(uses, PARITY_DONORS, PARITY_BUDGET_MS, PARITY_PASSES, totalWidth);
-        improved = microIterate(improved, MERGE_DONORS, MERGE_BUDGET_MS, MERGE_PASSES, totalWidth);
+        // 墙钟预算帽（cutting.spr.budgetMs>0 时生效）：跨两段的绝对截止时刻，
+        // microIterate 每个目标块前检查，到点收工（已接受的改善保留）。
+        long budget = budgetMs();
+        long deadline = budget > 0 ? System.currentTimeMillis() + budget : Long.MAX_VALUE;
+        List<ColumnUse> improved = microIterate(uses, PARITY_DONORS, PARITY_BUDGET_MS, PARITY_PASSES,
+                totalWidth, deadline);
+        improved = microIterate(improved, MERGE_DONORS, MERGE_BUDGET_MS, MERGE_PASSES,
+                totalWidth, deadline);
         improved = coalesceBySignature(improved);
         return toInstructions(improved, template, params);
     }
@@ -166,7 +198,7 @@ public final class SetPartitionRefiner {
      * 严格改善（组减，或组平 odd 减）接受，pass 无改善即收敛退出。
      */
     private static List<ColumnUse> microIterate(List<ColumnUse> start,
-            int donorCount, long budgetMs, int maxPasses, int totalWidth) {
+            int donorCount, long budgetMs, int maxPasses, int totalWidth, long deadline) {
         List<ColumnUse> current = new ArrayList<>(start);
         for (int pass = 1; pass <= maxPasses; pass++) {
             boolean improvedThisPass = false;
@@ -182,6 +214,10 @@ public final class SetPartitionRefiner {
                 }
             }
             for (ColumnUse target : targets) {
+                if (System.currentTimeMillis() >= deadline) {
+                    log.info("SPR budget cap reached, stopping micro-iteration early");
+                    return current;
+                }
                 int targetIdx = current.indexOf(target);
                 if (targetIdx < 0) {
                     continue;
