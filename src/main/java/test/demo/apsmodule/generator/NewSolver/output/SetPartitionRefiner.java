@@ -91,6 +91,19 @@ public final class SetPartitionRefiner {
     }
 
     /**
+     * 并行评估微邻域目标块（**默认 OFF**）。每个目标的 microRebuild 是独立 SCIP 子解，
+     * 只读快照、按固定 target 顺序确定性归约。速度极诱人（t9est188 SPR 段 13min→2min，
+     * SPR 占赢家候选耗时 ~60%），**但批量并行会牺牲质量**：所有目标都对"本轮起点"快照
+     * 评估，丢失串行的接受链（先接受 A、B 再借 A 的新块）。A/B 实测（t9est188，节点上限
+     * 毛坯）：串行 72→66（−6），批量并行 75→72（−3），少找一半改善。故默认关。
+     * 质量无损的提速正解 = 最陡下降式（并行评估全部→只应用单个最优→重估重复，LNS 同款
+     * 一次一动），待实现。当前 opt-in 仅供"速度优先可容忍少量组数"的场景。
+     */
+    static boolean parallelEnabled() {
+        return Boolean.parseBoolean(System.getProperty("cutting.spr.parallel", "false").trim());
+    }
+
+    /**
      * 对一个长度组的指令做微邻域精修，返回候选新指令（不修改入参；未做验收）。
      * 结构不适用时返回 null：空组、混合 长度/表面/厚度、工位序号不可重放、块数<2。
      * rollWidth 逐花型不同是正常态（可变母卷宽 = ceilToStep(pw)），写回时按同规则重算。
@@ -213,67 +226,102 @@ public final class SetPartitionRefiner {
                     targets.add(use);
                 }
             }
-            for (ColumnUse target : targets) {
-                if (System.currentTimeMillis() >= deadline) {
-                    log.info("SPR budget cap reached, stopping micro-iteration early");
-                    return current;
+            if (System.currentTimeMillis() >= deadline) {
+                log.info("SPR budget cap reached, stopping micro-iteration early");
+                return current;
+            }
+            // 并行评估所有目标块（每个 microRebuild 独立、纯读快照；LNS 同款并行子解），
+            // 再按固定 target 顺序确定性归约应用——parallelStream+collect 保序，选中移动与串行一致。
+            List<ColumnUse> snapshot = new ArrayList<>(current);
+            List<Move> moves;
+            if (parallelEnabled()) {
+                moves = targets.parallelStream()
+                        .map(t -> evaluateTarget(t, snapshot, donorCount, budgetMs, totalWidth))
+                        .collect(java.util.stream.Collectors.toList());
+            } else {
+                moves = new ArrayList<>();
+                for (ColumnUse t : targets) {
+                    moves.add(evaluateTarget(t, snapshot, donorCount, budgetMs, totalWidth));
                 }
-                int targetIdx = current.indexOf(target);
-                if (targetIdx < 0) {
+            }
+            // 顺序应用：仅当改善且拆除块在当前解中仍全部在场（前面的接受可能已消耗某捐赠块）
+            // 时套用，否则跳过——残缺移动不可用。固定顺序保证确定性。
+            for (Move move : moves) {
+                if (move == null || !move.better()) {
                     continue;
                 }
-                List<ColumnUse> others = new ArrayList<>(current);
-                others.remove(targetIdx);
-                Map<String, Integer> targetUse = target.column().demandUse();
-                others.sort(Comparator.comparingInt((ColumnUse s) -> {
-                    int sharedKeys = 0;
-                    for (String key : s.column().demandUse().keySet()) {
-                        if (targetUse.containsKey(key)) {
-                            sharedKeys++;
-                        }
+                List<ColumnUse> working = new ArrayList<>(current);
+                boolean applicable = true;
+                for (ColumnUse r : move.removed()) {
+                    if (!working.remove(r)) {
+                        applicable = false;
+                        break;
                     }
-                    int sharedWidths = 0;
-                    for (Integer width : s.column().pattern().keySet()) {
-                        if (target.column().pattern().containsKey(width)) {
-                            sharedWidths++;
-                        }
-                    }
-                    return -(sharedKeys * 2 + sharedWidths);
-                }));
-                List<ColumnUse> removed = new ArrayList<>();
-                removed.add(target);
-                removed.addAll(others.subList(0, Math.min(donorCount, others.size())));
-                List<ColumnUse> kept = new ArrayList<>(current);
-                for (ColumnUse r : removed) {
-                    kept.remove(r);
                 }
-
-                Result sub = microRebuild(removed, budgetMs, totalWidth);
-                if (sub == null || sub.groups() == 0) {
+                if (!applicable) {
                     continue;
                 }
-                int removedOdd = 0;
-                for (ColumnUse r : removed) {
-                    if (r.count() % 2 != 0) {
-                        removedOdd++;
-                    }
-                }
-                boolean better = sub.groups() < removed.size()
-                        || (sub.groups() == removed.size() && sub.oddBlocks() < removedOdd);
-                if (better) {
-                    log.info("SPR accept pass{}: {} blocks (odd {}) -> {} (odd {}) | target={}cars {}",
-                            pass, removed.size(), removedOdd, sub.groups(), sub.oddBlocks(),
-                            target.count(), target.column().signature());
-                    current = kept;
-                    current.addAll(sub.uses());
-                    improvedThisPass = true;
-                }
+                working.addAll(move.sub().uses());
+                current = working;
+                improvedThisPass = true;
+                log.info("SPR accept pass{}: {} blocks (odd {}) -> {} (odd {}) | target={}cars {}",
+                        pass, move.removed().size(), move.removedOdd(),
+                        move.sub().groups(), move.sub().oddBlocks(),
+                        move.target().count(), move.target().column().signature());
             }
             if (!improvedThisPass) {
                 break;
             }
         }
         return current;
+    }
+
+    /** 一次微邻域移动的评估结果（目标块、拆除块集、重建解、是否改善、拆除奇块数）。 */
+    private record Move(ColumnUse target, List<ColumnUse> removed, Result sub,
+                        boolean better, int removedOdd) {
+    }
+
+    /** 单目标评估（纯函数，只读快照、不改共享状态；供并行调用）：选捐赠块、残差重建、判断改善。 */
+    private static Move evaluateTarget(ColumnUse target, List<ColumnUse> snapshot,
+            int donorCount, long budgetMs, int totalWidth) {
+        int targetIdx = snapshot.indexOf(target);
+        if (targetIdx < 0) {
+            return null;
+        }
+        List<ColumnUse> others = new ArrayList<>(snapshot);
+        others.remove(targetIdx);
+        Map<String, Integer> targetUse = target.column().demandUse();
+        others.sort(Comparator.comparingInt((ColumnUse s) -> {
+            int sharedKeys = 0;
+            for (String key : s.column().demandUse().keySet()) {
+                if (targetUse.containsKey(key)) {
+                    sharedKeys++;
+                }
+            }
+            int sharedWidths = 0;
+            for (Integer width : s.column().pattern().keySet()) {
+                if (target.column().pattern().containsKey(width)) {
+                    sharedWidths++;
+                }
+            }
+            return -(sharedKeys * 2 + sharedWidths);
+        }));
+        List<ColumnUse> removed = new ArrayList<>();
+        removed.add(target);
+        removed.addAll(others.subList(0, Math.min(donorCount, others.size())));
+        Result sub = microRebuild(removed, budgetMs, totalWidth);
+        if (sub == null || sub.groups() == 0) {
+            return null;
+        }
+        int removedOdd = 0;
+        for (ColumnUse r : removed) {
+            if (r.count() % 2 != 0) {
+                removedOdd++;
+            }
+        }
+        boolean better = sub.groups() < removed.size()
+                || (sub.groups() == removed.size() && sub.oddBlocks() < removedOdd);
+        return new Move(target, removed, sub, better, removedOdd);
     }
 
     /** 微邻域重建：残差需求 + 比例匹配注入列 + 拆除块兜底，单段求解（odd 已在目标）。 */
