@@ -607,7 +607,7 @@ public class ExcelImportService {
         int rowNum = row.getRowNum() + 1; // Excel行号（从1开始）
 
         // 获取核心字段
-        String messageText = getCellValueAsString(row, columnIndexMap, "消息文本");
+        String messageText = getMessageTextWithFallback(row, columnIndexMap);
         Integer width = getCellNumericValue(row, columnIndexMap, "宽度mm");
         Integer quantity = getCellNumericValue(row, columnIndexMap, "卷数");
         Integer length = getCellNumericValue(row, columnIndexMap, "长度m");
@@ -767,6 +767,23 @@ public class ExcelImportService {
         return getCellValueAsString(cell);
     }
 
+    private String getMessageTextWithFallback(Row row, Map<String, Integer> columnIndexMap) {
+        String[] messageTextColumns = {
+                "来源销售分卷ID",
+                "分卷收集订单号",
+                "分卷收集订单编号",
+                "分卷收集订单ID",
+                "消息文本"
+        };
+        for (String columnName : messageTextColumns) {
+            String value = getCellValueAsString(row, columnIndexMap, columnName);
+            if (value != null && !value.trim().isEmpty()) {
+                return value;
+            }
+        }
+        return "";
+    }
+
     /**
      * 获取单元格的数值（增强版：支持文本、公式、混合格式）
      */
@@ -833,7 +850,7 @@ public class ExcelImportService {
         // 2. 定义字段映射规则
         Map<String, String[]> fieldMappings = new HashMap<>();
         fieldMappings.put("厚度µm", new String[] { "厚度µm", "厚度um", "厚度", "厚度μm", "厚度?m", "厚度(μm)", "*厚度(μm)" });
-        fieldMappings.put("消息文本", new String[] { "消息文本", "消息", "文本", "来源销售分卷ID", "分卷收集订单号" });
+        fieldMappings.put("消息文本", new String[] { "消息文本", "消息", "文本", "来源销售分卷ID", "分卷收集订单号", "分卷收集订单编号", "分卷收集订单ID" });
         fieldMappings.put("宽度mm", new String[] { "宽度mm", "宽度", "宽度(mm)", "*宽度(mm)" });
         fieldMappings.put("卷数", new String[] { "卷数", "数量", "卷", "*卷数" });
         fieldMappings.put("长度m", new String[] { "长度m", "长度", "长度(m)", "*长度(m)" });

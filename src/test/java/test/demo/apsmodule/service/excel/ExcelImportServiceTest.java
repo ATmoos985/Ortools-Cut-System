@@ -57,6 +57,31 @@ class ExcelImportServiceTest {
     }
 
     @Test
+    void parseExcelFileWithSourceFallsBackToCollectionOrderNoWhenSourceSubRollIdIsBlank() throws IOException {
+        Workbook workbook = new XSSFWorkbook();
+        var sheet = workbook.createSheet("分卷收集明细");
+        writeRow(sheet.createRow(0),
+                "*业务员编号", "*业务员姓名", "*物料编号", "物料名称", "型号",
+                "*最终数量", "*最终期望交期", "物料组", "单位", "出货型号",
+                "*厚度(μm)", "*宽度(mm)", "*长度(m)", "*卷数", "*包装形式",
+                "涂布类型", "表面处理", "客户名称", "客户编号", "备注",
+                "来源销售分卷ID", "分卷收集订单号");
+        writeRow(sheet.createRow(1),
+                "03354", "杨传志", "30012543", "反射膜_T10_ESY_188_990_1350_B2-61A1D", "T10_ESY188",
+                66825, "2026-06-01 00:00:00", "31001", "M2", "SDY188",
+                188, "990.000000", 1350, 50, "B2-61A1D",
+                "", "不电晕/不涂布", "广东瑞捷新材料股份有限公司", "10031", "",
+                "", "2090446662663374409");
+
+        ExcelImportService.ParseResult result = new ExcelImportService()
+                .parseExcelFileWithSource(workbookFile(workbook));
+
+        assertEquals("aps", result.getTemplateType());
+        assertEquals(1, result.getOrderItems().size());
+        assertEquals("2090446662663374409", result.getOrderItems().get(0).getMessageText());
+    }
+
+    @Test
     void parseExcelFileWithSourceKeepsOfflineTemplateCompatible() throws IOException {
         Workbook workbook = new XSSFWorkbook();
         var sheet = workbook.createSheet("订单导入");
