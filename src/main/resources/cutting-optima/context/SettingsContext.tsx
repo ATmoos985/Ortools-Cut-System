@@ -16,6 +16,8 @@ export interface CardVisibility {
 export interface AlgorithmParams {
     maxIterations: number;    // 最大迭代次数
     timeoutMs: number;        // 超时时间（毫秒）
+    lnsEnabled: boolean;      // 是否开启 LNS 序号组优化
+    lnsEnrichPatterns: boolean; // 是否开启富花型增强
 }
 
 // 设置状态
@@ -36,6 +38,8 @@ const defaultSettings: SettingsState = {
     algorithmParams: {
         maxIterations: 300,
         timeoutMs: 240000,
+        lnsEnabled: true,
+        lnsEnrichPatterns: false,
     },
 };
 

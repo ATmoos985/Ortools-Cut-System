@@ -103,6 +103,62 @@ export const SettingsPanel: React.FC = () => {
                             调整算法运行参数（谨慎修改）
                         </p>
                         <div className="space-y-4">
+                            <label className="flex items-center justify-between p-3 bg-slate-50 rounded-xl hover:bg-slate-100 transition-colors cursor-pointer group">
+                                <div className="flex-1 pr-4">
+                                    <div className="font-medium text-slate-700 group-hover:text-slate-900">
+                                        LNS 序号组优化
+                                    </div>
+                                    <div className="text-xs text-slate-400">
+                                        NewSolver 默认开启，用于减少序号组
+                                    </div>
+                                </div>
+                                <div className="relative">
+                                    <input
+                                        type="checkbox"
+                                        checked={algorithmParams.lnsEnabled}
+                                        onChange={(e) =>
+                                            setAlgorithmParams({
+                                                lnsEnabled: e.target.checked,
+                                                lnsEnrichPatterns: e.target.checked
+                                                    ? algorithmParams.lnsEnrichPatterns
+                                                    : false,
+                                            })
+                                        }
+                                        className="sr-only peer"
+                                    />
+                                    <div className="w-11 h-6 bg-slate-300 peer-focus:ring-2 peer-focus:ring-blue-300 rounded-full peer peer-checked:bg-blue-600 transition-colors"></div>
+                                    <div className="absolute left-0.5 top-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform peer-checked:translate-x-5"></div>
+                                </div>
+                            </label>
+                            <label
+                                className={`flex items-center justify-between p-3 bg-slate-50 rounded-xl transition-colors group ${
+                                    algorithmParams.lnsEnabled
+                                        ? 'hover:bg-slate-100 cursor-pointer'
+                                        : 'opacity-60 cursor-not-allowed'
+                                }`}
+                            >
+                                <div className="flex-1 pr-4">
+                                    <div className="font-medium text-slate-700 group-hover:text-slate-900">
+                                        富花型增强
+                                    </div>
+                                    <div className="text-xs text-slate-400">
+                                        更慢，用于冲更低序号组；仅在 LNS 开启时生效
+                                    </div>
+                                </div>
+                                <div className="relative">
+                                    <input
+                                        type="checkbox"
+                                        checked={algorithmParams.lnsEnabled && algorithmParams.lnsEnrichPatterns}
+                                        disabled={!algorithmParams.lnsEnabled}
+                                        onChange={(e) =>
+                                            setAlgorithmParams({ lnsEnrichPatterns: e.target.checked })
+                                        }
+                                        className="sr-only peer"
+                                    />
+                                    <div className="w-11 h-6 bg-slate-300 peer-focus:ring-2 peer-focus:ring-blue-300 rounded-full peer peer-checked:bg-blue-600 peer-disabled:bg-slate-200 transition-colors"></div>
+                                    <div className="absolute left-0.5 top-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform peer-checked:translate-x-5"></div>
+                                </div>
+                            </label>
                             <div>
                                 <label className="block text-sm font-medium text-slate-600 mb-1.5">
                                     最大迭代次数

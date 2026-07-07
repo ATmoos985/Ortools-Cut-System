@@ -27,6 +27,50 @@ function Assert-InProject {
     }
 }
 
+function Build-AndSyncFrontend {
+    param(
+        [string]$ProjectRoot
+    )
+
+    $frontendPath = Join-Path $ProjectRoot "src\main\resources\cutting-optima"
+    $frontendDistPath = Join-Path $frontendPath "dist"
+    $staticPath = Join-Path $ProjectRoot "src\main\resources\static"
+
+    Assert-InProject $frontendPath "FrontendDir"
+    Assert-InProject $frontendDistPath "FrontendDistDir"
+    Assert-InProject $staticPath "StaticDir"
+
+    if (-not (Test-Path -LiteralPath (Join-Path $frontendPath "package.json"))) {
+        throw "Frontend package.json not found: $frontendPath"
+    }
+
+    Write-Host "Building frontend..."
+    Push-Location $frontendPath
+    try {
+        & npm.cmd run build
+        if ($LASTEXITCODE -ne 0) {
+            throw "Frontend build failed with exit code $LASTEXITCODE"
+        }
+    } finally {
+        Pop-Location
+    }
+
+    if (-not (Test-Path -LiteralPath (Join-Path $frontendDistPath "index.html"))) {
+        throw "Frontend dist index.html not found: $frontendDistPath"
+    }
+
+    Write-Host "Syncing frontend dist to Spring Boot static resources..."
+    if (-not (Test-Path -LiteralPath $staticPath)) {
+        New-Item -ItemType Directory -Path $staticPath | Out-Null
+    }
+
+    Get-ChildItem -LiteralPath $staticPath -Force | Remove-Item -Recurse -Force
+    Get-ChildItem -LiteralPath $frontendDistPath -Force |
+        ForEach-Object {
+            Copy-Item -LiteralPath $_.FullName -Destination $staticPath -Recurse -Force
+        }
+}
+
 $projectRoot = [System.IO.Path]::GetFullPath($PSScriptRoot)
 $releasePath = Resolve-InProjectPath $ReleaseDir
 $distPath = Resolve-InProjectPath $DistDir
@@ -39,8 +83,10 @@ Assert-InProject $stagePath "StageDir"
 Set-Location $projectRoot
 
 if (-not $SkipBuild) {
+    Build-AndSyncFrontend -ProjectRoot $projectRoot
+
     Write-Host "Building Spring Boot jar..."
-    & (Join-Path $projectRoot "mvnw.cmd") -DskipTests package
+    & (Join-Path $projectRoot "mvnw.cmd") -DskipTests clean package
     if ($LASTEXITCODE -ne 0) {
         throw "Maven package failed with exit code $LASTEXITCODE"
     }

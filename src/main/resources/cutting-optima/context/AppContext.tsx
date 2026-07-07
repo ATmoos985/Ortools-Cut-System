@@ -19,6 +19,14 @@ interface ConfigState {
     newSolverTopK: number;
     newSolverMaxIterations: number;
     newSolverTimeLimit: number;
+    newSolverQualityMode: boolean;
+    newSolverMaxPatterns: number;
+    newSolverMaxDistinctWidths: number;
+    newSolverStage4TimeLimit: number;
+    newSolverSeqGroupAlpha: number;
+    newSolverSeqGroupBeta: number;
+    newSolverUseOptimizedAssignment: boolean;
+    newSolverUnderPenalty: number;
 }
 
 // Business data (memory-only, cleared on refresh)
@@ -49,6 +57,14 @@ const defaultConfig: ConfigState = {
     newSolverTopK: 3,
     newSolverMaxIterations: 300,
     newSolverTimeLimit: 240000,
+    newSolverQualityMode: false,
+    newSolverMaxPatterns: 800,
+    newSolverMaxDistinctWidths: 4,
+    newSolverStage4TimeLimit: 30000,
+    newSolverSeqGroupAlpha: 1.0,
+    newSolverSeqGroupBeta: 0.0,
+    newSolverUseOptimizedAssignment: true,
+    newSolverUnderPenalty: 1000000,
 };
 
 // Default business data
@@ -85,6 +101,14 @@ interface AppContextType extends AppState {
     setNewSolverTopK: (topK: number) => void;
     setNewSolverMaxIterations: (iterations: number) => void;
     setNewSolverTimeLimit: (timeLimit: number) => void;
+    setNewSolverQualityMode: (enabled: boolean) => void;
+    setNewSolverMaxPatterns: (maxPatterns: number) => void;
+    setNewSolverMaxDistinctWidths: (maxDistinctWidths: number) => void;
+    setNewSolverStage4TimeLimit: (timeLimit: number) => void;
+    setNewSolverSeqGroupAlpha: (alpha: number) => void;
+    setNewSolverSeqGroupBeta: (beta: number) => void;
+    setNewSolverUseOptimizedAssignment: (enabled: boolean) => void;
+    setNewSolverUnderPenalty: (penalty: number) => void;
     setDiagnosis: (result: DiagnosisResult | null) => void;
     setOptimizationResult: (result: OptimizationResult | null) => void;
     setSelectedGroupKey: (key: string | null) => void;
@@ -132,6 +156,14 @@ function extractConfig(state: AppState): ConfigState {
         newSolverTopK: state.newSolverTopK,
         newSolverMaxIterations: state.newSolverMaxIterations,
         newSolverTimeLimit: state.newSolverTimeLimit,
+        newSolverQualityMode: state.newSolverQualityMode,
+        newSolverMaxPatterns: state.newSolverMaxPatterns,
+        newSolverMaxDistinctWidths: state.newSolverMaxDistinctWidths,
+        newSolverStage4TimeLimit: state.newSolverStage4TimeLimit,
+        newSolverSeqGroupAlpha: state.newSolverSeqGroupAlpha,
+        newSolverSeqGroupBeta: state.newSolverSeqGroupBeta,
+        newSolverUseOptimizedAssignment: state.newSolverUseOptimizedAssignment,
+        newSolverUnderPenalty: state.newSolverUnderPenalty,
     };
 }
 
@@ -145,7 +177,28 @@ export function AppProvider({ children }: { children: ReactNode }) {
     // Save config to localStorage whenever it changes
     useEffect(() => {
         saveConfig(extractConfig(state));
-    }, [state.mode, state.fixedWidth, state.totalWidth, state.minWidth, state.maxWidth, state.stepSize, state.flexTotalWidth, state.totalOverCap]);
+    }, [
+        state.mode,
+        state.fixedWidth,
+        state.totalWidth,
+        state.minWidth,
+        state.maxWidth,
+        state.stepSize,
+        state.flexTotalWidth,
+        state.totalOverCap,
+        state.newSolverTotalWidth,
+        state.newSolverTopK,
+        state.newSolverMaxIterations,
+        state.newSolverTimeLimit,
+        state.newSolverQualityMode,
+        state.newSolverMaxPatterns,
+        state.newSolverMaxDistinctWidths,
+        state.newSolverStage4TimeLimit,
+        state.newSolverSeqGroupAlpha,
+        state.newSolverSeqGroupBeta,
+        state.newSolverUseOptimizedAssignment,
+        state.newSolverUnderPenalty,
+    ]);
 
     // Create setter functions
     const setOrderItems = (items: OrderItem[]) =>
@@ -194,6 +247,36 @@ export function AppProvider({ children }: { children: ReactNode }) {
     const setNewSolverTimeLimit = (timeLimit: number) =>
         setState(prev => ({ ...prev, newSolverTimeLimit: timeLimit }));
 
+    const setNewSolverQualityMode = (enabled: boolean) =>
+        setState(prev => ({
+            ...prev,
+            newSolverQualityMode: enabled,
+            newSolverMaxDistinctWidths: enabled
+                ? Math.max(prev.newSolverMaxDistinctWidths, 5)
+                : prev.newSolverMaxDistinctWidths,
+        }));
+
+    const setNewSolverMaxPatterns = (maxPatterns: number) =>
+        setState(prev => ({ ...prev, newSolverMaxPatterns: maxPatterns }));
+
+    const setNewSolverMaxDistinctWidths = (maxDistinctWidths: number) =>
+        setState(prev => ({ ...prev, newSolverMaxDistinctWidths: maxDistinctWidths }));
+
+    const setNewSolverStage4TimeLimit = (timeLimit: number) =>
+        setState(prev => ({ ...prev, newSolverStage4TimeLimit: timeLimit }));
+
+    const setNewSolverSeqGroupAlpha = (alpha: number) =>
+        setState(prev => ({ ...prev, newSolverSeqGroupAlpha: alpha }));
+
+    const setNewSolverSeqGroupBeta = (beta: number) =>
+        setState(prev => ({ ...prev, newSolverSeqGroupBeta: beta }));
+
+    const setNewSolverUseOptimizedAssignment = (enabled: boolean) =>
+        setState(prev => ({ ...prev, newSolverUseOptimizedAssignment: enabled }));
+
+    const setNewSolverUnderPenalty = (penalty: number) =>
+        setState(prev => ({ ...prev, newSolverUnderPenalty: penalty }));
+
     const setDiagnosis = (result: DiagnosisResult | null) =>
         setState(prev => ({ ...prev, diagnosis: result }));
 
@@ -234,6 +317,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
         setNewSolverTopK,
         setNewSolverMaxIterations,
         setNewSolverTimeLimit,
+        setNewSolverQualityMode,
+        setNewSolverMaxPatterns,
+        setNewSolverMaxDistinctWidths,
+        setNewSolverStage4TimeLimit,
+        setNewSolverSeqGroupAlpha,
+        setNewSolverSeqGroupBeta,
+        setNewSolverUseOptimizedAssignment,
+        setNewSolverUnderPenalty,
         setDiagnosis,
         setOptimizationResult,
         setSelectedGroupKey,

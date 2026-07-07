@@ -32,6 +32,14 @@ export default function Home() {
         newSolverTopK, setNewSolverTopK,
         newSolverMaxIterations, setNewSolverMaxIterations,
         newSolverTimeLimit, setNewSolverTimeLimit,
+        newSolverQualityMode, setNewSolverQualityMode,
+        newSolverMaxPatterns, setNewSolverMaxPatterns,
+        newSolverMaxDistinctWidths, setNewSolverMaxDistinctWidths,
+        newSolverStage4TimeLimit, setNewSolverStage4TimeLimit,
+        newSolverSeqGroupAlpha, setNewSolverSeqGroupAlpha,
+        newSolverSeqGroupBeta, setNewSolverSeqGroupBeta,
+        newSolverUseOptimizedAssignment, setNewSolverUseOptimizedAssignment,
+        newSolverUnderPenalty, setNewSolverUnderPenalty,
         diagnosis, setDiagnosis,
         optimizationResult, setOptimizationResult,
         selectedGroupKey, setSelectedGroupKey,
@@ -162,6 +170,10 @@ export default function Home() {
         setLoading("智能运算中，请稍候...");
         const isFlexible = mode === 'flexible';
         const isNewSolver = mode === 'newsolver';
+        const effectiveMaxDistinctWidths =
+            isNewSolver && newSolverQualityMode
+                ? Math.max(newSolverMaxDistinctWidths, 5)
+                : newSolverMaxDistinctWidths;
         const payload = {
             orderId: 'ORDER_' + Date.now(),
             orderName: 'Optimization',
@@ -180,6 +192,16 @@ export default function Home() {
             // 🚀 NewSolver 专用参数
             useNewSolver: isNewSolver,
             newSolverTopK: newSolverTopK,
+            newSolverMaxPatterns: newSolverMaxPatterns,
+            newSolverMaxDistinctWidths: effectiveMaxDistinctWidths,
+            newSolverStage4TimeLimit: newSolverStage4TimeLimit,
+            newSolverSeqGroupAlpha: newSolverSeqGroupAlpha,
+            newSolverSeqGroupBeta: newSolverSeqGroupBeta,
+            newSolverUseOptimizedAssignment: newSolverUseOptimizedAssignment,
+            newSolverUnderPenalty: newSolverUnderPenalty,
+            lnsEnabled: isNewSolver && (newSolverQualityMode || algorithmParams.lnsEnabled),
+            lnsEnrichPatterns: isNewSolver && algorithmParams.lnsEnabled && algorithmParams.lnsEnrichPatterns,
+            qualityMode: isNewSolver && newSolverQualityMode,
             orderItems: orderItems
         };
 
@@ -555,6 +577,28 @@ export default function Home() {
                                         <p className="text-sm text-emerald-700 font-medium">🚀 新求解器（实验性）</p>
                                         <p className="text-xs text-emerald-600 mt-1">采用模块化架构，支持更多配置参数</p>
                                     </div>
+                                    <div>
+                                        <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1.5">求解档位</label>
+                                        <div className="grid grid-cols-2 gap-2 rounded-lg bg-slate-100 p-1">
+                                            <button
+                                                type="button"
+                                                onClick={() => setNewSolverQualityMode(false)}
+                                                className={`py-2 px-3 rounded-md text-sm font-medium transition-all ${!newSolverQualityMode ? 'bg-white text-emerald-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
+                                            >
+                                                快速解
+                                            </button>
+                                            <button
+                                                type="button"
+                                                onClick={() => setNewSolverQualityMode(true)}
+                                                className={`py-2 px-3 rounded-md text-sm font-medium transition-all ${newSolverQualityMode ? 'bg-white text-amber-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
+                                            >
+                                                精确解
+                                            </button>
+                                        </div>
+                                        <p className="text-xs text-slate-400 mt-1">
+                                            精确解会启用质量模式，并把不同宽幅上限提升到至少 5。
+                                        </p>
+                                    </div>
                                     {/* 预设加载 - 与自由幅宽相同 */}
                                     <div>
                                         <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1.5">加载预设</label>
@@ -613,6 +657,56 @@ export default function Home() {
                                             <input type="number" value={newSolverTimeLimit} onChange={(e) => setNewSolverTimeLimit(parseInt(e.target.value) || 0)} className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-lg font-mono text-sm" />
                                             <p className="text-xs text-slate-400 mt-1">MIP 求解器超时时间</p>
                                         </div>
+                                        <div className="grid grid-cols-2 gap-4 mt-4">
+                                            <div>
+                                                <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1.5">最大花型池</label>
+                                                <input type="number" value={newSolverMaxPatterns} onChange={(e) => setNewSolverMaxPatterns(parseInt(e.target.value) || 0)} className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-lg font-mono text-sm" />
+                                            </div>
+                                            <div>
+                                                <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1.5">不同宽幅上限</label>
+                                                <input type="number" value={newSolverMaxDistinctWidths} onChange={(e) => setNewSolverMaxDistinctWidths(parseInt(e.target.value) || 0)} className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-lg font-mono text-sm" />
+                                                {newSolverQualityMode && newSolverMaxDistinctWidths < 5 && (
+                                                    <p className="text-xs text-amber-600 mt-1">精确解运行时按 5 传入</p>
+                                                )}
+                                            </div>
+                                        </div>
+                                        <div className="grid grid-cols-2 gap-4 mt-4">
+                                            <div>
+                                                <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1.5">Stage4 时限</label>
+                                                <input type="number" value={newSolverStage4TimeLimit} onChange={(e) => setNewSolverStage4TimeLimit(parseInt(e.target.value) || 0)} className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-lg font-mono text-sm" />
+                                            </div>
+                                            <div>
+                                                <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1.5">欠产惩罚</label>
+                                                <input type="number" value={newSolverUnderPenalty} onChange={(e) => setNewSolverUnderPenalty(parseFloat(e.target.value) || 0)} className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-lg font-mono text-sm" />
+                                            </div>
+                                        </div>
+                                        <div className="grid grid-cols-2 gap-4 mt-4">
+                                            <div>
+                                                <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1.5">组数 Alpha</label>
+                                                <input type="number" step="0.1" value={newSolverSeqGroupAlpha} onChange={(e) => setNewSolverSeqGroupAlpha(parseFloat(e.target.value) || 0)} className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-lg font-mono text-sm" />
+                                            </div>
+                                            <div>
+                                                <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1.5">组数 Beta</label>
+                                                <input type="number" step="0.1" value={newSolverSeqGroupBeta} onChange={(e) => setNewSolverSeqGroupBeta(parseFloat(e.target.value) || 0)} className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-lg font-mono text-sm" />
+                                            </div>
+                                        </div>
+                                        <label className="flex items-center justify-between p-3 bg-slate-50 rounded-lg hover:bg-slate-100 transition-colors cursor-pointer group mt-4">
+                                            <div className="flex-1 pr-4">
+                                                <div className="font-medium text-slate-700 group-hover:text-slate-900 text-sm">
+                                                    优化装配
+                                                </div>
+                                            </div>
+                                            <div className="relative">
+                                                <input
+                                                    type="checkbox"
+                                                    checked={newSolverUseOptimizedAssignment}
+                                                    onChange={(e) => setNewSolverUseOptimizedAssignment(e.target.checked)}
+                                                    className="sr-only peer"
+                                                />
+                                                <div className="w-11 h-6 bg-slate-300 peer-focus:ring-2 peer-focus:ring-emerald-300 rounded-full peer peer-checked:bg-emerald-600 transition-colors"></div>
+                                                <div className="absolute left-0.5 top-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform peer-checked:translate-x-5"></div>
+                                            </div>
+                                        </label>
                                     </div>
                                 </div>
                             )}
