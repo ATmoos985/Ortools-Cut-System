@@ -71,11 +71,12 @@ public final class SetPartitionRefiner {
 
     /**
      * 劣候选提前弃修阈值：候选（LNS 后）组数落后同 groupKey 已见最好成绩超过该值时跳过精修。
-     * 实测垃圾候选精修最多追回 9 组（t9est188 109→100 仍被淘汰），默认 15 零质量风险；
-     * 该跳过可省一半质量模式耗时（t9est188 50min 中 ~25min 花在注定淘汰的候选上）。
+     * 实测垃圾候选精修最多追回 9 组（t9est188 109→100 仍被淘汰）；当前 45 单案例中，
+     * 最好候选已到 25 组，后续 34 组候选精修 5min 后仍只到 26 组，因此默认收紧到 8，
+     * 先跳过明显落后的深度精修，避免质量模式长尾耗时。
      */
     public static int skipGapThreshold() {
-        return SolverRuntimeProperties.getInt("cutting.spr.skipGapThreshold", 15);
+        return SolverRuntimeProperties.getInt("cutting.spr.skipGapThreshold", 8);
     }
 
     /**

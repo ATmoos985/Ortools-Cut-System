@@ -5,6 +5,7 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.junit.jupiter.MockitoExtension;
 import test.demo.apsmodule.generator.NewSolver.CuttingSolver;
 import test.demo.apsmodule.generator.NewSolver.output.LocalNeighborhoodSequenceOptimizer;
+import test.demo.apsmodule.generator.NewSolver.output.SetPartitionRefiner;
 import test.demo.rest.dto.OptimizationRequest;
 
 import java.util.List;
@@ -136,6 +137,24 @@ class OptimizationExecutionServiceTest {
                 System.clearProperty("cutting.lns.enabled");
             } else {
                 System.setProperty("cutting.lns.enabled", previousLns);
+            }
+        }
+    }
+
+    @Test
+    void setPartitionRefinerUsesTighterDefaultSkipGapAndAllowsOverride() {
+        String previous = System.getProperty("cutting.spr.skipGapThreshold");
+        try {
+            System.clearProperty("cutting.spr.skipGapThreshold");
+            org.junit.jupiter.api.Assertions.assertEquals(8, SetPartitionRefiner.skipGapThreshold());
+
+            System.setProperty("cutting.spr.skipGapThreshold", "15");
+            org.junit.jupiter.api.Assertions.assertEquals(15, SetPartitionRefiner.skipGapThreshold());
+        } finally {
+            if (previous == null) {
+                System.clearProperty("cutting.spr.skipGapThreshold");
+            } else {
+                System.setProperty("cutting.spr.skipGapThreshold", previous);
             }
         }
     }
