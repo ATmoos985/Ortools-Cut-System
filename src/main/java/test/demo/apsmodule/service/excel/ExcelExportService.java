@@ -1748,8 +1748,8 @@ public class ExcelExportService {
         // B：业务员
         setCellValueSafeV2(row, 1, w.getSalesperson());
 
-        // C：消息文本编号（转成数字）
-        setCellValueSafeV2(row, 2, tryParseIntV2(w.getMessageText()));
+        // C：订单信息。APS 回退字段可能是 PSR 前缀订单号，按原文写回。
+        setCellValueSafeV2(row, 2, w.getMessageText());
 
         // H：厚度
         setCellValueSafeV2(row, 7, g.getThickness() > 0 ? String.valueOf(g.getThickness()) : "");
@@ -1934,25 +1934,6 @@ public class ExcelExportService {
             cell = row.createCell(col);
         }
         setCellValueV2(cell, value);
-    }
-
-    /**
-     * V2: 尝试解析整数
-     */
-    private Integer tryParseIntV2(String s) {
-        if (s == null || s.isEmpty())
-            return 0;
-
-        try {
-            // 提取数字部分
-            String numbers = s.replaceAll("[^0-9]", "");
-            if (!numbers.isEmpty()) {
-                return Integer.parseInt(numbers);
-            }
-        } catch (NumberFormatException e) {
-            log.error("⚠️ 无法从 messageText 提取数字: " + s);
-        }
-        return 0;
     }
 
     // ==================================================================================

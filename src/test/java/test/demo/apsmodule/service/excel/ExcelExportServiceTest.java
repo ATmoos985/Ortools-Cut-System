@@ -1,13 +1,19 @@
 package test.demo.apsmodule.service.excel;
 
+import org.apache.poi.ss.usermodel.DataFormatter;
+import org.apache.poi.ss.usermodel.Workbook;
+import org.apache.poi.ss.usermodel.WorkbookFactory;
 import org.junit.jupiter.api.Test;
 import test.demo.apsmodule.service.CuttingOptimizationResult;
 import test.demo.apsmodule.service.ProductionOrder;
 
+import java.io.InputStream;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.nio.file.Files;
+import java.nio.file.Path;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
@@ -54,6 +60,30 @@ class ExcelExportServiceTest {
 
         assertEquals(4, ((Number) row.get("rolls")).intValue());
         assertEquals(2, ((Number) row.get("stationCount")).intValue());
+    }
+
+    @Test
+    void exportOptimizationResultV2WritesPrefixedMessageTextAsText() throws Exception {
+        ExcelExportService service = new ExcelExportService();
+        CuttingOptimizationResult result = new CuttingOptimizationResult();
+        result.setTotalWidth(4400);
+        result.setCuttingInstructions(List.of(
+                instruction("1100m+不电晕/不涂布", 4400, Map.of(1100, 4), 1, "PSR202607070109", "alice")));
+        String fileName = "test_prefixed_message_text.xlsx";
+        Path exportPath = Path.of("exports", fileName);
+        Files.deleteIfExists(exportPath);
+
+        String filePath = service.exportOptimizationResultV2(result, fileName);
+
+        DataFormatter formatter = new DataFormatter();
+        try (InputStream in = Files.newInputStream(Path.of(filePath));
+                Workbook workbook = WorkbookFactory.create(in)) {
+            assertEquals(
+                    "PSR202607070109",
+                    formatter.formatCellValue(workbook.getSheetAt(0).getRow(5).getCell(2)));
+        } finally {
+            Files.deleteIfExists(Path.of(filePath));
+        }
     }
 
     private static CuttingOptimizationResult.CuttingInstruction instruction(
