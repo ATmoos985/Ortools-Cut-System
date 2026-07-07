@@ -153,7 +153,8 @@ class ApsOptimizationControllerTest {
                 List.of(new ApsOptimizationModels.Order("SO-1", 1200, 8, 1000, "T1", "Alice", "Desc", 20)),
                 new ApsOptimizationModels.OptimizationConfig(
                         false, 4600, 4600, null, null, null, 30, 300, 120000L,
-                        true, 3, 800, 4, 30000L, 1.0, 0.0, true, 1e6));
+                        true, 3, 800, 4, 30000L, 1.0, 0.0, true, 1e6,
+                        true, false, false));
     }
 
     private static OptimizationJob runningJob(String jobId) {

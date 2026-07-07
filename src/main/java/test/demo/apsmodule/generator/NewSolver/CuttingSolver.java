@@ -6,6 +6,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 import test.demo.apsmodule.generator.NewSolver.colgen.ColumnGenerationSolver;
 import test.demo.apsmodule.generator.NewSolver.config.SolverParameters;
+import test.demo.apsmodule.generator.NewSolver.config.SolverRuntimeProperties;
 import test.demo.apsmodule.generator.NewSolver.mip.MultiStageMIPSolver;
 import test.demo.apsmodule.generator.NewSolver.mip.PatternAlignmentContext;
 import test.demo.apsmodule.generator.NewSolver.model.PatternCandidate;
@@ -148,21 +149,16 @@ public class CuttingSolver implements CuttingSolverAlgorithm {
                             for (double parityPenalty : parityPenalties) {
                                 // parity 经系统属性注入（LegacyOrderPatternSelectionSolver
                                 // 的 parityPenalty() 读取），调用后立即还原
-                                String prevParity = System.getProperty("cutting.aLayerParityPenalty");
-                                System.setProperty("cutting.aLayerParityPenalty",
-                                        Double.toString(parityPenalty));
-                                MultiStageMIPSolver.SolveCandidate primary;
-                                try {
-                                    primary = mipSolver.solvePrimaryOnly(
-                                            new ArrayList<>(patterns), orderedDemands, allowOverSet,
-                                            seed, alignmentLambda, alignmentContext);
-                                } finally {
-                                    if (prevParity == null) {
-                                        System.clearProperty("cutting.aLayerParityPenalty");
-                                    } else {
-                                        System.setProperty("cutting.aLayerParityPenalty", prevParity);
-                                    }
-                                }
+                                // Scoped runtime override; do not leak A-layer experiment flags
+                                // through JVM-wide system properties.
+                                final List<PatternCandidate> candidatePatterns = new ArrayList<>(patterns);
+                                MultiStageMIPSolver.SolveCandidate primary =
+                                        SolverRuntimeProperties.withOverrides(
+                                                Map.of("cutting.aLayerParityPenalty",
+                                                        Double.toString(parityPenalty)),
+                                                () -> mipSolver.solvePrimaryOnly(
+                                                        candidatePatterns, orderedDemands, allowOverSet,
+                                                        seed, alignmentLambda, alignmentContext));
                                 if (primary != null) {
                                     orderCandidates.add(new MultiStageMIPSolver.SolveCandidate(
                                             "s" + seed + "-a" + formatLambda(alignmentLambda)
@@ -333,7 +329,7 @@ public class CuttingSolver implements CuttingSolverAlgorithm {
 
     /** Number of demand-order candidates to run. Default 1 (single fast path). */
     private int candidateOrderCount() {
-        String raw = System.getProperty("cutting.candidateOrders");
+        String raw = SolverRuntimeProperties.get("cutting.candidateOrders");
         if (raw != null && !raw.isBlank()) {
             try {
                 return Math.max(1, Integer.parseInt(raw.trim()));
@@ -352,7 +348,7 @@ public class CuttingSolver implements CuttingSolverAlgorithm {
      * isBetterPlan（车数→组→odd→small）拣优，结构上永不劣于单路径。
      */
     public static boolean qualityMode() {
-        return Boolean.parseBoolean(System.getProperty("cutting.quality", "false").trim());
+        return SolverRuntimeProperties.getBoolean("cutting.quality", false);
     }
 
     /**
@@ -360,7 +356,7 @@ public class CuttingSolver implements CuttingSolverAlgorithm {
      * -Dcutting.aLayerParityPenalties=0,0.1,0.2 显式覆盖。
      */
     static double[] aLayerParityPenalties() {
-        String raw = System.getProperty("cutting.aLayerParityPenalties");
+        String raw = SolverRuntimeProperties.get("cutting.aLayerParityPenalties");
         if (raw == null || raw.isBlank()) {
             return qualityMode() ? new double[] {0.0, 0.1} : new double[] {0.0};
         }
@@ -392,7 +388,7 @@ public class CuttingSolver implements CuttingSolverAlgorithm {
 
     /** A-layer alignment lambda sweep. Include 0.0 as the no-alignment baseline. */
     private double[] aLayerAlignmentLambdas() {
-        String raw = System.getProperty("cutting.aLayerAlignmentLambdas", "0");
+        String raw = SolverRuntimeProperties.get("cutting.aLayerAlignmentLambdas", "0");
         LinkedHashSet<Double> values = new LinkedHashSet<>();
         for (String part : raw.split(",")) {
             String trimmed = part.trim();

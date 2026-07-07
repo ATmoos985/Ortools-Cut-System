@@ -33,7 +33,10 @@ public final class ApsOptimizationModels {
             Double newSolverSeqGroupAlpha,
             Double newSolverSeqGroupBeta,
             Boolean newSolverUseOptimizedAssignment,
-            Double newSolverUnderPenalty) {
+            Double newSolverUnderPenalty,
+            Boolean lnsEnabled,
+            Boolean lnsEnrichPatterns,
+            Boolean qualityMode) {
     }
 
     public record Order(

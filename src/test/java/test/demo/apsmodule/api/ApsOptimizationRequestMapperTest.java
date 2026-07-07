@@ -21,7 +21,8 @@ class ApsOptimizationRequestMapperTest {
                 List.of(new ApsOptimizationModels.Order("SO-1", 1200, 8, 1000, "T1", "Alice", "Desc", 20)),
                 new ApsOptimizationModels.OptimizationConfig(
                         true, 4600, 4550, 4300, 4500, 20, 15, 500, 90000L,
-                        true, 5, 900, 6, 45000L, 2.0, 0.5, false, 1234.0));
+                        true, 5, 900, 6, 45000L, 2.0, 0.5, false, 1234.0,
+                        true, true, true));
 
         OptimizationRequest mapped = mapper.toOptimizationRequest(request);
 
@@ -33,6 +34,9 @@ class ApsOptimizationRequestMapperTest {
         assertEquals(15, mapped.getTotalOverCap());
         assertEquals(500, mapped.getMaxIterations());
         assertEquals(90000L, mapped.getTimeoutMs());
+        assertTrue(mapped.isLnsEnabled());
+        assertTrue(mapped.isLnsEnrichPatterns());
+        assertTrue(mapped.isQualityMode());
         assertEquals(1, mapped.getOrderItems().size());
         assertEquals("SO-1", mapped.getOrderItems().get(0).getMessageText());
         assertEquals(1200, mapped.getOrderItems().get(0).getWidth());

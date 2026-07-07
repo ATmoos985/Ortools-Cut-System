@@ -1,7 +1,7 @@
 package test.demo.apsmodule.service;
 
 import org.springframework.stereotype.Service;
-import test.demo.apsmodule.generator.NewSolver.output.LocalNeighborhoodSequenceOptimizer;
+import test.demo.apsmodule.generator.NewSolver.config.SolverRuntimeProperties;
 import test.demo.rest.dto.OptimizationRequest;
 
 import java.util.HashMap;
@@ -36,16 +36,16 @@ public class OptimizationExecutionService {
         if (!request.isLnsEnabled() && !request.isQualityMode()) {
             return runOptimization(request, config);
         }
-        Map<String, String> lnsProperties = new HashMap<>();
-        lnsProperties.put("cutting.lns.enabled", "true");
-        lnsProperties.put("cutting.lns.enrichPatterns", Boolean.toString(request.isLnsEnrichPatterns()));
+        Map<String, String> solverProperties = new HashMap<>();
+        solverProperties.put("cutting.lns.enabled", "true");
+        solverProperties.put("cutting.lns.enrichPatterns", Boolean.toString(request.isLnsEnrichPatterns()));
         if (request.isQualityMode()) {
             // 质量模式：A层 parity{0,0.1} 扫描 + B层双 LNS 邻域变体，全候选经
             // isBetterPlan（车数→组→odd→small）评优——结构上永不劣于快路径，耗时约×2
-            lnsProperties.put("cutting.quality", "true");
+            solverProperties.put("cutting.quality", "true");
         }
-        return LocalNeighborhoodSequenceOptimizer.withPropertyOverrides(
-                lnsProperties,
+        return SolverRuntimeProperties.withOverrides(
+                solverProperties,
                 () -> runOptimization(request, config));
     }
 

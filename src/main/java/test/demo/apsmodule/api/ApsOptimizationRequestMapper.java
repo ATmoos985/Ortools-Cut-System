@@ -42,6 +42,9 @@ public class ApsOptimizationRequestMapper {
                 config == null || config.newSolverUseOptimizedAssignment() == null
                         || config.newSolverUseOptimizedAssignment());
         mapped.setNewSolverUnderPenalty(firstNonNull(config != null ? config.newSolverUnderPenalty() : null, 1e6));
+        mapped.setLnsEnabled(config == null || config.lnsEnabled() == null || config.lnsEnabled());
+        mapped.setLnsEnrichPatterns(config != null && Boolean.TRUE.equals(config.lnsEnrichPatterns()));
+        mapped.setQualityMode(config != null && Boolean.TRUE.equals(config.qualityMode()));
         mapped.setOrderItems(toOrderItems(request.orders()));
 
         return mapped;

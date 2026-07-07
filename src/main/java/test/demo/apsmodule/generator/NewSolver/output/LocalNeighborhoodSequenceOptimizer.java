@@ -8,6 +8,7 @@ import com.google.ortools.linearsolver.MPVariable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import test.demo.apsmodule.generator.NewSolver.config.SolverParameters;
+import test.demo.apsmodule.generator.NewSolver.config.SolverRuntimeProperties;
 import test.demo.apsmodule.service.CuttingInstruction;
 import test.demo.apsmodule.service.SolverOrderItem;
 import test.demo.apsmodule.service.StationAssignment;
@@ -64,8 +65,6 @@ public class LocalNeighborhoodSequenceOptimizer {
           + "randomization/lpseed = 0\n";
 
     private static boolean orToolsLoaded;
-    private static final ThreadLocal<Map<String, String>> PROPERTY_OVERRIDES = new ThreadLocal<>();
-
     private final SolverParameters params;
     /**
      * Canonicalises an instruction list the same way the production candidate path does
@@ -89,25 +88,7 @@ public class LocalNeighborhoodSequenceOptimizer {
     }
 
     public static <T> T withPropertyOverrides(Map<String, String> overrides, Supplier<T> supplier) {
-        if (overrides == null || overrides.isEmpty()) {
-            return supplier.get();
-        }
-        Map<String, String> previous = PROPERTY_OVERRIDES.get();
-        Map<String, String> merged = new HashMap<>();
-        if (previous != null) {
-            merged.putAll(previous);
-        }
-        merged.putAll(overrides);
-        PROPERTY_OVERRIDES.set(Map.copyOf(merged));
-        try {
-            return supplier.get();
-        } finally {
-            if (previous == null) {
-                PROPERTY_OVERRIDES.remove();
-            } else {
-                PROPERTY_OVERRIDES.set(previous);
-            }
-        }
+        return SolverRuntimeProperties.withOverrides(overrides, supplier);
     }
 
     private static boolean booleanProperty(String key, boolean defaultValue) {
@@ -140,11 +121,7 @@ public class LocalNeighborhoodSequenceOptimizer {
     }
 
     private static String configuredProperty(String key) {
-        Map<String, String> overrides = PROPERTY_OVERRIDES.get();
-        if (overrides != null && overrides.containsKey(key)) {
-            return overrides.get(key);
-        }
-        return System.getProperty(key);
+        return SolverRuntimeProperties.get(key);
     }
 
     public LnsResult improve(List<CuttingInstruction> originalInstructions,

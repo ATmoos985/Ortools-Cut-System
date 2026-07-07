@@ -3,6 +3,7 @@ package test.demo.apsmodule.generator.NewSolver.output;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import test.demo.apsmodule.generator.NewSolver.config.SolverParameters;
+import test.demo.apsmodule.generator.NewSolver.config.SolverRuntimeProperties;
 import test.demo.apsmodule.generator.NewSolver.mip.UnifiedSetPartitionSolver;
 import test.demo.apsmodule.generator.NewSolver.mip.UnifiedSetPartitionSolver.Column;
 import test.demo.apsmodule.generator.NewSolver.mip.UnifiedSetPartitionSolver.ColumnUse;
@@ -65,7 +66,7 @@ public final class SetPartitionRefiner {
     }
 
     public static boolean isEnabled() {
-        return Boolean.parseBoolean(System.getProperty("cutting.spr.enabled", "true").trim());
+        return SolverRuntimeProperties.getBoolean("cutting.spr.enabled", true);
     }
 
     /**
@@ -74,11 +75,7 @@ public final class SetPartitionRefiner {
      * 该跳过可省一半质量模式耗时（t9est188 50min 中 ~25min 花在注定淘汰的候选上）。
      */
     public static int skipGapThreshold() {
-        try {
-            return Integer.parseInt(System.getProperty("cutting.spr.skipGapThreshold", "15").trim());
-        } catch (NumberFormatException e) {
-            return 15;
-        }
+        return SolverRuntimeProperties.getInt("cutting.spr.skipGapThreshold", 15);
     }
 
     /**
@@ -87,12 +84,7 @@ public final class SetPartitionRefiner {
      * 仅在对耗时敏感的场景开启。
      */
     static long budgetMs() {
-        try {
-            return Long.parseLong(System.getProperty("cutting.spr.budgetMs",
-                    Long.toString(DEFAULT_SPR_BUDGET_MS)).trim());
-        } catch (NumberFormatException e) {
-            return DEFAULT_SPR_BUDGET_MS;
-        }
+        return SolverRuntimeProperties.getLong("cutting.spr.budgetMs", DEFAULT_SPR_BUDGET_MS);
     }
 
     /**
@@ -101,7 +93,7 @@ public final class SetPartitionRefiner {
      * （质量≈串行），同时把每轮墙钟从 Σ 降到 max。取代旧批量并行（会丢接受链、质量降）。
      */
     static boolean parallelEnabled() {
-        return Boolean.parseBoolean(System.getProperty("cutting.spr.parallel", "true").trim());
+        return SolverRuntimeProperties.getBoolean("cutting.spr.parallel", true);
     }
 
     /**

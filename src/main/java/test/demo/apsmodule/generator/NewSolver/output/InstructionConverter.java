@@ -8,6 +8,7 @@ import com.google.ortools.linearsolver.MPVariable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import test.demo.apsmodule.generator.NewSolver.config.SolverParameters;
+import test.demo.apsmodule.generator.NewSolver.config.SolverRuntimeProperties;
 import test.demo.apsmodule.generator.NewSolver.mip.AssignmentMIPSolver;
 import test.demo.apsmodule.generator.NewSolver.mip.Phase2SequenceGroupSolver;
 import test.demo.apsmodule.generator.NewSolver.model.PatternCandidate;
@@ -382,8 +383,7 @@ public class InstructionConverter {
 
     /** Whether the Phase2 sequence-group candidate is evaluated. Default false. */
     private boolean phase2Enabled() {
-        return Boolean.parseBoolean(
-                System.getProperty("cutting.phase2.enabled", "false").trim());
+        return SolverRuntimeProperties.getBoolean("cutting.phase2.enabled", false);
     }
 
     protected Map<PatternCandidate, List<AssignmentMIPSolver.AssignmentBlock>> solveAssignmentWithMip(

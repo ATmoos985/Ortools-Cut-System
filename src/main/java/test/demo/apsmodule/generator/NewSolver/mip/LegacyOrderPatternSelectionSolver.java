@@ -7,6 +7,7 @@ import com.google.ortools.linearsolver.MPVariable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import test.demo.apsmodule.generator.NewSolver.config.SolverParameters;
+import test.demo.apsmodule.generator.NewSolver.config.SolverRuntimeProperties;
 import test.demo.apsmodule.generator.NewSolver.model.PatternCandidate;
 
 import java.util.ArrayList;
@@ -71,20 +72,11 @@ class LegacyOrderPatternSelectionSolver {
      * 权重须远小于 1（花型数单位代价），保证只在花型数平局的最优解之间挑奇偶更好的。
      */
     private static double parityPenalty() {
-        try {
-            return Double.parseDouble(System.getProperty("cutting.aLayerParityPenalty", "0").trim());
-        } catch (NumberFormatException e) {
-            return 0.0;
-        }
+        return SolverRuntimeProperties.getDouble("cutting.aLayerParityPenalty", 0.0);
     }
 
     private static long longProperty(String key, long defaultValue) {
-        try {
-            String raw = System.getProperty(key);
-            return raw == null || raw.isBlank() ? defaultValue : Long.parseLong(raw.trim());
-        } catch (NumberFormatException e) {
-            return defaultValue;
-        }
+        return SolverRuntimeProperties.getLong(key, defaultValue);
     }
 
     List<Result> solveCandidates(List<PatternCandidate> patterns,

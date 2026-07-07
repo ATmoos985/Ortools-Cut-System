@@ -7,6 +7,7 @@ import com.google.ortools.linearsolver.MPVariable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import test.demo.apsmodule.generator.NewSolver.config.SolverParameters;
+import test.demo.apsmodule.generator.NewSolver.config.SolverRuntimeProperties;
 import test.demo.apsmodule.generator.NewSolver.model.PatternCandidate;
 import test.demo.apsmodule.service.SolverOrderItem;
 
@@ -50,11 +51,7 @@ public class AssignmentMIPSolver {
           + "randomization/lpseed = 42\n";
 
     private static long longProperty(String key, long defaultValue) {
-        try {
-            return Long.parseLong(System.getProperty(key, Long.toString(defaultValue)).trim());
-        } catch (NumberFormatException e) {
-            return defaultValue;
-        }
+        return SolverRuntimeProperties.getLong(key, defaultValue);
     }
 
     private final SolverParameters params;
