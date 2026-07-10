@@ -64,6 +64,33 @@ class B6UnifiedSetPartitionTest {
     }
 
     @Test
+    void level1bStrictLexicographicReproducesManualBusinessFixture() throws Exception {
+        List<Column> manualColumns = loadManualBigGroupColumns();
+        Map<String, Integer> demand = loadBigGroupDemand();
+
+        UnifiedSetPartitionSolver.LexicographicResult result =
+                new UnifiedSetPartitionSolver().solveLexicographic(
+                        manualColumns,
+                        demand,
+                        MANUAL_BIG_CARS,
+                        MANUAL_BIG_WASTE,
+                        TOTAL_WIDTH,
+                        30_000L,
+                        loadManualBigGroupUses());
+
+        assertNotNull(result);
+        assertTrue(result.provenOptimal(), "all three lexicographic phases must be optimal");
+        assertNotNull(result.result());
+        assertEquals(3, result.phases().size());
+        assertEquals(46, result.result().groups());
+        assertEquals(1, result.result().oddBlocks());
+        assertEquals(MANUAL_BIG_CARS, result.result().cars());
+        assertEquals(MANUAL_BIG_WASTE, result.result().waste());
+        assertTrue(result.phases().stream().allMatch(phase -> phase.relativeGap() < 1e-9));
+        verifyDemandExact(result.result(), demand);
+    }
+
+    @Test
     void level2MixManualColumnsWithStructuredPool() throws Exception {
         List<Column> manualColumns = loadManualBigGroupColumns();
         Map<String, Integer> demand = loadBigGroupDemand();
@@ -877,6 +904,73 @@ class B6UnifiedSetPartitionTest {
         verifyMerged("Level12c merge push (parity目标46/1)", current, demand);
     }
 
+    @Test
+    void level13StrictPipelineSnapshotPoolBoundary() throws Exception {
+        Map<String, Integer> demand = loadBigGroupDemand();
+        List<UnifiedSetPartitionSolver.ColumnUse> warmStart = loadPipelineSnapshot();
+        List<Column> pool = warmStart.stream()
+                .map(UnifiedSetPartitionSolver.ColumnUse::column)
+                .toList();
+        int cars = warmStart.stream()
+                .mapToInt(UnifiedSetPartitionSolver.ColumnUse::count)
+                .sum();
+        int waste = warmStart.stream()
+                .mapToInt(use -> (TOTAL_WIDTH - use.column().patternWidth()) * use.count())
+                .sum();
+
+        UnifiedSetPartitionSolver.LexicographicResult result =
+                new UnifiedSetPartitionSolver().solveLexicographic(
+                        pool, demand, cars, waste, TOTAL_WIDTH, 30_000L, warmStart);
+
+        assertNotNull(result);
+        assertTrue(result.provenOptimal(), "snapshot column-pool boundary must be proven");
+        assertNotNull(result.result());
+        assertEquals(47, result.result().groups());
+        assertEquals(3, result.result().oddBlocks());
+        assertEquals(13, result.result().smallBlocks());
+        assertEquals(449, result.result().cars());
+        assertEquals(99_380, result.result().waste());
+        verifyDemandExact(result.result(), demand);
+    }
+
+    @Test
+    void level14ArchivedResidualColumnsFeedStrictGlobalMaster() throws Exception {
+        Map<String, Integer> demand = loadBigGroupDemand();
+        List<UnifiedSetPartitionSolver.ColumnUse> start = loadPipelineSnapshot();
+        Map<String, Column> archive = new LinkedHashMap<>();
+
+        List<UnifiedSetPartitionSolver.ColumnUse> current = microIterate(
+                start, 3, 30_000L, 3, "Level14-parity", archive);
+        current = microIterate(
+                current, 5, 60_000L, 2, "Level14-merge", archive);
+        for (UnifiedSetPartitionSolver.ColumnUse use : current) {
+            archive.putIfAbsent(use.column().signature(), use.column());
+        }
+
+        UnifiedSetPartitionSolver.LexicographicResult result =
+                new UnifiedSetPartitionSolver().solveLexicographic(
+                        new ArrayList<>(archive.values()),
+                        demand,
+                        MANUAL_BIG_CARS,
+                        MANUAL_BIG_WASTE,
+                        TOTAL_WIDTH,
+                        30_000L,
+                        current);
+
+        assertNotNull(result);
+        assertNotNull(result.result());
+        assertTrue(result.result().groups() <= 46, "global master must rebuild 46-group incumbent");
+        assertTrue(result.result().oddBlocks() <= 1, "global master must keep odd improvement");
+        assertEquals(MANUAL_BIG_CARS, result.result().cars());
+        assertTrue(result.result().waste() <= MANUAL_BIG_WASTE);
+        verifyDemandExact(result.result(), demand);
+        System.out.printf("%n##### Level14 archived global master: pool=%d result=%d/%d/%d "
+                        + "status=%s proven=%s bound=%.3f gap=%.6f%n",
+                archive.size(), result.result().groups(), result.result().oddBlocks(),
+                result.result().smallBlocks(), result.result().status(), result.provenOptimal(),
+                result.result().bestBound(), result.result().relativeGap());
+    }
+
     private static final java.nio.file.Path PIPELINE_SNAPSHOT =
             java.nio.file.Path.of("src/test/resources/pipeline_big_group_snapshot.csv");
 
@@ -949,7 +1043,19 @@ class B6UnifiedSetPartitionTest {
     private List<UnifiedSetPartitionSolver.ColumnUse> microIterate(
             List<UnifiedSetPartitionSolver.ColumnUse> start,
             int donorCount, long budgetMs, int maxPasses, String label) {
+        return microIterate(start, donorCount, budgetMs, maxPasses, label, null);
+    }
+
+    private List<UnifiedSetPartitionSolver.ColumnUse> microIterate(
+            List<UnifiedSetPartitionSolver.ColumnUse> start,
+            int donorCount, long budgetMs, int maxPasses, String label,
+            Map<String, Column> archive) {
         List<UnifiedSetPartitionSolver.ColumnUse> current = new ArrayList<>(start);
+        if (archive != null) {
+            for (UnifiedSetPartitionSolver.ColumnUse use : current) {
+                archive.putIfAbsent(use.column().signature(), use.column());
+            }
+        }
         for (int pass = 1; pass <= maxPasses; pass++) {
             boolean improvedThisPass = false;
             // 目标快照（odd 优先，其次 small；按值定位，块可能已被前面的重建消耗）
@@ -995,7 +1101,7 @@ class B6UnifiedSetPartitionTest {
                     kept.remove(r);
                 }
 
-                Result sub = microRebuild(removed, budgetMs);
+                Result sub = microRebuild(removed, budgetMs, archive);
                 if (sub == null || sub.groups() == 0) {
                     continue;
                 }
@@ -1051,6 +1157,11 @@ class B6UnifiedSetPartitionTest {
 
     /** 微邻域重建：残差需求 + 比例匹配注入列 + 拆除块兜底，单段求解（odd 已在目标）。 */
     private Result microRebuild(List<UnifiedSetPartitionSolver.ColumnUse> removed, long budgetMs) {
+        return microRebuild(removed, budgetMs, null);
+    }
+
+    private Result microRebuild(List<UnifiedSetPartitionSolver.ColumnUse> removed,
+            long budgetMs, Map<String, Column> archive) {
         Map<String, Integer> residual = new LinkedHashMap<>();
         int removedCars = 0;
         int removedWaste = 0;
@@ -1071,6 +1182,11 @@ class B6UnifiedSetPartitionTest {
             shapes.add(use.column().pattern());
         }
         subPool.addAll(UnifiedSetPartitionSolver.structuredColumns(shapes, residualByWidth, 2, 20, 80));
+        if (archive != null) {
+            for (Column column : subPool) {
+                archive.putIfAbsent(column.signature(), column);
+            }
+        }
         return new UnifiedSetPartitionSolver().solve(
                 subPool, residual, removedCars, removedWaste, TOTAL_WIDTH, budgetMs, 0.02,
                 new ArrayList<>(removed));

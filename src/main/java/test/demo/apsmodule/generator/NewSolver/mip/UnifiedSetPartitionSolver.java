@@ -89,7 +89,39 @@ public class UnifiedSetPartitionSolver {
     }
 
     public record Result(List<ColumnUse> uses, int groups, int oddBlocks, int smallBlocks,
-                         int cars, int waste, String status) {
+                         int cars, int waste, String status, double objectiveValue,
+                         double bestBound, long nodes, long elapsedMs) {
+
+        public Result(List<ColumnUse> uses, int groups, int oddBlocks, int smallBlocks,
+                int cars, int waste, String status) {
+            this(uses, groups, oddBlocks, smallBlocks, cars, waste, status,
+                    Double.NaN, Double.NaN, -1L, -1L);
+        }
+
+        public double relativeGap() {
+            if (!Double.isFinite(objectiveValue) || !Double.isFinite(bestBound)) {
+                return Double.NaN;
+            }
+            return Math.abs(objectiveValue - bestBound)
+                    / Math.max(1.0, Math.abs(objectiveValue));
+        }
+
+        public String signature() {
+            return uses.stream()
+                    .map(use -> use.column().signature() + "#" + use.count())
+                    .sorted()
+                    .collect(Collectors.joining("|"));
+        }
+    }
+
+    public record LexicographicResult(Result result, List<Result> phases, boolean provenOptimal) {
+    }
+
+    private enum ObjectivePhase {
+        GROUPS_WITH_ODD_TIEBREAK,
+        GROUPS,
+        ODD,
+        SMALL
     }
 
     /**
@@ -127,6 +159,40 @@ public class UnifiedSetPartitionSolver {
     }
 
     /**
+     * Strict three-phase lexicographic solve: groups, then odd blocks, then small blocks.
+     * Each phase must prove optimality before its incumbent can cap the next phase.
+     */
+    public LexicographicResult solveLexicographic(List<Column> pool,
+            Map<String, Integer> demand,
+            int exactCars,
+            int wasteCap,
+            int totalWidth,
+            long timeLimitMsPerPhase,
+            List<ColumnUse> warmStart) {
+        Result groups = solvePhase(pool, demand, exactCars, wasteCap, totalWidth,
+                timeLimitMsPerPhase, 0.0, warmStart, null, null,
+                ObjectivePhase.GROUPS, true);
+        if (!isOptimal(groups)) {
+            return partialLexicographicResult(groups, List.of());
+        }
+
+        Result odd = solvePhase(pool, demand, exactCars, wasteCap, totalWidth,
+                timeLimitMsPerPhase, 0.0, groups.uses(), groups.groups(), null,
+                ObjectivePhase.ODD, true);
+        if (!isOptimal(odd)) {
+            return partialLexicographicResult(odd, List.of(groups));
+        }
+
+        Result small = solvePhase(pool, demand, exactCars, wasteCap, totalWidth,
+                timeLimitMsPerPhase, 0.0, odd.uses(), groups.groups(), odd.oddBlocks(),
+                ObjectivePhase.SMALL, true);
+        if (!isOptimal(small)) {
+            return partialLexicographicResult(small, List.of(groups, odd));
+        }
+        return new LexicographicResult(small, List.of(groups, odd, small), true);
+    }
+
+    /**
      * @param maxGroups 非空时加硬约束 Σy ≤ maxGroups 且目标改为「odd 优先」（组数封顶后
      *                  专修奇偶）——字典序第二段：先 solve() 拿最少组数，再以其为帽调用本重载。
      */
@@ -139,6 +205,26 @@ public class UnifiedSetPartitionSolver {
             double oddWeight,
             List<ColumnUse> warmStart,
             Integer maxGroups) {
+        return solvePhase(pool, demand, exactCars, wasteCap, totalWidth, timeLimitMs,
+                oddWeight, warmStart, maxGroups, null,
+                maxGroups == null
+                        ? ObjectivePhase.GROUPS_WITH_ODD_TIEBREAK
+                        : ObjectivePhase.ODD,
+                false);
+    }
+
+    private Result solvePhase(List<Column> pool,
+            Map<String, Integer> demand,
+            int exactCars,
+            int wasteCap,
+            int totalWidth,
+            long timeLimitMs,
+            double oddWeight,
+            List<ColumnUse> warmStart,
+            Integer maxGroups,
+            Integer maxOdd,
+            ObjectivePhase objectivePhase,
+            boolean stableColumnOrder) {
         if (oddWeight < 0) {
             oddWeight = DEFAULT_ODD_WEIGHT;
         }
@@ -150,6 +236,9 @@ public class UnifiedSetPartitionSolver {
             }
         }
         List<Column> columns = new ArrayList<>(bySig.values());
+        if (stableColumnOrder) {
+            columns.sort(Comparator.comparing(Column::signature));
+        }
         log.info("UnifiedSP: pool={} (deduped from {}), demandKeys={}, cars={}, wasteCap={}",
                 columns.size(), pool.size(), demand.size(), exactCars, wasteCap);
 
@@ -168,12 +257,14 @@ public class UnifiedSetPartitionSolver {
         MPVariable[] y = new MPVariable[n];
         MPVariable[] o = new MPVariable[n];
         MPVariable[] h = new MPVariable[n];
+        MPVariable[] s = new MPVariable[n];
         for (int j = 0; j < n; j++) {
             int support = Math.min(exactCars, supportOf(columns.get(j), demand));
             c[j] = solver.makeIntVar(0, support, "c_" + j);
             y[j] = solver.makeBoolVar("y_" + j);
             o[j] = solver.makeBoolVar("o_" + j);
             h[j] = solver.makeIntVar(0, support, "h_" + j);
+            s[j] = solver.makeBoolVar("s_" + j);
             // c <= support*y ; c >= y ; c - 2h - o = 0
             MPConstraint upper = solver.makeConstraint(-MPSolver.infinity(), 0, "ub_" + j);
             upper.setCoefficient(c[j], 1);
@@ -185,6 +276,17 @@ public class UnifiedSetPartitionSolver {
             parity.setCoefficient(c[j], 1);
             parity.setCoefficient(h[j], -2);
             parity.setCoefficient(o[j], -1);
+
+            // s=1 iff the enabled column is used by 1..5 cars.
+            MPConstraint smallEnabled = solver.makeConstraint(
+                    -MPSolver.infinity(), 0, "small_enabled_" + j);
+            smallEnabled.setCoefficient(s[j], 1);
+            smallEnabled.setCoefficient(y[j], -1);
+            MPConstraint nonSmallMinimum = solver.makeConstraint(
+                    0, MPSolver.infinity(), "non_small_min_" + j);
+            nonSmallMinimum.setCoefficient(c[j], 1);
+            nonSmallMinimum.setCoefficient(y[j], -6);
+            nonSmallMinimum.setCoefficient(s[j], 6);
         }
 
         if (warmStart != null && !warmStart.isEmpty()) {
@@ -192,8 +294,8 @@ public class UnifiedSetPartitionSolver {
             for (ColumnUse use : warmStart) {
                 hintCounts.merge(use.column().signature(), use.count(), Integer::sum);
             }
-            List<MPVariable> hintVars = new ArrayList<>(n * 4);
-            List<Double> hintValues = new ArrayList<>(n * 4);
+            List<MPVariable> hintVars = new ArrayList<>(n * 5);
+            List<Double> hintValues = new ArrayList<>(n * 5);
             int matched = 0;
             for (int j = 0; j < n; j++) {
                 int count = hintCounts.getOrDefault(columns.get(j).signature(), 0);
@@ -208,6 +310,8 @@ public class UnifiedSetPartitionSolver {
                 hintValues.add(count % 2 != 0 ? 1.0 : 0.0);
                 hintVars.add(h[j]);
                 hintValues.add((double) (count / 2));
+                hintVars.add(s[j]);
+                hintValues.add(count > 0 && count <= 5 ? 1.0 : 0.0);
             }
             double[] values = new double[hintValues.size()];
             for (int i = 0; i < values.length; i++) {
@@ -245,28 +349,41 @@ public class UnifiedSetPartitionSolver {
 
         MPObjective objective = solver.objective();
         if (maxGroups != null) {
-            // 字典序第二段：组数封顶为硬约束，odd 成为主目标（组数仅留微小系数防止无谓多开组）
             MPConstraint groupsCap = solver.makeConstraint(0, maxGroups, "groupsCap");
             for (int j = 0; j < n; j++) {
                 groupsCap.setCoefficient(y[j], 1);
             }
+        }
+        if (maxOdd != null) {
+            MPConstraint oddCap = solver.makeConstraint(0, maxOdd, "oddCap");
             for (int j = 0; j < n; j++) {
-                objective.setCoefficient(o[j], 1.0);
-                objective.setCoefficient(y[j], 0.001);
+                oddCap.setCoefficient(o[j], 1);
             }
-        } else {
-            for (int j = 0; j < n; j++) {
+        }
+        for (int j = 0; j < n; j++) {
+            switch (objectivePhase) {
+            case GROUPS_WITH_ODD_TIEBREAK -> {
                 objective.setCoefficient(y[j], 1.0);
                 objective.setCoefficient(o[j], oddWeight);
+            }
+            case GROUPS -> objective.setCoefficient(y[j], 1.0);
+            case ODD -> objective.setCoefficient(o[j], 1.0);
+            case SMALL -> objective.setCoefficient(s[j], 1.0);
             }
         }
         objective.setMinimization();
 
         solver.setTimeLimit(Math.max(1000, timeLimitMs));
+        long startedAt = System.currentTimeMillis();
         MPSolver.ResultStatus status = solver.solve();
+        long elapsedMs = System.currentTimeMillis() - startedAt;
+        double objectiveValue = safeObjectiveValue(objective);
+        double bestBound = safeBestBound(objective);
+        long nodes = safeNodes(solver);
         if (status != MPSolver.ResultStatus.OPTIMAL && status != MPSolver.ResultStatus.FEASIBLE) {
             log.warn("UnifiedSP returned {}", status);
-            return new Result(List.of(), 0, 0, 0, 0, 0, status.toString());
+            return new Result(List.of(), 0, 0, 0, 0, 0, status.toString(),
+                    objectiveValue, bestBound, nodes, elapsedMs);
         }
 
         List<ColumnUse> uses = new ArrayList<>();
@@ -290,9 +407,51 @@ public class UnifiedSetPartitionSolver {
             }
         }
         uses.sort(Comparator.comparingInt((ColumnUse u) -> u.count()).reversed());
-        log.info("UnifiedSP solved: {} groups={} odd={} small={} cars={} waste={}",
-                status, uses.size(), odd, small, cars, waste);
-        return new Result(uses, uses.size(), odd, small, cars, waste, status.toString());
+        Result result = new Result(uses, uses.size(), odd, small, cars, waste,
+                status.toString(), objectiveValue, bestBound, nodes, elapsedMs);
+        log.info("UnifiedSP solved: {} groups={} odd={} small={} cars={} waste={} "
+                        + "objective={} bound={} gap={} nodes={} elapsedMs={} sig#={}",
+                status, uses.size(), odd, small, cars, waste,
+                objectiveValue, bestBound, result.relativeGap(), nodes, elapsedMs,
+                result.signature().hashCode());
+        return result;
+    }
+
+    private static boolean isOptimal(Result result) {
+        return result != null && MPSolver.ResultStatus.OPTIMAL.toString().equals(result.status());
+    }
+
+    private static LexicographicResult partialLexicographicResult(
+            Result latest, List<Result> completed) {
+        List<Result> phases = new ArrayList<>(completed);
+        if (latest != null) {
+            phases.add(latest);
+        }
+        return new LexicographicResult(latest, List.copyOf(phases), false);
+    }
+
+    private static double safeObjectiveValue(MPObjective objective) {
+        try {
+            return objective.value();
+        } catch (Throwable ignored) {
+            return Double.NaN;
+        }
+    }
+
+    private static double safeBestBound(MPObjective objective) {
+        try {
+            return objective.bestBound();
+        } catch (Throwable ignored) {
+            return Double.NaN;
+        }
+    }
+
+    private static long safeNodes(MPSolver solver) {
+        try {
+            return solver.nodes();
+        } catch (Throwable ignored) {
+            return -1L;
+        }
     }
 
     /**
