@@ -19,6 +19,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.TreeMap;
 
 /**
  * Stage 5 assignment MIP.
@@ -148,13 +149,17 @@ public class AssignmentMIPSolver {
 
         log.info("--- Stage 5: assignment candidate MIP ---");
 
-        Map<String, Integer> detailedDemands = new LinkedHashMap<>();
+        boolean stableOrder = SolverRuntimeProperties.getBoolean(
+                "cutting.stage5.stablePatternOrder", false);
+        Map<String, Integer> detailedDemands = stableOrder
+                ? new TreeMap<>() : new LinkedHashMap<>();
         for (SolverOrderItem item : groupItems) {
             String key = demandKey(item.getWidth(), item.getMessageText());
             detailedDemands.merge(key, item.getDemand(), Integer::sum);
         }
 
-        Map<Integer, List<String>> messagesByWidth = new LinkedHashMap<>();
+        Map<Integer, List<String>> messagesByWidth = stableOrder
+                ? new TreeMap<>() : new LinkedHashMap<>();
         for (SolverOrderItem item : groupItems) {
             messagesByWidth.computeIfAbsent(item.getWidth(), key -> new ArrayList<>());
             List<String> messages = messagesByWidth.get(item.getWidth());
@@ -162,8 +167,14 @@ public class AssignmentMIPSolver {
                 messages.add(item.getMessageText());
             }
         }
+        if (stableOrder) {
+            messagesByWidth.values().forEach(messages -> messages.sort(String::compareTo));
+        }
 
         List<PatternCandidate> patternList = new ArrayList<>(solution.keySet());
+        if (stableOrder) {
+            patternList.sort(Comparator.comparing(PatternCandidate::signature));
+        }
         log.debug("Stage5 patterns={} detailedDemands={}", patternList.size(), detailedDemands.size());
 
         try {
@@ -193,7 +204,7 @@ public class AssignmentMIPSolver {
                 PatternCandidate pattern = patternList.get(patternIndex);
                 int usage = solution.get(pattern);
 
-                for (int width : pattern.getPattern().keySet()) {
+                for (int width : orderedWidths(pattern, stableOrder)) {
                     int kw = pattern.getPattern().get(width); // slots per car for this width
                     List<String> messages = messagesByWidth.getOrDefault(width, Collections.emptyList());
                     for (String message : messages) {
@@ -210,7 +221,7 @@ public class AssignmentMIPSolver {
                 PatternCandidate pattern = patternList.get(patternIndex);
                 int usage = solution.get(pattern);
 
-                for (int width : pattern.getPattern().keySet()) {
+                for (int width : orderedWidths(pattern, stableOrder)) {
                     int kw = pattern.getPattern().get(width);
                     List<String> messages = messagesByWidth.getOrDefault(width, Collections.emptyList());
                     // Total slots for this width = usage * kw (hard equality)
@@ -251,7 +262,7 @@ public class AssignmentMIPSolver {
                 PatternCandidate pattern = patternList.get(patternIndex);
                 int usage = solution.get(pattern);
 
-                for (int width : pattern.getPattern().keySet()) {
+                for (int width : orderedWidths(pattern, stableOrder)) {
                     int kw = pattern.getPattern().get(width);
                     List<String> messages = messagesByWidth.getOrDefault(width, Collections.emptyList());
                     for (String message : messages) {
@@ -305,7 +316,7 @@ public class AssignmentMIPSolver {
                 List<AssignmentBlock> blocks = new ArrayList<>();
 
                 Map<Integer, List<Map.Entry<String, Integer>>> widthSlotAssignments = new LinkedHashMap<>();
-                for (int width : pattern.getPattern().keySet()) {
+                for (int width : orderedWidths(pattern, stableOrder)) {
                     List<String> messages = messagesByWidth.getOrDefault(width, Collections.emptyList());
                     // Collect slot counts from MIP solution
                     List<Map.Entry<String, Integer>> slotCounts = new ArrayList<>();
@@ -340,6 +351,14 @@ public class AssignmentMIPSolver {
 
     private String demandKey(int width, String messageText) {
         return width + "_" + messageText;
+    }
+
+    private static List<Integer> orderedWidths(PatternCandidate pattern, boolean stableOrder) {
+        List<Integer> widths = new ArrayList<>(pattern.getPattern().keySet());
+        if (stableOrder) {
+            widths.sort(Integer::compareTo);
+        }
+        return widths;
     }
 
     static List<AssignmentBlock> buildBlocksFromWidthAssignments(

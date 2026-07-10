@@ -11,8 +11,12 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Standalone end-to-end harness for the T9EST188 委托1-27 dataset (116 items, single group).
@@ -39,14 +43,55 @@ class B5HarnessTest {
 
         SequenceGroupPostProcessor.GroupStats stats =
                 SequenceGroupPostProcessor.computeGroupStats(instructions);
+        List<test.demo.apsmodule.generator.NewSolver.mip.UnifiedSetPartitionSolver.ColumnUse> uses =
+                SolverExperimentSnapshot.fromInstructions(instructions);
+        SolverExperimentSnapshot.Metrics metrics =
+                SolverExperimentSnapshot.metrics(uses, config.getTotalWidth());
+        assertEquals(stats.groups(), metrics.groups());
+        assertEquals(stats.oddCarGroups(), metrics.oddGroups());
+        assertEquals(stats.smallCarGroups(), metrics.smallGroups());
+        assertEquals(SolverExperimentSnapshot.demandOf(items),
+                SolverExperimentSnapshot.producedBy(uses));
 
         System.out.println("\n##### B5 HARNESS RESULT #####");
         System.out.println("items=" + items.size() + " instructions=" + instructions.size());
         System.out.println("groups=" + stats.groups()
                 + " oddCarGroups=" + stats.oddCarGroups()
                 + " smallCarGroups=" + stats.smallCarGroups());
+        System.out.println("cars=" + metrics.cars() + " waste=" + metrics.waste());
         System.out.println("elapsedMs=" + elapsed);
         System.out.println("#############################\n");
+
+        writeSnapshotWhenQualified(uses, metrics, config.getTotalWidth());
+    }
+
+    private void writeSnapshotWhenQualified(
+            List<test.demo.apsmodule.generator.NewSolver.mip.UnifiedSetPartitionSolver.ColumnUse> uses,
+            SolverExperimentSnapshot.Metrics metrics,
+            int totalWidth) throws IOException {
+        String output = System.getProperty("cutting.test.snapshotOutput", "").trim();
+        if (output.isEmpty()) {
+            return;
+        }
+        Path candidatePath = Path.of("target", "solver-experiments",
+                "t9est188-candidate-" + metrics.groups() + "-"
+                        + metrics.oddGroups() + "-" + metrics.smallGroups() + ".csv");
+        SolverExperimentSnapshot.write(candidatePath, "t9est188-candidate", uses, totalWidth);
+        System.out.println("CANDIDATE SNAPSHOT WRITTEN: " + candidatePath.toAbsolutePath());
+        int maxGroups = Integer.getInteger("cutting.test.snapshotMaxGroups", 66);
+        int maxOdd = Integer.getInteger("cutting.test.snapshotMaxOdd", 8);
+        int maxSmall = Integer.getInteger("cutting.test.snapshotMaxSmall", 26);
+        assertTrue(metrics.groups() <= maxGroups,
+                "snapshot rejected: groups=" + metrics.groups() + " > " + maxGroups);
+        assertTrue(metrics.oddGroups() <= maxOdd,
+                "snapshot rejected: odd=" + metrics.oddGroups() + " > " + maxOdd);
+        assertTrue(metrics.smallGroups() <= maxSmall,
+                "snapshot rejected: small=" + metrics.smallGroups() + " > " + maxSmall);
+        Path path = Path.of(output);
+        SolverExperimentSnapshot.write(path, "t9est188", uses, totalWidth);
+        SolverExperimentSnapshot.Snapshot reloaded = SolverExperimentSnapshot.read(path);
+        assertEquals(metrics, reloaded.metrics());
+        System.out.println("QUALIFIED SNAPSHOT WRITTEN: " + path.toAbsolutePath());
     }
 
     private List<SolverOrderItem> loadItems() throws IOException {

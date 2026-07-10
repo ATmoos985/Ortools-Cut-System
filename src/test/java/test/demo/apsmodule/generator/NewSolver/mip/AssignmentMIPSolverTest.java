@@ -1,6 +1,10 @@
 package test.demo.apsmodule.generator.NewSolver.mip;
 
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
+import test.demo.apsmodule.generator.NewSolver.config.SolverParameters;
+import test.demo.apsmodule.generator.NewSolver.model.PatternCandidate;
+import test.demo.apsmodule.service.SolverOrderItem;
 
 import java.util.HashMap;
 import java.util.LinkedHashMap;
@@ -8,8 +12,14 @@ import java.util.List;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 
 class AssignmentMIPSolverTest {
+
+    @BeforeAll
+    static void loadOrTools() {
+        com.google.ortools.Loader.loadNativeLibraries();
+    }
 
     @Test
     void buildBlocksFromWidthAssignmentsPreservesPerWidthMessageCounts() {
@@ -60,5 +70,61 @@ class AssignmentMIPSolverTest {
         assertEquals(1, blocks.size());
         assertEquals(List.of("A", "B"), blocks.get(0).getStationConfig().get(1000));
         assertEquals(1, blocks.get(0).getCount());
+    }
+
+    @Test
+    void solveIsIndependentOfPatternMapInsertionOrder() {
+        PatternCandidate first = new PatternCandidate(Map.of(1000, 1), 1000);
+        PatternCandidate second = new PatternCandidate(Map.of(1000, 1), 1100);
+        Map<PatternCandidate, Integer> forward = new LinkedHashMap<>();
+        forward.put(first, 2);
+        forward.put(second, 2);
+        Map<PatternCandidate, Integer> reversed = new LinkedHashMap<>();
+        reversed.put(second, 2);
+        reversed.put(first, 2);
+
+        List<SolverOrderItem> items = List.of(
+                item("A", 2),
+                item("B", 2));
+        SolverParameters parameters = new SolverParameters();
+        parameters.setTimeoutMs(10_000L);
+        AssignmentMIPSolver solver = new AssignmentMIPSolver(parameters);
+
+        String previous = System.getProperty("cutting.stage5.stablePatternOrder");
+        Map<PatternCandidate, List<AssignmentMIPSolver.AssignmentBlock>> firstResult;
+        Map<PatternCandidate, List<AssignmentMIPSolver.AssignmentBlock>> secondResult;
+        try {
+            System.setProperty("cutting.stage5.stablePatternOrder", "true");
+            firstResult = solver.solve(forward, items);
+            secondResult = solver.solve(reversed, items);
+        } finally {
+            if (previous == null) {
+                System.clearProperty("cutting.stage5.stablePatternOrder");
+            } else {
+                System.setProperty("cutting.stage5.stablePatternOrder", previous);
+            }
+        }
+
+        assertNotNull(firstResult);
+        assertNotNull(secondResult);
+        assertEquals(resultSignature(firstResult), resultSignature(secondResult));
+    }
+
+    private static SolverOrderItem item(String message, int demand) {
+        SolverOrderItem item = new SolverOrderItem();
+        item.setMessageText(message);
+        item.setWidth(1000);
+        item.setDemand(demand);
+        return item;
+    }
+
+    private static List<String> resultSignature(
+            Map<PatternCandidate, List<AssignmentMIPSolver.AssignmentBlock>> result) {
+        return result.entrySet().stream()
+                .map(entry -> entry.getKey().signature() + "=" + entry.getValue().stream()
+                        .map(block -> block.getStationConfig() + "#" + block.getCount())
+                        .toList())
+                .sorted()
+                .toList();
     }
 }

@@ -3,6 +3,7 @@ package test.demo.apsmodule.generator.NewSolver.mip;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import test.demo.apsmodule.generator.NewSolver.mip.UnifiedSetPartitionSolver.Column;
+import test.demo.apsmodule.generator.NewSolver.mip.UnifiedSetPartitionSolver.GroupCapResult;
 import test.demo.apsmodule.generator.NewSolver.mip.UnifiedSetPartitionSolver.LexicographicResult;
 
 import java.util.List;
@@ -80,6 +81,32 @@ class UnifiedSetPartitionLexicographicTest {
         assertProven(first);
         assertProven(second);
         assertEquals(first.result().signature(), second.result().signature());
+    }
+
+    @Test
+    void groupCapFindsWitnessAtKnownMinimum() {
+        GroupCapResult result = new UnifiedSetPartitionSolver().checkGroupCap(
+                pool(),
+                Map.of(key("A"), 8, key("B"), 20),
+                14, 0, TOTAL_WIDTH, 2, 10_000L);
+
+        assertTrue(result.proven());
+        assertTrue(result.feasible());
+        assertNotNull(result.result());
+        assertEquals(2, result.result().groups());
+    }
+
+    @Test
+    void groupCapProvesOneGroupInfeasible() {
+        GroupCapResult result = new UnifiedSetPartitionSolver().checkGroupCap(
+                pool(),
+                Map.of(key("A"), 8, key("B"), 20),
+                14, 0, TOTAL_WIDTH, 1, 10_000L);
+
+        assertTrue(result.proven());
+        assertTrue(!result.feasible());
+        assertNotNull(result.result());
+        assertEquals("INFEASIBLE", result.result().status());
     }
 
     private LexicographicResult solve(Map<String, Integer> demand, int cars) {

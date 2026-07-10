@@ -117,7 +117,12 @@ public class UnifiedSetPartitionSolver {
     public record LexicographicResult(Result result, List<Result> phases, boolean provenOptimal) {
     }
 
+    /** Result of asking whether the current executable column pool admits at most K groups. */
+    public record GroupCapResult(Result result, boolean feasible, boolean proven) {
+    }
+
     private enum ObjectivePhase {
+        FEASIBILITY,
         GROUPS_WITH_ODD_TIEBREAK,
         GROUPS,
         ODD,
@@ -193,6 +198,34 @@ public class UnifiedSetPartitionSolver {
     }
 
     /**
+     * Checks a group-count boundary without changing the business objective.
+     * FEASIBLE proves existence; INFEASIBLE proves non-existence only inside
+     * the supplied normalized column pool. Other statuses are inconclusive.
+     */
+    public GroupCapResult checkGroupCap(List<Column> pool,
+            Map<String, Integer> demand,
+            int exactCars,
+            int wasteCap,
+            int totalWidth,
+            int maxGroups,
+            long timeLimitMs) {
+        if (maxGroups < 0) {
+            throw new IllegalArgumentException("maxGroups must be non-negative");
+        }
+        Result result = solvePhase(pool, demand, exactCars, wasteCap, totalWidth,
+                timeLimitMs, 0.0, List.of(), maxGroups, null,
+                ObjectivePhase.FEASIBILITY, true);
+        if (result == null) {
+            return new GroupCapResult(null, false, false);
+        }
+        boolean feasible = MPSolver.ResultStatus.OPTIMAL.toString().equals(result.status())
+                || MPSolver.ResultStatus.FEASIBLE.toString().equals(result.status());
+        boolean proven = feasible
+                || MPSolver.ResultStatus.INFEASIBLE.toString().equals(result.status());
+        return new GroupCapResult(result, feasible, proven);
+    }
+
+    /**
      * @param maxGroups 非空时加硬约束 Σy ≤ maxGroups 且目标改为「odd 优先」（组数封顶后
      *                  专修奇偶）——字典序第二段：先 solve() 拿最少组数，再以其为帽调用本重载。
      */
@@ -229,15 +262,25 @@ public class UnifiedSetPartitionSolver {
             oddWeight = DEFAULT_ODD_WEIGHT;
         }
         // 去重 + 支持度过滤（列的每个 (w,m) 消耗不得超过需求）
-        Map<String, Column> bySig = new LinkedHashMap<>();
-        for (Column column : pool) {
-            if (supportOf(column, demand) >= 1) {
-                bySig.putIfAbsent(column.signature(), column);
-            }
-        }
-        List<Column> columns = new ArrayList<>(bySig.values());
+        List<Column> columns;
         if (stableColumnOrder) {
-            columns.sort(Comparator.comparing(Column::signature));
+            ExecutableColumnPool.Normalized normalized = ExecutableColumnPool.normalize(
+                    pool, demand, wasteCap, totalWidth);
+            columns = new ArrayList<>(normalized.columns());
+            ExecutableColumnPool.Stats stats = normalized.stats();
+            log.info("UnifiedSP normalized pool: retained={} input={} duplicates={} "
+                            + "unsupported={} invalidWidth={} overWasteCap={}",
+                    stats.retainedColumns(), stats.inputColumns(), stats.duplicateColumns(),
+                    stats.unsupportedColumns(), stats.invalidWidthColumns(),
+                    stats.overWasteCapColumns());
+        } else {
+            Map<String, Column> bySig = new LinkedHashMap<>();
+            for (Column column : pool) {
+                if (supportOf(column, demand) >= 1) {
+                    bySig.putIfAbsent(column.signature(), column);
+                }
+            }
+            columns = new ArrayList<>(bySig.values());
         }
         log.info("UnifiedSP: pool={} (deduped from {}), demandKeys={}, cars={}, wasteCap={}",
                 columns.size(), pool.size(), demand.size(), exactCars, wasteCap);
@@ -255,38 +298,46 @@ public class UnifiedSetPartitionSolver {
         int n = columns.size();
         MPVariable[] c = new MPVariable[n];
         MPVariable[] y = new MPVariable[n];
-        MPVariable[] o = new MPVariable[n];
-        MPVariable[] h = new MPVariable[n];
-        MPVariable[] s = new MPVariable[n];
+        boolean needsOdd = maxOdd != null
+                || objectivePhase == ObjectivePhase.ODD
+                || objectivePhase == ObjectivePhase.SMALL
+                || objectivePhase == ObjectivePhase.GROUPS_WITH_ODD_TIEBREAK;
+        boolean needsSmall = objectivePhase == ObjectivePhase.SMALL;
+        MPVariable[] o = needsOdd ? new MPVariable[n] : null;
+        MPVariable[] h = needsOdd ? new MPVariable[n] : null;
+        MPVariable[] s = needsSmall ? new MPVariable[n] : null;
         for (int j = 0; j < n; j++) {
             int support = Math.min(exactCars, supportOf(columns.get(j), demand));
             c[j] = solver.makeIntVar(0, support, "c_" + j);
             y[j] = solver.makeBoolVar("y_" + j);
-            o[j] = solver.makeBoolVar("o_" + j);
-            h[j] = solver.makeIntVar(0, support, "h_" + j);
-            s[j] = solver.makeBoolVar("s_" + j);
-            // c <= support*y ; c >= y ; c - 2h - o = 0
+            // c <= support*y ; c >= y
             MPConstraint upper = solver.makeConstraint(-MPSolver.infinity(), 0, "ub_" + j);
             upper.setCoefficient(c[j], 1);
             upper.setCoefficient(y[j], -support);
             MPConstraint lower = solver.makeConstraint(0, MPSolver.infinity(), "lb_" + j);
             lower.setCoefficient(c[j], 1);
             lower.setCoefficient(y[j], -1);
-            MPConstraint parity = solver.makeConstraint(0, 0, "par_" + j);
-            parity.setCoefficient(c[j], 1);
-            parity.setCoefficient(h[j], -2);
-            parity.setCoefficient(o[j], -1);
-
-            // s=1 iff the enabled column is used by 1..5 cars.
-            MPConstraint smallEnabled = solver.makeConstraint(
-                    -MPSolver.infinity(), 0, "small_enabled_" + j);
-            smallEnabled.setCoefficient(s[j], 1);
-            smallEnabled.setCoefficient(y[j], -1);
-            MPConstraint nonSmallMinimum = solver.makeConstraint(
-                    0, MPSolver.infinity(), "non_small_min_" + j);
-            nonSmallMinimum.setCoefficient(c[j], 1);
-            nonSmallMinimum.setCoefficient(y[j], -6);
-            nonSmallMinimum.setCoefficient(s[j], 6);
+            if (needsOdd) {
+                o[j] = solver.makeBoolVar("o_" + j);
+                h[j] = solver.makeIntVar(0, support, "h_" + j);
+                MPConstraint parity = solver.makeConstraint(0, 0, "par_" + j);
+                parity.setCoefficient(c[j], 1);
+                parity.setCoefficient(h[j], -2);
+                parity.setCoefficient(o[j], -1);
+            }
+            if (needsSmall) {
+                s[j] = solver.makeBoolVar("s_" + j);
+                // s=1 iff the enabled column is used by 1..5 cars.
+                MPConstraint smallEnabled = solver.makeConstraint(
+                        -MPSolver.infinity(), 0, "small_enabled_" + j);
+                smallEnabled.setCoefficient(s[j], 1);
+                smallEnabled.setCoefficient(y[j], -1);
+                MPConstraint nonSmallMinimum = solver.makeConstraint(
+                        0, MPSolver.infinity(), "non_small_min_" + j);
+                nonSmallMinimum.setCoefficient(c[j], 1);
+                nonSmallMinimum.setCoefficient(y[j], -6);
+                nonSmallMinimum.setCoefficient(s[j], 6);
+            }
         }
 
         if (warmStart != null && !warmStart.isEmpty()) {
@@ -294,8 +345,9 @@ public class UnifiedSetPartitionSolver {
             for (ColumnUse use : warmStart) {
                 hintCounts.merge(use.column().signature(), use.count(), Integer::sum);
             }
-            List<MPVariable> hintVars = new ArrayList<>(n * 5);
-            List<Double> hintValues = new ArrayList<>(n * 5);
+            int variablesPerColumn = 2 + (needsOdd ? 2 : 0) + (needsSmall ? 1 : 0);
+            List<MPVariable> hintVars = new ArrayList<>(n * variablesPerColumn);
+            List<Double> hintValues = new ArrayList<>(n * variablesPerColumn);
             int matched = 0;
             for (int j = 0; j < n; j++) {
                 int count = hintCounts.getOrDefault(columns.get(j).signature(), 0);
@@ -306,12 +358,16 @@ public class UnifiedSetPartitionSolver {
                 hintValues.add((double) count);
                 hintVars.add(y[j]);
                 hintValues.add(count > 0 ? 1.0 : 0.0);
-                hintVars.add(o[j]);
-                hintValues.add(count % 2 != 0 ? 1.0 : 0.0);
-                hintVars.add(h[j]);
-                hintValues.add((double) (count / 2));
-                hintVars.add(s[j]);
-                hintValues.add(count > 0 && count <= 5 ? 1.0 : 0.0);
+                if (needsOdd) {
+                    hintVars.add(o[j]);
+                    hintValues.add(count % 2 != 0 ? 1.0 : 0.0);
+                    hintVars.add(h[j]);
+                    hintValues.add((double) (count / 2));
+                }
+                if (needsSmall) {
+                    hintVars.add(s[j]);
+                    hintValues.add(count > 0 && count <= 5 ? 1.0 : 0.0);
+                }
             }
             double[] values = new double[hintValues.size()];
             for (int i = 0; i < values.length; i++) {
@@ -362,6 +418,9 @@ public class UnifiedSetPartitionSolver {
         }
         for (int j = 0; j < n; j++) {
             switch (objectivePhase) {
+            case FEASIBILITY -> {
+                // Zero objective: ask only for a witness or an infeasibility proof.
+            }
             case GROUPS_WITH_ODD_TIEBREAK -> {
                 objective.setCoefficient(y[j], 1.0);
                 objective.setCoefficient(o[j], oddWeight);

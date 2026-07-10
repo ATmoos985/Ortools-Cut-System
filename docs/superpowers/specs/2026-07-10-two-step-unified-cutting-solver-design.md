@@ -259,3 +259,50 @@ t9est188 66 组所需的全部可执行列。因此当前结论仍是列池内�
 该结果验证了两步架构的核心可行性：残差列生成负责补列，全局主问题能够重建最好已知解。
 下一阶段不再继续堆叠后处理器，而是研究归档列支配过滤、等价列压缩和更强下界，以缩小
 4,550 列主问题的证明 gap。
+
+### 9.6 可执行列池、组数边界与模型裁剪
+
+本轮新增 `ExecutableColumnPool`，严格研究入口在建模前执行稳定签名去重排序、需求支持度过滤、物理宽度一致性校验，以及单车废边上限过滤。没有加入未经证明的“支配列删除”，因为固定费用精确覆盖模型中的一般支配关系并不等同于普通线性覆盖。
+
+`UnifiedSetPartitionSolver.checkGroupCap()` 新增 `groups <= K` 可行性入口，明确区分找到可行见证、证明当前列池内不可行、时限内未知。真实边界结果：
+
+- 原 47 列生产快照：`cap=47` 可行，`cap=46` 为 `INFEASIBLE`，均在毫秒级闭合；
+- 4,550 列残差归档：`cap=45` 在 60 秒内为 `NOT_SOLVED`，不能宣称 45 不可行；
+- 纯组数/可行性阶段不再创建 odd、half、small 变量和约束；同一 60 秒实验节点数从 81 增加到 113，证明吞吐提高约 40%，但仍未闭合 45 组边界。
+
+残差列已冻结到 `src/test/resources/sixian_residual_column_archive.csv`，共 4,550 列。后续主问题实验不再重复执行约 27 秒的残差列生成。
+
+### 9.7 t9 快照与 Stage5 确定性实验
+
+新增通用 `SolverExperimentSnapshot`：从最终工位分配重建可执行列，写入前验证页面组数口径、逐 `(width|message)` 需求、车数和废边。`B5HarnessTest` 只有同时达到 `66/8/26` 才写正式快照；不达标候选先写到 `target/solver-experiments`。`UnifiedShadowExperimentTest` 可直接重建任意正式或候选快照，并可选挑战更低组数上限。
+
+本轮 t9 实测：
+
+- 默认生产顺序：`68/10/29`，530 车，废边 119,670，489.6 秒；Stage5 83 -> LNS 72 -> SPR 68；
+- Stage5 全字典序研究开关：`68/8/28`，668.9 秒；Stage5 85 -> LNS 73 -> SPR 68；
+- 字典序消除了容器插入顺序，但稳定在更差搜索盆地，因此 `cutting.stage5.stablePatternOrder` 默认关闭；
+- 第三次默认实验与用户正在运行的 Spring Boot 进程跨 JVM 争抢 CPU，超过 904 秒后终止。现有 `BoundedSolverExecutor` 只保证单 JVM 并发上限，不能把该次结果用于单实例性能比较。
+
+当天已有两份 66 组历史 solve-report，但报告不包含工位级序号分配，无法无损恢复正式列快照。正式 t9 快照仍未生成，不能伪造为已完成。
+
+### 9.8 持续实验命令
+
+在没有其他求解 JVM 占用机器时捕获 t9 正式快照：
+
+```powershell
+mvn "-Dtest=B5HarnessTest" "-Dcutting.quality=true" "-Dcutting.test.snapshotOutput=src/test/resources/t9est188_quality_snapshot.csv" test
+```
+
+对正式或候选快照运行统一影子实验：
+
+```powershell
+mvn "-Dtest=UnifiedShadowExperimentTest" "-Dcutting.test.shadowSnapshot=src/test/resources/t9est188_quality_snapshot.csv" "-Dcutting.test.shadowChallengeCap=65" test
+```
+
+验证 sixian 45 组边界：
+
+```powershell
+mvn "-Dtest=B6UnifiedSetPartitionTest#level15FrozenResidualArchiveChecks45GroupBoundary" "-Dcutting.test.groupCapTimeMs=60000" test
+```
+
+当前裁决不变：生产默认仍使用原 Stage5/LNS/SPR 链路；统一主问题和稳定排序均只在研究入口启用。下一步优先保留各次完整候选列、做候选列并集，再用 `cap=65/66` 和 `cap=45/46` 可行性问题验证质量提升，而不是继续增加单次墙钟预算。

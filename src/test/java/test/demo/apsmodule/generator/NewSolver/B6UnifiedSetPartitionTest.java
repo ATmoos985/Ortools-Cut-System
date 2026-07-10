@@ -934,6 +934,31 @@ class B6UnifiedSetPartitionTest {
     }
 
     @Test
+    void level13bPipelineSnapshotProvesNextGroupBoundaryInfeasible() throws Exception {
+        Map<String, Integer> demand = loadBigGroupDemand();
+        List<UnifiedSetPartitionSolver.ColumnUse> snapshot = loadPipelineSnapshot();
+        List<Column> pool = snapshot.stream()
+                .map(UnifiedSetPartitionSolver.ColumnUse::column)
+                .toList();
+
+        UnifiedSetPartitionSolver solver = new UnifiedSetPartitionSolver();
+        UnifiedSetPartitionSolver.GroupCapResult cap47 = solver.checkGroupCap(
+                pool, demand, MANUAL_BIG_CARS, MANUAL_BIG_WASTE, TOTAL_WIDTH,
+                47, 30_000L);
+        UnifiedSetPartitionSolver.GroupCapResult cap46 = solver.checkGroupCap(
+                pool, demand, MANUAL_BIG_CARS, MANUAL_BIG_WASTE, TOTAL_WIDTH,
+                46, 30_000L);
+
+        assertTrue(cap47.proven());
+        assertTrue(cap47.feasible());
+        assertEquals(47, cap47.result().groups());
+        verifyDemandExact(cap47.result(), demand);
+        assertTrue(cap46.proven());
+        assertTrue(!cap46.feasible());
+        assertEquals("INFEASIBLE", cap46.result().status());
+    }
+
+    @Test
     void level14ArchivedResidualColumnsFeedStrictGlobalMaster() throws Exception {
         Map<String, Integer> demand = loadBigGroupDemand();
         List<UnifiedSetPartitionSolver.ColumnUse> start = loadPipelineSnapshot();
@@ -971,8 +996,99 @@ class B6UnifiedSetPartitionTest {
                 result.result().bestBound(), result.result().relativeGap());
     }
 
+    @Test
+    void dumpSixianResidualColumnArchive() throws Exception {
+        Map<String, Integer> demand = loadBigGroupDemand();
+        Map<String, Column> archive = buildResidualColumnArchive();
+        List<String> signatures = archive.values().stream()
+                .map(Column::signature)
+                .sorted()
+                .toList();
+
+        assertTrue(signatures.size() >= 4_000, "residual archive unexpectedly shrank");
+        java.nio.file.Files.createDirectories(RESIDUAL_COLUMN_ARCHIVE.getParent());
+        java.nio.file.Files.write(
+                RESIDUAL_COLUMN_ARCHIVE, signatures, StandardCharsets.UTF_8);
+
+        List<Column> reloaded = loadResidualColumnArchive();
+        assertEquals(signatures.size(), reloaded.size());
+        assertEquals(signatures, reloaded.stream().map(Column::signature).toList());
+        assertTrue(reloaded.stream().allMatch(column ->
+                column.demandUse().keySet().stream().allMatch(demand::containsKey)));
+        System.out.printf("%n##### sixian residual archive written: columns=%d path=%s%n",
+                reloaded.size(), RESIDUAL_COLUMN_ARCHIVE);
+    }
+
+    @Test
+    void level15FrozenResidualArchiveChecks45GroupBoundary() throws Exception {
+        Map<String, Integer> demand = loadBigGroupDemand();
+        List<Column> pool = loadResidualColumnArchive();
+        long timeLimitMs = Long.getLong("cutting.test.groupCapTimeMs", 60_000L);
+
+        UnifiedSetPartitionSolver.GroupCapResult result =
+                new UnifiedSetPartitionSolver().checkGroupCap(
+                        pool, demand, MANUAL_BIG_CARS, MANUAL_BIG_WASTE, TOTAL_WIDTH,
+                        45, timeLimitMs);
+
+        assertNotNull(result);
+        assertNotNull(result.result());
+        if (result.feasible()) {
+            assertTrue(result.result().groups() <= 45);
+            assertEquals(MANUAL_BIG_CARS, result.result().cars());
+            assertTrue(result.result().waste() <= MANUAL_BIG_WASTE);
+            verifyDemandExact(result.result(), demand);
+        } else if (result.proven()) {
+            assertEquals("INFEASIBLE", result.result().status());
+        }
+        System.out.printf("%n##### Level15 cap45: pool=%d feasible=%s proven=%s status=%s "
+                        + "nodes=%d elapsedMs=%d%n",
+                pool.size(), result.feasible(), result.proven(), result.result().status(),
+                result.result().nodes(), result.result().elapsedMs());
+    }
+
     private static final java.nio.file.Path PIPELINE_SNAPSHOT =
             java.nio.file.Path.of("src/test/resources/pipeline_big_group_snapshot.csv");
+    private static final java.nio.file.Path RESIDUAL_COLUMN_ARCHIVE =
+            java.nio.file.Path.of("src/test/resources/sixian_residual_column_archive.csv");
+
+    private Map<String, Column> buildResidualColumnArchive() throws Exception {
+        List<UnifiedSetPartitionSolver.ColumnUse> start = loadPipelineSnapshot();
+        Map<String, Column> archive = new LinkedHashMap<>();
+        List<UnifiedSetPartitionSolver.ColumnUse> current = microIterate(
+                start, 3, 30_000L, 3, "archive-parity", archive);
+        current = microIterate(
+                current, 5, 60_000L, 2, "archive-merge", archive);
+        for (UnifiedSetPartitionSolver.ColumnUse use : current) {
+            archive.putIfAbsent(use.column().signature(), use.column());
+        }
+        verifyMerged("archive-final", current, loadBigGroupDemand());
+        return archive;
+    }
+
+    private List<Column> loadResidualColumnArchive() throws Exception {
+        List<Column> columns = new ArrayList<>();
+        for (String signature : java.nio.file.Files.readAllLines(
+                RESIDUAL_COLUMN_ARCHIVE, StandardCharsets.UTF_8)) {
+            if (!signature.isBlank()) {
+                columns.add(columnFromSignature(signature));
+            }
+        }
+        columns.sort(Comparator.comparing(Column::signature));
+        return columns;
+    }
+
+    private Column columnFromSignature(String signature) {
+        Map<Integer, List<String>> config = new TreeMap<>();
+        Map<Integer, Integer> pattern = new TreeMap<>();
+        for (String part : signature.split("\\|")) {
+            int eq = part.indexOf('=');
+            int width = Integer.parseInt(part.substring(0, eq));
+            List<String> messages = new ArrayList<>(List.of(part.substring(eq + 1).split(",")));
+            config.put(width, messages);
+            pattern.put(width, messages.size());
+        }
+        return Column.of(pattern, config);
+    }
 
     /**
      * 工具测试：跑一次管线并把 1350m 大组解快照到 CSV（count;signature）。
@@ -1011,16 +1127,8 @@ class B6UnifiedSetPartitionTest {
             }
             int sep = line.indexOf(';');
             int count = Integer.parseInt(line.substring(0, sep));
-            Map<Integer, List<String>> config = new TreeMap<>();
-            Map<Integer, Integer> pattern = new TreeMap<>();
-            for (String part : line.substring(sep + 1).split("\\|")) {
-                int eq = part.indexOf('=');
-                int width = Integer.parseInt(part.substring(0, eq));
-                List<String> messages = new ArrayList<>(List.of(part.substring(eq + 1).split(",")));
-                config.put(width, messages);
-                pattern.put(width, messages.size());
-            }
-            uses.add(new UnifiedSetPartitionSolver.ColumnUse(Column.of(pattern, config), count));
+            uses.add(new UnifiedSetPartitionSolver.ColumnUse(
+                    columnFromSignature(line.substring(sep + 1)), count));
         }
         return uses;
     }
