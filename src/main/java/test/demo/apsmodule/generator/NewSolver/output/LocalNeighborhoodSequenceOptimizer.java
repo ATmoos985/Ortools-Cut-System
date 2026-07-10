@@ -174,7 +174,17 @@ public class LocalNeighborhoodSequenceOptimizer {
         // deterministic output to the serial path, just faster. Cross-validated byte-identical on
         // sixian (49) and t9est188 (69); ON by default — set -Dcutting.lns.parallel=false for serial.
         boolean parallel = booleanProperty("cutting.lns.parallel", true);
-        for (int iteration = 0; iteration < maxIterations; iteration++) {
+        int requestedParallelism = intProperty(
+                "cutting.lns.parallelism", BoundedSolverExecutor.globalParallelism());
+        BoundedSolverExecutor executor = parallel
+                ? BoundedSolverExecutor.create("lns", requestedParallelism)
+                : null;
+        if (executor != null) {
+            log.info("LNS executor: requestThreads={}, globalThreads={}",
+                    executor.configuredParallelism(), BoundedSolverExecutor.globalParallelism());
+        }
+        try {
+            for (int iteration = 0; iteration < maxIterations; iteration++) {
             SequenceGroupPostProcessor.GroupStats beforeStats =
                     SequenceGroupPostProcessor.computeGroupStats(current);
             int beforeGroups = beforeStats.groups();
@@ -188,10 +198,8 @@ public class LocalNeighborhoodSequenceOptimizer {
             // Solve all neighborhoods up front in parallel (each solve is independent + thread-safe);
             // the reduction below consumes them by index, so the chosen move is identical to serial.
             List<SolveAttempt> presolved = null;
-            if (parallel && !neighborhoods.isEmpty()) {
-                presolved = neighborhoods.parallelStream()
-                        .map(this::solveNeighborhood)
-                        .collect(java.util.stream.Collectors.toList());
+            if (executor != null && !neighborhoods.isEmpty()) {
+                presolved = executor.mapOrdered(neighborhoods, this::solveNeighborhood);
             }
 
             for (int ni = 0; ni < neighborhoods.size(); ni++) {
@@ -378,6 +386,11 @@ public class LocalNeighborhoodSequenceOptimizer {
             } else if (++noImproveStreak >= maxNoImprove) {
                 lastReason = "no-improve-streak";
                 break;
+            }
+            }
+        } finally {
+            if (executor != null) {
+                executor.close();
             }
         }
 

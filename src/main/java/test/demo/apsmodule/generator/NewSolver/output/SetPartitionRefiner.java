@@ -134,6 +134,11 @@ public final class SetPartitionRefiner {
         return SolverRuntimeProperties.getBoolean("cutting.spr.parallel", true);
     }
 
+    static int parallelism() {
+        return SolverRuntimeProperties.getInt(
+                "cutting.spr.parallelism", BoundedSolverExecutor.globalParallelism());
+    }
+
     static boolean cacheEnabled() {
         return SolverRuntimeProperties.getBoolean("cutting.spr.cache", true);
     }
@@ -175,10 +180,24 @@ public final class SetPartitionRefiner {
         long deadline = budget > 0 ? System.currentTimeMillis() + budget : Long.MAX_VALUE;
         ConcurrentMap<SubproblemKey, Result> cache = new ConcurrentHashMap<>();
         RefineStats stats = new RefineStats();
-        List<ColumnUse> improved = microIterate(uses, PARITY_DONORS, PARITY_BUDGET_MS, MAX_ITERATIONS,
-                totalWidth, deadline, cache, stats);
-        improved = microIterate(improved, MERGE_DONORS, MERGE_BUDGET_MS, MAX_ITERATIONS,
-                totalWidth, deadline, cache, stats);
+        BoundedSolverExecutor executor = parallelEnabled()
+                ? BoundedSolverExecutor.create("spr", parallelism())
+                : null;
+        if (executor != null) {
+            log.info("SPR executor: requestThreads={}, globalThreads={}",
+                    executor.configuredParallelism(), BoundedSolverExecutor.globalParallelism());
+        }
+        List<ColumnUse> improved;
+        try {
+            improved = microIterate(uses, PARITY_DONORS, PARITY_BUDGET_MS, MAX_ITERATIONS,
+                    totalWidth, deadline, cache, stats, executor);
+            improved = microIterate(improved, MERGE_DONORS, MERGE_BUDGET_MS, MAX_ITERATIONS,
+                    totalWidth, deadline, cache, stats, executor);
+        } finally {
+            if (executor != null) {
+                executor.close();
+            }
+        }
         improved = coalesceBySignature(improved);
         log.info("SPR summary: elapsedMs={}, iterations={}, targets={}, subproblemRequests={}, "
                         + "solverCalls={}, cacheHits={}, acceptedMoves={}, budgetStops={}, cachedResults={}",
@@ -259,7 +278,8 @@ public final class SetPartitionRefiner {
      */
     private static List<ColumnUse> microIterate(List<ColumnUse> start,
             int donorCount, long budgetMs, int maxIterations, int totalWidth, long deadline,
-            ConcurrentMap<SubproblemKey, Result> cache, RefineStats stats) {
+            ConcurrentMap<SubproblemKey, Result> cache, RefineStats stats,
+            BoundedSolverExecutor executor) {
         List<ColumnUse> current = new ArrayList<>(start);
         for (int iter = 1; iter <= maxIterations; iter++) {
             if (System.currentTimeMillis() >= deadline) {
@@ -286,11 +306,10 @@ public final class SetPartitionRefiner {
             // 并行评估全部目标（对同一快照 current，纯读、独立 SCIP 子解）。
             final List<ColumnUse> snapshot = current;
             List<Move> moves;
-            if (parallelEnabled()) {
-                moves = targets.parallelStream()
-                        .map(t -> evaluateTarget(t, snapshot, donorCount, budgetMs, totalWidth,
-                                cache, stats))
-                        .collect(java.util.stream.Collectors.toList());
+            if (executor != null) {
+                moves = executor.mapOrdered(targets,
+                        target -> evaluateTarget(target, snapshot, donorCount, budgetMs,
+                                totalWidth, cache, stats));
             } else {
                 moves = new ArrayList<>(targets.size());
                 for (ColumnUse t : targets) {

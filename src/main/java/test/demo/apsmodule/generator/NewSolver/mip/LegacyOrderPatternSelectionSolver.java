@@ -196,7 +196,8 @@ class LegacyOrderPatternSelectionSolver {
         int totalRolls = stage2Solution.values().stream().mapToInt(Integer::intValue).sum();
         int stage2Patterns = stage2Solution.size();
         int stage2Waste = calculateTotalWaste(stage2Solution);
-        log.info("Legacy Stage2 completed: rolls={}, patterns={}, waste={}mm", totalRolls, stage2Patterns, stage2Waste);
+        log.info("Legacy Stage2 completed: rolls={}, patterns={}, waste={}mm, sig#={}",
+                totalRolls, stage2Patterns, stage2Waste, solutionSignatureHash(stage2Solution));
 
         remaining = Math.max(3000, deadlineMs - System.currentTimeMillis());
         long stage3Time = Math.max(3000, remaining * 60 / 100);
@@ -210,7 +211,8 @@ class LegacyOrderPatternSelectionSolver {
         int totalWaste = calculateTotalWaste(stage3Solution);
         int stage3Rolls = stage3Solution.values().stream().mapToInt(Integer::intValue).sum();
         int stage3Patterns = stage3Solution.size();
-        log.info("Legacy Stage3 completed: rolls={}, patterns={}, waste={}mm", stage3Rolls, stage3Patterns, totalWaste);
+        log.info("Legacy Stage3 completed: rolls={}, patterns={}, waste={}mm, sig#={}",
+                stage3Rolls, stage3Patterns, totalWaste, solutionSignatureHash(stage3Solution));
 
         int wasteSlack = Math.max(200, (int) (totalWaste * 0.05));
         log.info("Legacy Stage4 constraints: maxRolls={}, maxWaste={}, wasteSlack={}, wasteCap={}",
@@ -238,7 +240,8 @@ class LegacyOrderPatternSelectionSolver {
         int stage4Rolls = stage4Solution.values().stream().mapToInt(Integer::intValue).sum();
         int stage4Patterns = stage4Solution.size();
         int stage4Waste = calculateTotalWaste(stage4Solution);
-        log.info("Legacy Stage4 completed: rolls={}, patterns={}, waste={}mm", stage4Rolls, stage4Patterns, stage4Waste);
+        log.info("Legacy Stage4 completed: rolls={}, patterns={}, waste={}mm, sig#={}",
+                stage4Rolls, stage4Patterns, stage4Waste, solutionSignatureHash(stage4Solution));
         return stage4Solution;
     }
 
@@ -383,7 +386,10 @@ class LegacyOrderPatternSelectionSolver {
             objective.setMinimization();
 
             solver.setTimeLimit(Math.max(1000, timeLimitMs));
+            long startedAt = System.currentTimeMillis();
             MPSolver.ResultStatus status = solver.solve();
+            log.info("Legacy Stage2 solve: status={}, elapsedMs={}, nodes={}, wallLimitMs={}",
+                    status, System.currentTimeMillis() - startedAt, safeNodes(solver), timeLimitMs);
             if (status != MPSolver.ResultStatus.OPTIMAL && status != MPSolver.ResultStatus.FEASIBLE) {
                 log.warn("Legacy-order Stage2 returned {}", status);
                 return null;
@@ -452,7 +458,10 @@ class LegacyOrderPatternSelectionSolver {
             objective.setMinimization();
 
             solver.setTimeLimit(Math.max(1000, timeLimitMs));
+            long startedAt = System.currentTimeMillis();
             MPSolver.ResultStatus status = solver.solve();
+            log.info("Legacy Stage3 solve: status={}, elapsedMs={}, nodes={}, wallLimitMs={}",
+                    status, System.currentTimeMillis() - startedAt, safeNodes(solver), timeLimitMs);
             if (status != MPSolver.ResultStatus.OPTIMAL && status != MPSolver.ResultStatus.FEASIBLE) {
                 log.warn("Legacy-order Stage3 returned {}", status);
                 return null;
@@ -626,6 +635,22 @@ class LegacyOrderPatternSelectionSolver {
         } catch (Exception e) {
             log.error("Legacy-order Stage4 failed", e);
             return null;
+        }
+    }
+
+    private static int solutionSignatureHash(Map<PatternCandidate, Integer> solution) {
+        return solution.entrySet().stream()
+                .map(entry -> entry.getKey().signature() + "x" + entry.getValue())
+                .sorted()
+                .collect(Collectors.joining("|"))
+                .hashCode();
+    }
+
+    private static long safeNodes(MPSolver solver) {
+        try {
+            return solver.nodes();
+        } catch (Throwable ignored) {
+            return -1L;
         }
     }
 
