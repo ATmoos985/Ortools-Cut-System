@@ -119,10 +119,11 @@ class B5ALayerTest {
         ColumnGenerationSolver cg = new ColumnGenerationSolver(params);
         patterns = cg.solve(patterns, demands, allowOver);
         MultiStageMIPSolver mip = new MultiStageMIPSolver(params);
+        int seed = Integer.getInteger("cutting.test.aLayerSeed", params.getALayerScipSeed());
         // Production path is solvePrimaryOnly (the diverse solveCandidates path was removed).
         MultiStageMIPSolver.SolveCandidate primary = mip.solvePrimaryOnly(
                 patterns, demands, allowOver,
-                params.getALayerScipSeed(), params.getALayerAlignmentLambda(),
+                seed, params.getALayerAlignmentLambda(),
                 PatternAlignmentContext.from(items));
         List<MultiStageMIPSolver.SolveCandidate> cands = primary == null ? List.of() : List.of(primary);
         List<String> sigs = new ArrayList<>();
@@ -153,9 +154,10 @@ class B5ALayerTest {
 
     private List<SolverOrderItem> loadItems() throws IOException {
         List<SolverOrderItem> items = new ArrayList<>();
-        InputStream in = getClass().getResourceAsStream("/t9est188.csv");
+        String fixture = System.getProperty("cutting.test.aLayerFixture", "t9est188.csv");
+        InputStream in = getClass().getResourceAsStream("/" + fixture);
         if (in == null) {
-            throw new IllegalStateException("t9est188.csv not found");
+            throw new IllegalStateException(fixture + " not found");
         }
         try (BufferedReader br = new BufferedReader(new InputStreamReader(in, StandardCharsets.UTF_8))) {
             br.readLine();

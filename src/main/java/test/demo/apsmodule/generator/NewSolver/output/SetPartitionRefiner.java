@@ -19,6 +19,12 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.TreeMap;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Supplier;
+import java.util.stream.Collectors;
 
 /**
  * 质量模式精修段：set-partition 微邻域迭代（残差导向列注入，笔记13 L12 系列）。
@@ -65,6 +71,37 @@ public final class SetPartitionRefiner {
     private SetPartitionRefiner() {
     }
 
+    record SubproblemKey(String poolSignature,
+                         String demandSignature,
+                         int exactCars,
+                         int wasteCap,
+                         int totalWidth,
+                         long timeLimitMs,
+                         String warmStartSignature) {
+    }
+
+    static final class RefineStats {
+        private final AtomicInteger iterations = new AtomicInteger();
+        private final AtomicInteger targets = new AtomicInteger();
+        private final AtomicInteger subproblemRequests = new AtomicInteger();
+        private final AtomicInteger solverCalls = new AtomicInteger();
+        private final AtomicInteger cacheHits = new AtomicInteger();
+        private final AtomicInteger acceptedMoves = new AtomicInteger();
+        private final AtomicInteger budgetStops = new AtomicInteger();
+
+        int subproblemRequests() {
+            return subproblemRequests.get();
+        }
+
+        int solverCalls() {
+            return solverCalls.get();
+        }
+
+        int cacheHits() {
+            return cacheHits.get();
+        }
+    }
+
     public static boolean isEnabled() {
         return SolverRuntimeProperties.getBoolean("cutting.spr.enabled", true);
     }
@@ -95,6 +132,10 @@ public final class SetPartitionRefiner {
      */
     static boolean parallelEnabled() {
         return SolverRuntimeProperties.getBoolean("cutting.spr.parallel", true);
+    }
+
+    static boolean cacheEnabled() {
+        return SolverRuntimeProperties.getBoolean("cutting.spr.cache", true);
     }
 
     /**
@@ -129,13 +170,22 @@ public final class SetPartitionRefiner {
         }
         // 墙钟预算帽（cutting.spr.budgetMs>0 时生效）：跨两段的绝对截止时刻，
         // microIterate 每个目标块前检查，到点收工（已接受的改善保留）。
+        long startedAt = System.currentTimeMillis();
         long budget = budgetMs();
         long deadline = budget > 0 ? System.currentTimeMillis() + budget : Long.MAX_VALUE;
+        ConcurrentMap<SubproblemKey, Result> cache = new ConcurrentHashMap<>();
+        RefineStats stats = new RefineStats();
         List<ColumnUse> improved = microIterate(uses, PARITY_DONORS, PARITY_BUDGET_MS, MAX_ITERATIONS,
-                totalWidth, deadline);
+                totalWidth, deadline, cache, stats);
         improved = microIterate(improved, MERGE_DONORS, MERGE_BUDGET_MS, MAX_ITERATIONS,
-                totalWidth, deadline);
+                totalWidth, deadline, cache, stats);
         improved = coalesceBySignature(improved);
+        log.info("SPR summary: elapsedMs={}, iterations={}, targets={}, subproblemRequests={}, "
+                        + "solverCalls={}, cacheHits={}, acceptedMoves={}, budgetStops={}, cachedResults={}",
+                System.currentTimeMillis() - startedAt,
+                stats.iterations.get(), stats.targets.get(), stats.subproblemRequests(),
+                stats.solverCalls(), stats.cacheHits(), stats.acceptedMoves.get(),
+                stats.budgetStops.get(), cache.size());
         return toInstructions(improved, template, params);
     }
 
@@ -208,13 +258,16 @@ public final class SetPartitionRefiner {
      * 评估并行把每轮墙钟从 Σ 降到 max。收敛（无改善）、达最大迭代数、或总预算到即停。
      */
     private static List<ColumnUse> microIterate(List<ColumnUse> start,
-            int donorCount, long budgetMs, int maxIterations, int totalWidth, long deadline) {
+            int donorCount, long budgetMs, int maxIterations, int totalWidth, long deadline,
+            ConcurrentMap<SubproblemKey, Result> cache, RefineStats stats) {
         List<ColumnUse> current = new ArrayList<>(start);
         for (int iter = 1; iter <= maxIterations; iter++) {
             if (System.currentTimeMillis() >= deadline) {
+                stats.budgetStops.incrementAndGet();
                 log.info("SPR budget cap reached at iter{}, stopping", iter);
                 break;
             }
+            stats.iterations.incrementAndGet();
             List<ColumnUse> targets = new ArrayList<>();
             for (ColumnUse use : current) {
                 if (use.count() % 2 != 0) {
@@ -229,17 +282,20 @@ public final class SetPartitionRefiner {
             if (targets.isEmpty()) {
                 break;
             }
+            stats.targets.addAndGet(targets.size());
             // 并行评估全部目标（对同一快照 current，纯读、独立 SCIP 子解）。
             final List<ColumnUse> snapshot = current;
             List<Move> moves;
             if (parallelEnabled()) {
                 moves = targets.parallelStream()
-                        .map(t -> evaluateTarget(t, snapshot, donorCount, budgetMs, totalWidth))
+                        .map(t -> evaluateTarget(t, snapshot, donorCount, budgetMs, totalWidth,
+                                cache, stats))
                         .collect(java.util.stream.Collectors.toList());
             } else {
                 moves = new ArrayList<>(targets.size());
                 for (ColumnUse t : targets) {
-                    moves.add(evaluateTarget(t, snapshot, donorCount, budgetMs, totalWidth));
+                    moves.add(evaluateTarget(t, snapshot, donorCount, budgetMs, totalWidth,
+                            cache, stats));
                 }
             }
             // 选最优改善：组数降幅大 > 奇块降幅大 > target 顺序（稳定，确定）。
@@ -269,6 +325,7 @@ public final class SetPartitionRefiner {
             }
             working.addAll(best.sub().uses());
             current = working;
+            stats.acceptedMoves.incrementAndGet();
             log.info("SPR accept iter{}: {} blocks (odd {}) -> {} (odd {}) | target={}cars {}",
                     iter, best.removed().size(), best.removedOdd(),
                     best.sub().groups(), best.sub().oddBlocks(),
@@ -284,7 +341,8 @@ public final class SetPartitionRefiner {
 
     /** 单目标评估（纯函数，只读快照、不改共享状态；供并行调用）：选捐赠块、残差重建、判断改善。 */
     private static Move evaluateTarget(ColumnUse target, List<ColumnUse> snapshot,
-            int donorCount, long budgetMs, int totalWidth) {
+            int donorCount, long budgetMs, int totalWidth,
+            ConcurrentMap<SubproblemKey, Result> cache, RefineStats stats) {
         int targetIdx = snapshot.indexOf(target);
         if (targetIdx < 0) {
             return null;
@@ -310,7 +368,7 @@ public final class SetPartitionRefiner {
         List<ColumnUse> removed = new ArrayList<>();
         removed.add(target);
         removed.addAll(others.subList(0, Math.min(donorCount, others.size())));
-        Result sub = microRebuild(removed, budgetMs, totalWidth);
+        Result sub = microRebuild(removed, budgetMs, totalWidth, cache, stats);
         if (sub == null || sub.groups() == 0) {
             return null;
         }
@@ -326,7 +384,8 @@ public final class SetPartitionRefiner {
     }
 
     /** 微邻域重建：残差需求 + 比例匹配注入列 + 拆除块兜底，单段求解（odd 已在目标）。 */
-    private static Result microRebuild(List<ColumnUse> removed, long budgetMs, int totalWidth) {
+    private static Result microRebuild(List<ColumnUse> removed, long budgetMs, int totalWidth,
+            ConcurrentMap<SubproblemKey, Result> cache, RefineStats stats) {
         Map<String, Integer> residual = new LinkedHashMap<>();
         int removedCars = 0;
         int removedWaste = 0;
@@ -351,9 +410,68 @@ public final class SetPartitionRefiner {
         }
         subPool.addAll(UnifiedSetPartitionSolver.structuredColumns(shapes, residualByWidth,
                 MAX_MESSAGES_PER_WIDTH, MAX_OPTIONS_PER_WIDTH, CONFIGS_PER_SHAPE));
-        return new UnifiedSetPartitionSolver().solve(
-                subPool, residual, removedCars, removedWaste, totalWidth, budgetMs, ODD_WEIGHT,
-                new ArrayList<>(removed));
+        List<ColumnUse> warmStart = new ArrayList<>(removed);
+        SubproblemKey key = subproblemKey(subPool, residual, removedCars, removedWaste,
+                totalWidth, budgetMs, warmStart);
+        int exactCars = removedCars;
+        int wasteCap = removedWaste;
+        return solveCached(key, cache, stats, () -> new UnifiedSetPartitionSolver().solve(
+                subPool, residual, exactCars, wasteCap, totalWidth, budgetMs, ODD_WEIGHT,
+                warmStart));
+    }
+
+    static SubproblemKey subproblemKey(List<Column> pool,
+            Map<String, Integer> demand,
+            int exactCars,
+            int wasteCap,
+            int totalWidth,
+            long timeLimitMs,
+            List<ColumnUse> warmStart) {
+        String poolSignature = pool.stream()
+                .map(column -> column.patternWidth() + ":" + column.signature())
+                .collect(Collectors.joining("\u001e"));
+        String demandSignature = demand.entrySet().stream()
+                .map(entry -> entry.getKey() + "=" + entry.getValue())
+                .collect(Collectors.joining("\u001e"));
+        String warmStartSignature = warmStart.stream()
+                .map(use -> use.column().patternWidth() + ":" + use.column().signature()
+                        + "#" + use.count())
+                .collect(Collectors.joining("\u001e"));
+        return new SubproblemKey(poolSignature, demandSignature, exactCars, wasteCap,
+                totalWidth, timeLimitMs, warmStartSignature);
+    }
+
+    static Result solveCached(SubproblemKey key,
+            ConcurrentMap<SubproblemKey, Result> cache,
+            RefineStats stats,
+            Supplier<Result> solverCall) {
+        stats.subproblemRequests.incrementAndGet();
+        if (!cacheEnabled()) {
+            stats.solverCalls.incrementAndGet();
+            return solverCall.get();
+        }
+        AtomicReference<Result> solvedHere = new AtomicReference<>();
+        Result cached = cache.compute(key, (ignored, existing) -> {
+            if (existing != null) {
+                return existing;
+            }
+            stats.solverCalls.incrementAndGet();
+            Result result = solverCall.get();
+            solvedHere.set(result);
+            return cacheable(result) ? result : null;
+        });
+        if (solvedHere.get() != null) {
+            return solvedHere.get();
+        }
+        if (cached != null) {
+            stats.cacheHits.incrementAndGet();
+        }
+        return cached;
+    }
+
+    private static boolean cacheable(Result result) {
+        return result != null
+                && ("OPTIMAL".equals(result.status()) || "INFEASIBLE".equals(result.status()));
     }
 
     /** 残差宽度上的分层形状枚举（需求质量加权排序，B6 同源）。 */

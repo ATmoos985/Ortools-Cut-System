@@ -24,6 +24,10 @@ class LegacyOrderPatternSelectionSolver {
 
     private static final Logger log = LoggerFactory.getLogger(LegacyOrderPatternSelectionSolver.class);
     private static final int MAX_REPAIR_ATTEMPTS = 3;
+    private static final long DEFAULT_QUALITY_PRIMARY_STAGE4_NODE_LIMIT = 3000L;
+    private static final long DEFAULT_QUALITY_STAGE4_NODE_LIMIT = 10L;
+    private static final long DEFAULT_STAGE4_WALL_CAP_MS = 20_000L;
+    private static final long DEFAULT_STAGE4_SAFETY_TIME_LIMIT_MS = 120_000L;
 
     /**
      * 固定 SCIP 随机化种子，保证相同输入 → 相同解。Legacy 既产出 primary 花型集，
@@ -77,6 +81,35 @@ class LegacyOrderPatternSelectionSolver {
 
     private static long longProperty(String key, long defaultValue) {
         return SolverRuntimeProperties.getLong(key, defaultValue);
+    }
+
+    static long stage4NodeLimit() {
+        long defaultValue = SolverRuntimeProperties.getBoolean("cutting.quality", false)
+                ? DEFAULT_QUALITY_STAGE4_NODE_LIMIT
+                : 0L;
+        return longProperty("cutting.aLayerStage4NodeLimit", defaultValue);
+    }
+
+    static long stage4WallLimitMs(long remainingTimeMs) {
+        return stage4WallLimitMs(remainingTimeMs, stage4NodeLimit());
+    }
+
+    private static long stage4WallLimitMs(long remainingTimeMs, long effectiveNodeLimit) {
+        long configuredCap = effectiveNodeLimit > 0
+                ? longProperty("cutting.aLayerStage4SafetyTimeLimitMs",
+                        DEFAULT_STAGE4_SAFETY_TIME_LIMIT_MS)
+                : longProperty("cutting.aLayerStage4CapMs", DEFAULT_STAGE4_WALL_CAP_MS);
+        return Math.min(remainingTimeMs, configuredCap);
+    }
+
+    static long effectiveStage4NodeLimit(double parityPenalty, double alignmentLambda) {
+        if (parityPenalty > 0.0 || alignmentLambda > 0.0) {
+            return stage4NodeLimit();
+        }
+        long defaultValue = SolverRuntimeProperties.getBoolean("cutting.quality", false)
+                ? DEFAULT_QUALITY_PRIMARY_STAGE4_NODE_LIMIT
+                : 0L;
+        return longProperty("cutting.aLayerPrimaryStage4NodeLimit", defaultValue);
     }
 
     List<Result> solveCandidates(List<PatternCandidate> patterns,
@@ -184,10 +217,9 @@ class LegacyOrderPatternSelectionSolver {
                 stage3Rolls, totalWaste, wasteSlack, totalWaste + wasteSlack);
 
         remaining = Math.max(2000, deadlineMs - System.currentTimeMillis());
-        // 40s 是快路径默认；-Dcutting.aLayerStage4CapMs 可整体抬高（含 solveMIPStage4 内层帽）。
-        // 注意：墙钟截断的 FEASIBLE 解是负载相关的（同参数两次运行可落在不同平局最优上），
-        // 参数敏感实验应结合 SCIP limits/nodes 才能完全确定。
-        long stage4Time = Math.min(remaining, Math.max(40_000L, longProperty("cutting.aLayerStage4CapMs", 40_000L)));
+        // The inner Stage4 policy owns the wall cap. Passing the remaining request budget here
+        // prevents an outer cap from firing before the deterministic node budget on slower hosts.
+        long stage4Time = remaining;
         // 对齐 λ 或奇偶 tie-break 生效时给 Stage4 全池：奇偶翻转需要备选花型做需求等式的
         // 补偿交换，stage3 精选池往往没有腾挪空间。
         boolean stage4NeedsFullPool = params.getALayerAlignmentLambda() > 0.0 || parityPenalty() > 0.0;
@@ -560,12 +592,25 @@ class LegacyOrderPatternSelectionSolver {
 
             // 20s 是快路径顶帽；全池+奇偶变量的模型 20s 常 NOT_SOLVED/FEASIBLE 截断
             // （截断时奇偶项来不及优化）。实验可用 -Dcutting.aLayerStage4CapMs 放宽。
-            long stage4Cap = longProperty("cutting.aLayerStage4CapMs", 20_000L);
-            long stage4TimeLimit = Math.min(timeLimitMs, stage4Cap);
+            long nodeLimit = effectiveStage4NodeLimit(parityPenalty, alignmentLambda);
+            if (nodeLimit > 0 && solver.solverVersion().toUpperCase().contains("SCIP")) {
+                solver.setSolverSpecificParametersAsString(
+                        scipParams() + "limits/nodes = " + nodeLimit + "\n");
+            }
+            long stage4TimeLimit = stage4WallLimitMs(timeLimitMs, nodeLimit);
             solver.setHint(new MPVariable[] {}, new double[] {});
             solver.setTimeLimit(stage4TimeLimit);
 
+            long stage4StartedAt = System.currentTimeMillis();
             MPSolver.ResultStatus status = solver.solve();
+            long stage4ElapsedMs = System.currentTimeMillis() - stage4StartedAt;
+            long stage4Nodes = -1L;
+            try {
+                stage4Nodes = solver.nodes();
+            } catch (Throwable ignored) {
+            }
+            log.info("Legacy Stage4 solve: status={}, elapsedMs={}, nodes={}/{}, wallLimitMs={}",
+                    status, stage4ElapsedMs, stage4Nodes, nodeLimit, stage4TimeLimit);
             if (status != MPSolver.ResultStatus.OPTIMAL && status != MPSolver.ResultStatus.FEASIBLE) {
                 log.warn("Legacy-order Stage4 returned {}", status);
                 return null;
