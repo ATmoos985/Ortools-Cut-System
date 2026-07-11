@@ -267,13 +267,17 @@ class SetPartitionRefinerTest {
     }
 
     @Test
-    void moveAcceptanceLeavesSingleCarToTheFixedCapPolish() {
+    void moveAcceptanceUsesSingleCarAfterGroupsAndOddBeforeSmall() {
         org.junit.jupiter.api.Assertions.assertFalse(
                 SetPartitionRefiner.qualityBetter(0, 6, 2, 5, 1, 5, 1, 3));
         org.junit.jupiter.api.Assertions.assertTrue(
                 SetPartitionRefiner.qualityBetter(1, 5, 1, 3, 0, 6, 2, 5));
-        org.junit.jupiter.api.Assertions.assertFalse(
+        org.junit.jupiter.api.Assertions.assertTrue(
                 SetPartitionRefiner.qualityBetter(0, 5, 1, 5, 1, 5, 1, 3));
+        org.junit.jupiter.api.Assertions.assertFalse(
+                SetPartitionRefiner.qualityBetter(1, 5, 1, 2, 0, 5, 1, 3));
+        org.junit.jupiter.api.Assertions.assertTrue(
+                SetPartitionRefiner.qualityBetter(1, 5, 1, 2, 1, 5, 1, 3));
     }
 
     private static void restoreProperty(String name, String value) {

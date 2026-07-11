@@ -183,7 +183,7 @@ public class InstructionConverter {
                 // Phase O（组数封顶的奇偶修复）：LNS 的移动会破坏 build 阶段做过的 family
                 // repack，所以 LNS 输出常带着本可避免的奇数车块。在 LNS 结果上重跑一次
                 // repack MIP（权重 块10000 > 奇100 > 小10，结构上不可能增加块数），只接受
-                // 字典序（组→奇→小）严格变好且需求/车数/废边守恒的结果——组数地板绝不回吐。
+                // 字典序（组→奇→1车→小）严格变好且需求/车数/废边守恒的结果——组数地板绝不回吐。
                 List<CuttingInstruction> repaired = oddRepairPass(selectedInstructions);
                 if (repaired != null) {
                     selectedInstructions = repaired;
@@ -245,7 +245,7 @@ public class InstructionConverter {
     /**
      * B 层 LNS 变体评优。快路径：按全局属性单跑（现状不变）。质量模式
      * （cutting.quality=true）：默认邻域与扩大邻域（12/20/40/60）各跑一遍，
-     * 按 组→odd→small 字典序拣优——两套邻域参数在不同数据集上互有胜负
+     * 按 组→odd→1车→small 字典序拣优——两套邻域参数在不同数据集上互有胜负
      * （sixian 扩大邻域胜，t9est188 默认邻域胜 69 vs 72，笔记13），
      * 单一调参路径不可靠，评优后结构上永不劣于任一单路径。
      */
@@ -290,7 +290,7 @@ public class InstructionConverter {
 
     /**
      * Phase O：LNS 之后的奇偶修复。对 LNS 输出重跑 family repack（optimizeInstructionFamilies），
-     * 用字典序（组数 → 奇数车组 → 小车组）+ 需求/车数/废边守恒做全局验收；任一维度回退即整体放弃。
+     * 用字典序（组数 → 奇数车组 → 1车组 → 小车组）+ 需求/车数/废边守恒做全局验收；任一维度回退即整体放弃。
      * 返回 null 表示未接受（保持原结果）。同时打印 odd 理论下界 = usage 为奇数的花型族个数
      * （每族块大小之和 = 族车数，奇数车数至少留一个奇块，B 层任何重排都破不了这个底）。
      */
@@ -331,7 +331,7 @@ public class InstructionConverter {
 
     /**
      * 质量模式第三段验收（与 oddRepairPass 同款）：SetPartitionRefiner 产出候选指令后，
-     * 走 compact+reorder，需求/车数/废边守恒 + （组→奇→小）字典序严格变好才接受；
+     * 走 compact+reorder，需求/车数/废边守恒 + （组→奇→1车→小）字典序严格变好才接受；
      * 任一维度回退即整体放弃（返回 null 保持原结果）。
      */
     private List<CuttingInstruction> setPartitionRefinePass(List<CuttingInstruction> instructions) {

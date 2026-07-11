@@ -158,7 +158,7 @@ class CuttingSolverTest {
     }
 
     @Test
-    void isBetterPlanPrefersZeroSingleCarGroupsBeforeSequenceGroupGain() throws Exception {
+    void isBetterPlanPrefersFewerSequenceGroupsBeforeZeroSingleCarGroups() throws Exception {
         CuttingSolver solver = new CuttingSolver(SolverParameters.createDefault());
         Object zeroSingle = groupSolvePlan(
                 "zero-single", solverResult(2, 300, 0, 10), 11, 0, 0);
@@ -166,8 +166,8 @@ class CuttingSolverTest {
                 "single", solverResult(2, 300, 0, 10), 10, 1, 1);
 
         Method method = betterPlanMethod();
-        assertTrue((boolean) method.invoke(solver, zeroSingle, singleCar));
-        assertFalse((boolean) method.invoke(solver, singleCar, zeroSingle));
+        assertFalse((boolean) method.invoke(solver, zeroSingle, singleCar));
+        assertTrue((boolean) method.invoke(solver, singleCar, zeroSingle));
     }
 
     private static Method betterPlanMethod() throws Exception {

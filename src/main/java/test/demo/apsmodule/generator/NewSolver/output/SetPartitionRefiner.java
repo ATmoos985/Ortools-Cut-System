@@ -34,7 +34,7 @@ import java.util.stream.Collectors;
  *
  * <p>机制：把一个长度组的指令转成 (花型,整车配置) 列，逐块拆弱块（odd 优先，次 small）
  * + 共享需求键最多的捐赠块，对拆出的残差需求现场跑比例匹配列生成，小规模 set-partition
- * 精确重建（车数等式+废边≤拆除额，拆除块进池兜底），按组→odd→small 严格改善
+ * 精确重建（车数等式+废边≤拆除额，拆除块进池兜底），按组→odd→1车→small 严格改善
  * 才接受。B6 L12c 实证：生产公平管线解 47/3/13 → 46/1/12（追平人工 46/1/15），耗时 25s 级。
  *
  * <p>上下文感知选列的三条歧路已证伪：LP 对偶定价（L11，松弛结构性弱）、静态排序
@@ -905,8 +905,16 @@ public final class SetPartitionRefiner {
     static boolean qualityBetter(int candidateOne, int candidateGroups, int candidateOdd,
             int candidateSmall, int baselineOne, int baselineGroups, int baselineOdd,
             int baselineSmall) {
-        return lexBetter(candidateGroups, candidateOdd, candidateSmall,
-                baselineGroups, baselineOdd, baselineSmall);
+        if (candidateGroups != baselineGroups) {
+            return candidateGroups < baselineGroups;
+        }
+        if (candidateOdd != baselineOdd) {
+            return candidateOdd < baselineOdd;
+        }
+        if (candidateOne != baselineOne) {
+            return candidateOne < baselineOne;
+        }
+        return candidateSmall < baselineSmall;
     }
 
     static boolean lexBetter(int candidateGroups, int candidateOdd, int candidateSmall,

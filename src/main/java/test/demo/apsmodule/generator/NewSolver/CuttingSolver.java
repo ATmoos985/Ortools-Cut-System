@@ -379,7 +379,7 @@ public class CuttingSolver implements CuttingSolverAlgorithm {
      * A层 parity 扫描 {0, 0.1} + B层双 LNS 变体（默认邻域 vs 扩大邻域）评优。
      * 依据（笔记13终局）：parity0.1 在 sixian 上给出 46大组 但在 t9est188 上 72→94
      * ——数据集脆弱，绝不能单独当默认；唯一稳健编排是多候选全评估后由
-     * isBetterPlan（车数→组→odd→small）拣优，结构上永不劣于单路径。
+     * isBetterPlan（车数→组→odd→1车→small）拣优，结构上永不劣于单路径。
      */
     public static boolean qualityMode() {
         return SolverRuntimeProperties.getBoolean("cutting.quality", false);
@@ -523,9 +523,6 @@ public class CuttingSolver implements CuttingSolverAlgorithm {
         if (candidate.result().getTotalRolls() != currentBest.result().getTotalRolls()) {
             return candidate.result().getTotalRolls() < currentBest.result().getTotalRolls();
         }
-        if (candidate.oneCarGroups() != currentBest.oneCarGroups()) {
-            return candidate.oneCarGroups() < currentBest.oneCarGroups();
-        }
         // Priority 2: sequence groups — fewer is better for production efficiency
         if (candidate.sequenceGroupCount() != currentBest.sequenceGroupCount()) {
             return candidate.sequenceGroupCount() < currentBest.sequenceGroupCount();
@@ -534,15 +531,19 @@ public class CuttingSolver implements CuttingSolverAlgorithm {
         if (candidate.oddCarGroups() != currentBest.oddCarGroups()) {
             return candidate.oddCarGroups() < currentBest.oddCarGroups();
         }
-        // Priority 4: small-car groups (≤5 cars) — fewer tiny groups is better
+        // Priority 4: single-car groups — only improve after groups and odd groups are fixed
+        if (candidate.oneCarGroups() != currentBest.oneCarGroups()) {
+            return candidate.oneCarGroups() < currentBest.oneCarGroups();
+        }
+        // Priority 5: small-car groups (≤5 cars) — fewer tiny groups is better
         if (candidate.smallCarGroups() != currentBest.smallCarGroups()) {
             return candidate.smallCarGroups() < currentBest.smallCarGroups();
         }
-        // Priority 5: pattern count — fewer distinct patterns simplifies production
+        // Priority 6: pattern count — fewer distinct patterns simplifies production
         if (candidate.result().getPatternCount() != currentBest.result().getPatternCount()) {
             return candidate.result().getPatternCount() < currentBest.result().getPatternCount();
         }
-        // Priority 4: waste — lower waste is better (tie-break within same roll count)
+        // Priority 7: waste — lower waste is better (tie-break within same roll count)
         if (candidate.result().getTotalWaste() != currentBest.result().getTotalWaste()) {
             return candidate.result().getTotalWaste() < currentBest.result().getTotalWaste();
         }
