@@ -170,6 +170,24 @@ class UnifiedSetPartitionLexicographicTest {
     }
 
     @Test
+    void deterministicNodeBudgetChecksCoreCapsWithoutSmallCap() {
+        List<Column> columns = pool();
+        MetricCapResult result =
+                new UnifiedSetPartitionSolver().checkCoreMetricCapsByNodes(
+                        columns,
+                        Map.of(key("A"), 8, key("B"), 20),
+                        14, 0, TOTAL_WIDTH, 2, 0, 0,
+                        10, 10_000L,
+                        List.of(new ColumnUse(columns.get(0), 4),
+                                new ColumnUse(columns.get(2), 10)));
+
+        assertTrue(result.feasible());
+        assertTrue(result.proven());
+        assertEquals(0, result.result().oneCarBlocks());
+        assertTrue(result.result().nodes() <= 10);
+    }
+
+    @Test
     void metricCapsProveImpossibleSmallBoundary() {
         MetricCapResult result = new UnifiedSetPartitionSolver().checkMetricCaps(
                 pool(),

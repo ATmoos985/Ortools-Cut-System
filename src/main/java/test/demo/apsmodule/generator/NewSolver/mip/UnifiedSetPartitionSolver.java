@@ -286,6 +286,41 @@ public class UnifiedSetPartitionSolver {
         return new MetricCapResult(result, feasible, proven);
     }
 
+    /**
+     * Research-only feasibility check for the hard business metrics. Small blocks are
+     * intentionally uncapped because they are subordinate to eliminating one-car blocks.
+     * The node limit is the deterministic search budget; wall time is only a safety cap.
+     */
+    public MetricCapResult checkCoreMetricCapsByNodes(List<Column> pool,
+            Map<String, Integer> demand,
+            int exactCars,
+            int wasteCap,
+            int totalWidth,
+            int maxGroups,
+            int maxOdd,
+            int maxOne,
+            long nodeLimit,
+            long safetyTimeLimitMs,
+            List<ColumnUse> warmStart) {
+        if (maxGroups < 0 || maxOdd < 0 || maxOne < 0) {
+            throw new IllegalArgumentException("Core metric caps must be non-negative");
+        }
+        if (nodeLimit <= 0) {
+            throw new IllegalArgumentException("nodeLimit must be positive");
+        }
+        Result result = solvePhase(pool, demand, exactCars, wasteCap, totalWidth,
+                safetyTimeLimitMs, 0.0, warmStart, maxGroups, maxOdd, maxOne, null,
+                ObjectivePhase.FEASIBILITY, true, nodeLimit);
+        if (result == null) {
+            return new MetricCapResult(null, false, false);
+        }
+        boolean feasible = MPSolver.ResultStatus.OPTIMAL.toString().equals(result.status())
+                || MPSolver.ResultStatus.FEASIBLE.toString().equals(result.status());
+        boolean proven = feasible
+                || MPSolver.ResultStatus.INFEASIBLE.toString().equals(result.status());
+        return new MetricCapResult(result, feasible, proven);
+    }
+
     /** Research polish: preserve proven/accepted group and odd caps, then minimize small blocks. */
     public Result minimizeSmallAtCaps(List<Column> pool,
             Map<String, Integer> demand,
@@ -357,6 +392,26 @@ public class UnifiedSetPartitionSolver {
             Integer maxSmall,
             ObjectivePhase objectivePhase,
             boolean stableColumnOrder) {
+        return solvePhase(pool, demand, exactCars, wasteCap, totalWidth, timeLimitMs,
+                oddWeight, warmStart, maxGroups, maxOdd, maxOne, maxSmall,
+                objectivePhase, stableColumnOrder, null);
+    }
+
+    private Result solvePhase(List<Column> pool,
+            Map<String, Integer> demand,
+            int exactCars,
+            int wasteCap,
+            int totalWidth,
+            long timeLimitMs,
+            double oddWeight,
+            List<ColumnUse> warmStart,
+            Integer maxGroups,
+            Integer maxOdd,
+            Integer maxOne,
+            Integer maxSmall,
+            ObjectivePhase objectivePhase,
+            boolean stableColumnOrder,
+            Long nodeLimit) {
         if (oddWeight < 0) {
             oddWeight = DEFAULT_ODD_WEIGHT;
         }
@@ -391,7 +446,11 @@ public class UnifiedSetPartitionSolver {
         if (solver == null) {
             return null;
         }
-        solver.setSolverSpecificParametersAsString(SCIP_DETERMINISTIC_PARAMS);
+        String solverParameters = SCIP_DETERMINISTIC_PARAMS;
+        if (nodeLimit != null) {
+            solverParameters += "limits/nodes = " + nodeLimit + "\n";
+        }
+        solver.setSolverSpecificParametersAsString(solverParameters);
         try { solver.setNumThreads(1); } catch (Exception ignored) { }
 
         int n = columns.size();
@@ -401,7 +460,10 @@ public class UnifiedSetPartitionSolver {
                 || objectivePhase == ObjectivePhase.ODD
                 || objectivePhase == ObjectivePhase.SMALL
                 || objectivePhase == ObjectivePhase.GROUPS_WITH_ODD_TIEBREAK;
-        boolean needsOne = maxOne != null || objectivePhase == ObjectivePhase.ONE;
+        boolean forbidsOne = maxOne != null && maxOne == 0
+                && objectivePhase != ObjectivePhase.ONE;
+        boolean needsOne = (maxOne != null && !forbidsOne)
+                || objectivePhase == ObjectivePhase.ONE;
         boolean needsSmall = maxSmall != null || objectivePhase == ObjectivePhase.SMALL;
         MPVariable[] o = needsOdd ? new MPVariable[n] : null;
         MPVariable[] h = needsOdd ? new MPVariable[n] : null;
@@ -417,7 +479,7 @@ public class UnifiedSetPartitionSolver {
             upper.setCoefficient(y[j], -support);
             MPConstraint lower = solver.makeConstraint(0, MPSolver.infinity(), "lb_" + j);
             lower.setCoefficient(c[j], 1);
-            lower.setCoefficient(y[j], -1);
+            lower.setCoefficient(y[j], forbidsOne ? -2 : -1);
             if (needsOdd) {
                 o[j] = solver.makeBoolVar("o_" + j);
                 h[j] = solver.makeIntVar(0, support, "h_" + j);
@@ -538,7 +600,7 @@ public class UnifiedSetPartitionSolver {
                 oddCap.setCoefficient(o[j], 1);
             }
         }
-        if (maxOne != null) {
+        if (maxOne != null && one != null) {
             MPConstraint oneCap = solver.makeConstraint(0, maxOne, "oneCap");
             for (int j = 0; j < n; j++) {
                 oneCap.setCoefficient(one[j], 1);
