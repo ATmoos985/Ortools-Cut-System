@@ -53,6 +53,33 @@ class SequenceGroupPostProcessorTest {
         assertEquals(1, SequenceGroupPostProcessor.countTotalGroups(List.of(left, right)));
     }
 
+    @Test
+    void computeGroupStatsCountsSingleCarGroupsSeparately() {
+        CuttingInstruction single = instruction(1, "A");
+        CuttingInstruction triple = instruction(3, "B");
+        CuttingInstruction even = instruction(2, "C");
+
+        SequenceGroupPostProcessor.GroupStats stats =
+                SequenceGroupPostProcessor.computeGroupStats(List.of(single, triple, even));
+
+        assertEquals(3, stats.groups());
+        assertEquals(2, stats.oddCarGroups());
+        assertEquals(1, stats.oneCarGroups());
+        assertEquals(3, stats.smallCarGroups());
+    }
+
+    private static CuttingInstruction instruction(int cars, String message) {
+        CuttingInstruction instruction = new CuttingInstruction();
+        instruction.setUsageCount(cars);
+        instruction.setSubRolls(Map.of(1000, 1));
+        java.util.ArrayList<StationAssignment> assignments = new java.util.ArrayList<>();
+        for (int i = 0; i < cars; i++) {
+            assignments.add(new StationAssignment(1000, message));
+        }
+        instruction.setStationAssignments(assignments);
+        return instruction;
+    }
+
     private static Map<Integer, Integer> linkedSubRolls() {
         Map<Integer, Integer> subRolls = new LinkedHashMap<>();
         subRolls.put(1000, 1);

@@ -1,7 +1,10 @@
 package test.demo.apsmodule.generator.NewSolver;
 
 import org.junit.jupiter.api.Test;
+import test.demo.apsmodule.generator.NewSolver.mip.UnifiedSetPartitionSolver.Column;
+import test.demo.apsmodule.generator.NewSolver.mip.UnifiedSetPartitionSolver.ColumnUse;
 import test.demo.apsmodule.generator.NewSolver.output.SequenceGroupPostProcessor;
+import test.demo.apsmodule.generator.NewSolver.output.SolverRunColumnArchive;
 import test.demo.apsmodule.service.CuttingInstruction;
 import test.demo.apsmodule.service.SolverConfig;
 import test.demo.apsmodule.service.SolverOrderItem;
@@ -14,6 +17,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.stream.Collectors;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -33,51 +37,74 @@ class B5HarnessTest {
 
     @Test
     void runT9est188() throws Exception {
-        List<SolverOrderItem> items = loadItems();
-        SolverConfig config = buildConfig();
+        Path lockPath = Path.of(System.getProperty(
+                "cutting.test.experimentLock", "solver-experiments/solver.lock"));
+        try (SolverExperimentGuard ignored = SolverExperimentGuard.acquire(lockPath)) {
+            List<SolverOrderItem> items = loadItems();
+            SolverConfig config = buildConfig();
 
-        long t0 = System.currentTimeMillis();
-        CuttingSolver solver = new CuttingSolver();
-        List<CuttingInstruction> instructions = solver.solve(items, config);
-        long elapsed = System.currentTimeMillis() - t0;
+            long t0 = System.currentTimeMillis();
+            CuttingSolver solver = new CuttingSolver();
+            SolverRunColumnArchive.Captured<List<CuttingInstruction>> captured =
+                    SolverRunColumnArchive.capture(() -> solver.solve(items, config));
+            List<CuttingInstruction> instructions = captured.value();
+            long elapsed = System.currentTimeMillis() - t0;
 
-        SequenceGroupPostProcessor.GroupStats stats =
-                SequenceGroupPostProcessor.computeGroupStats(instructions);
-        List<test.demo.apsmodule.generator.NewSolver.mip.UnifiedSetPartitionSolver.ColumnUse> uses =
-                SolverExperimentSnapshot.fromInstructions(instructions);
-        SolverExperimentSnapshot.Metrics metrics =
-                SolverExperimentSnapshot.metrics(uses, config.getTotalWidth());
-        assertEquals(stats.groups(), metrics.groups());
-        assertEquals(stats.oddCarGroups(), metrics.oddGroups());
-        assertEquals(stats.smallCarGroups(), metrics.smallGroups());
-        assertEquals(SolverExperimentSnapshot.demandOf(items),
-                SolverExperimentSnapshot.producedBy(uses));
+            SequenceGroupPostProcessor.GroupStats stats =
+                    SequenceGroupPostProcessor.computeGroupStats(instructions);
+            List<ColumnUse> uses = SolverExperimentSnapshot.fromInstructions(instructions);
+            SolverExperimentSnapshot.Metrics metrics =
+                    SolverExperimentSnapshot.metrics(uses, config.getTotalWidth());
+            assertEquals(stats.groups(), metrics.groups());
+            assertEquals(stats.oddCarGroups(), metrics.oddGroups());
+            assertEquals(stats.smallCarGroups(), metrics.smallGroups());
+            assertEquals(SolverExperimentSnapshot.demandOf(items),
+                    SolverExperimentSnapshot.producedBy(uses));
 
-        System.out.println("\n##### B5 HARNESS RESULT #####");
-        System.out.println("items=" + items.size() + " instructions=" + instructions.size());
-        System.out.println("groups=" + stats.groups()
-                + " oddCarGroups=" + stats.oddCarGroups()
-                + " smallCarGroups=" + stats.smallCarGroups());
-        System.out.println("cars=" + metrics.cars() + " waste=" + metrics.waste());
-        System.out.println("elapsedMs=" + elapsed);
-        System.out.println("#############################\n");
+            System.out.println("\n##### B5 HARNESS RESULT #####");
+            System.out.println("items=" + items.size() + " instructions=" + instructions.size());
+            System.out.println("groups=" + stats.groups()
+                    + " oddCarGroups=" + stats.oddCarGroups()
+                    + " smallCarGroups=" + stats.smallCarGroups());
+            System.out.println("cars=" + metrics.cars() + " waste=" + metrics.waste());
+            System.out.println("discoveredColumns=" + captured.columns().size());
+            System.out.println("elapsedMs=" + elapsed);
+            System.out.println("#############################\n");
 
-        writeSnapshotWhenQualified(uses, metrics, config.getTotalWidth());
+            writeSnapshotWhenQualified(uses, captured.columns(), metrics, config.getTotalWidth());
+        }
     }
 
     private void writeSnapshotWhenQualified(
-            List<test.demo.apsmodule.generator.NewSolver.mip.UnifiedSetPartitionSolver.ColumnUse> uses,
+            List<ColumnUse> uses,
+            List<Column> discoveredColumns,
             SolverExperimentSnapshot.Metrics metrics,
             int totalWidth) throws IOException {
+        Path candidateDir = Path.of(System.getProperty(
+                "cutting.test.candidateOutputDir", "solver-experiments"));
+        String resultHash = Integer.toUnsignedString(uses.stream()
+                .map(use -> use.column().signature() + "#" + use.count())
+                .sorted()
+                .collect(Collectors.joining("|")).hashCode(), 16);
+        Path candidatePath = candidateDir.resolve(
+                "t9est188-candidate-" + metrics.groups() + "-"
+                        + metrics.oddGroups() + "-" + metrics.smallGroups()
+                        + "-" + resultHash + ".csv");
+        SolverExperimentSnapshot.write(candidatePath, "t9est188-candidate", uses, totalWidth);
+        List<Column> allColumns = new ArrayList<>(discoveredColumns);
+        allColumns.addAll(uses.stream().map(ColumnUse::column).toList());
+        Path archivePath = candidateDir.resolve("t9est188-columns.csv");
+        SolverExperimentSnapshot.ColumnArchive archive =
+                SolverExperimentSnapshot.mergeColumnArchive(
+                        archivePath, "t9est188", allColumns);
+        System.out.println("CANDIDATE SNAPSHOT WRITTEN: " + candidatePath.toAbsolutePath());
+        System.out.println("COLUMN ARCHIVE MERGED: " + archivePath.toAbsolutePath()
+                + " columns=" + archive.columns().size());
+
         String output = System.getProperty("cutting.test.snapshotOutput", "").trim();
         if (output.isEmpty()) {
             return;
         }
-        Path candidatePath = Path.of("target", "solver-experiments",
-                "t9est188-candidate-" + metrics.groups() + "-"
-                        + metrics.oddGroups() + "-" + metrics.smallGroups() + ".csv");
-        SolverExperimentSnapshot.write(candidatePath, "t9est188-candidate", uses, totalWidth);
-        System.out.println("CANDIDATE SNAPSHOT WRITTEN: " + candidatePath.toAbsolutePath());
         int maxGroups = Integer.getInteger("cutting.test.snapshotMaxGroups", 66);
         int maxOdd = Integer.getInteger("cutting.test.snapshotMaxOdd", 8);
         int maxSmall = Integer.getInteger("cutting.test.snapshotMaxSmall", 26);

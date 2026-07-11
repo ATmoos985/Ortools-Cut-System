@@ -6,6 +6,7 @@ import test.demo.apsmodule.generator.NewSolver.mip.UnifiedSetPartitionSolver.Col
 import test.demo.apsmodule.generator.NewSolver.mip.UnifiedSetPartitionSolver.Result;
 
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.Map;
@@ -54,7 +55,7 @@ class SetPartitionRefinerTest {
         SetPartitionRefiner.RefineStats stats = new SetPartitionRefiner.RefineStats();
         AtomicInteger solveCalls = new AtomicInteger();
         SetPartitionRefiner.SubproblemKey key = new SetPartitionRefiner.SubproblemKey(
-                "pool", "demand", 1, 0, 4600, 20_000L, "warm");
+                "pool", "demand", 1, 0, 4600, 20_000L, "warm", "GROUPS", -1);
         Result feasible = new Result(List.of(), 1, 0, 1, 1, 0, "FEASIBLE");
 
         SetPartitionRefiner.solveCached(key, cache, stats, () -> {
@@ -105,7 +106,7 @@ class SetPartitionRefinerTest {
             SetPartitionRefiner.RefineStats stats = new SetPartitionRefiner.RefineStats();
             AtomicInteger solveCalls = new AtomicInteger();
             SetPartitionRefiner.SubproblemKey key = new SetPartitionRefiner.SubproblemKey(
-                    "pool", "demand", 1, 0, 4600, 20_000L, "warm");
+                    "pool", "demand", 1, 0, 4600, 20_000L, "warm", "GROUPS", -1);
             Result expected = new Result(List.of(), 1, 0, 1, 1, 0, "OPTIMAL");
 
             SetPartitionRefiner.solveCached(key, cache, stats, () -> {
@@ -126,6 +127,160 @@ class SetPartitionRefinerTest {
             } else {
                 System.setProperty("cutting.spr.cache", previous);
             }
+        }
+    }
+
+    @Test
+    void groupCapProbeOnlyShortCircuitsOnAValidLowerGroupWitness() {
+        Result witness = new Result(List.of(), 3, 1, 1, 10, 100, "FEASIBLE");
+        Result infeasible = new Result(List.of(), 0, 0, 0, 0, 0, "INFEASIBLE");
+        Result inconclusive = new Result(List.of(), 0, 0, 0, 0, 0, "NOT_SOLVED");
+
+        assertEquals(SetPartitionRefiner.ProbeDecision.ACCEPT_GROUP_WITNESS,
+                SetPartitionRefiner.probeDecision(witness, 3));
+        assertEquals(SetPartitionRefiner.ProbeDecision.FULL_LEXICAL,
+                SetPartitionRefiner.probeDecision(witness, 2));
+        assertEquals(SetPartitionRefiner.ProbeDecision.ODD_ONLY,
+                SetPartitionRefiner.probeDecision(infeasible, 3));
+        assertEquals(SetPartitionRefiner.ProbeDecision.FULL_LEXICAL,
+                SetPartitionRefiner.probeDecision(inconclusive, 3));
+        assertEquals(SetPartitionRefiner.ProbeDecision.FULL_LEXICAL,
+                SetPartitionRefiner.probeDecision(null, 3));
+    }
+
+    @Test
+    void groupCapProbeAvoidsOddSymmetryInLargeNeighborhoods() {
+        String previousBudget = System.getProperty("cutting.spr.groupCapProbeMs");
+        String previousOdd = System.getProperty("cutting.spr.groupCapProbeMaxGlobalOdd");
+        try {
+            System.setProperty("cutting.spr.groupCapProbeMs", "2000");
+            System.setProperty("cutting.spr.groupCapProbeMaxGlobalOdd", "3");
+            Column column = Column.of(Map.of(1000, 1), Map.of(1000, List.of("A")));
+            List<ColumnUse> threeOdd = List.of(
+                    new ColumnUse(column, 1), new ColumnUse(column, 3),
+                    new ColumnUse(column, 5), new ColumnUse(column, 2));
+            List<ColumnUse> fourOdd = List.of(
+                    new ColumnUse(column, 1), new ColumnUse(column, 3),
+                    new ColumnUse(column, 5), new ColumnUse(column, 7));
+
+            org.junit.jupiter.api.Assertions.assertTrue(
+                    SetPartitionRefiner.shouldProbeGroupCap(3, fourOdd));
+            org.junit.jupiter.api.Assertions.assertTrue(
+                    SetPartitionRefiner.shouldProbeGroupCap(5, threeOdd));
+            org.junit.jupiter.api.Assertions.assertFalse(
+                    SetPartitionRefiner.shouldProbeGroupCap(5, fourOdd));
+        } finally {
+            restoreProperty("cutting.spr.groupCapProbeMs", previousBudget);
+            restoreProperty("cutting.spr.groupCapProbeMaxGlobalOdd", previousOdd);
+        }
+    }
+
+    @Test
+    void reverseTieIterationLimitIsConfigurableAndPositive() {
+        String previous = System.getProperty("cutting.spr.reverseTieMaxIterations");
+        try {
+            System.setProperty("cutting.spr.reverseTieMaxIterations", "1");
+            assertEquals(1, SetPartitionRefiner.reverseTieMaxIterations());
+            System.setProperty("cutting.spr.reverseTieMaxIterations", "3");
+            assertEquals(3, SetPartitionRefiner.reverseTieMaxIterations());
+            System.setProperty("cutting.spr.reverseTieMaxIterations", "0");
+            assertEquals(1, SetPartitionRefiner.reverseTieMaxIterations());
+        } finally {
+            restoreProperty("cutting.spr.reverseTieMaxIterations", previous);
+        }
+    }
+
+    @Test
+    void donorVariantsExploreStableAlternativeRankings() {
+        Column targetColumn = Column.of(
+                Map.of(1000, 1, 1200, 1),
+                Map.of(1000, List.of("A"), 1200, List.of("B")));
+        Column keyFirstColumn = Column.of(
+                Map.of(1000, 1, 1300, 1),
+                Map.of(1000, List.of("A"), 1300, List.of("X")));
+        Column widthFirstColumn = Column.of(
+                Map.of(1000, 1, 1200, 1),
+                Map.of(1000, List.of("X"), 1200, List.of("Y")));
+        ColumnUse target = new ColumnUse(targetColumn, 1);
+        ColumnUse keyFirst = new ColumnUse(keyFirstColumn, 2);
+        ColumnUse widthFirst = new ColumnUse(widthFirstColumn, 2);
+
+        assertEquals(keyFirst,
+                SetPartitionRefiner.rankDonors(target, List.of(keyFirst, widthFirst),
+                        SetPartitionRefiner.DonorVariant.DEFAULT).get(0));
+        assertEquals(widthFirst,
+                SetPartitionRefiner.rankDonors(target, List.of(keyFirst, widthFirst),
+                        SetPartitionRefiner.DonorVariant.WIDTH_FIRST).get(0));
+    }
+
+    @Test
+    void oneCarPolishPoolReductionPreservesIncumbentAndDemandCoverage() {
+        Column incumbent = Column.of(Map.of(1000, 1), Map.of(1000, List.of("A")));
+        Column coversA = Column.of(Map.of(1000, 2), Map.of(1000, List.of("A", "A")));
+        Column coversB = Column.of(Map.of(1200, 1), Map.of(1200, List.of("B")));
+        Column filler = Column.of(Map.of(1300, 1), Map.of(1300, List.of("C")));
+
+        List<Column> selected = SetPartitionRefiner.selectPolishColumns(
+                List.of(filler, coversB, coversA, incumbent), List.of(incumbent),
+                Map.of("1000|A", 10, "1200|B", 8), 3, 1);
+
+        org.junit.jupiter.api.Assertions.assertEquals(3, selected.size());
+        org.junit.jupiter.api.Assertions.assertTrue(selected.contains(incumbent));
+        org.junit.jupiter.api.Assertions.assertTrue(selected.stream()
+                .anyMatch(column -> column.demandUse().containsKey("1000|A")));
+        org.junit.jupiter.api.Assertions.assertTrue(selected.stream()
+                .anyMatch(column -> column.demandUse().containsKey("1200|B")));
+    }
+
+    @Test
+    void oneCarPolishPrioritizesTargetDemandKeys() {
+        Column incumbent = Column.of(Map.of(1000, 1), Map.of(1000, List.of("A")));
+        Column targetAlternative = Column.of(
+                Map.of(1000, 1, 1200, 1),
+                Map.of(1000, List.of("A"), 1200, List.of("B")));
+        Column general = Column.of(Map.of(1300, 1), Map.of(1300, List.of("C")));
+
+        List<Column> selected = SetPartitionRefiner.selectPolishColumns(
+                List.of(general, targetAlternative, incumbent), List.of(incumbent),
+                Map.of("1000|A", 1, "1200|B", 8, "1300|C", 9), Set.of("1000|A"),
+                2, 0, 1);
+
+        org.junit.jupiter.api.Assertions.assertEquals(
+                List.of(incumbent, targetAlternative).stream()
+                        .map(Column::signature).collect(java.util.stream.Collectors.toSet()),
+                selected.stream().map(Column::signature)
+                        .collect(java.util.stream.Collectors.toSet()));
+    }
+
+    @Test
+    void moveAcceptanceIncludesSmallBlocksAsThirdLexicalObjective() {
+        org.junit.jupiter.api.Assertions.assertTrue(
+                SetPartitionRefiner.lexBetter(5, 2, 9, 6, 0, 0));
+        org.junit.jupiter.api.Assertions.assertTrue(
+                SetPartitionRefiner.lexBetter(6, 1, 9, 6, 2, 0));
+        org.junit.jupiter.api.Assertions.assertTrue(
+                SetPartitionRefiner.lexBetter(6, 2, 3, 6, 2, 4));
+        org.junit.jupiter.api.Assertions.assertFalse(
+                SetPartitionRefiner.lexBetter(6, 2, 4, 6, 2, 4));
+        org.junit.jupiter.api.Assertions.assertFalse(
+                SetPartitionRefiner.lexBetter(6, 2, 5, 6, 2, 4));
+    }
+
+    @Test
+    void moveAcceptanceLeavesSingleCarToTheFixedCapPolish() {
+        org.junit.jupiter.api.Assertions.assertFalse(
+                SetPartitionRefiner.qualityBetter(0, 6, 2, 5, 1, 5, 1, 3));
+        org.junit.jupiter.api.Assertions.assertTrue(
+                SetPartitionRefiner.qualityBetter(1, 5, 1, 3, 0, 6, 2, 5));
+        org.junit.jupiter.api.Assertions.assertFalse(
+                SetPartitionRefiner.qualityBetter(0, 5, 1, 5, 1, 5, 1, 3));
+    }
+
+    private static void restoreProperty(String name, String value) {
+        if (value == null) {
+            System.clearProperty(name);
+        } else {
+            System.setProperty(name, value);
         }
     }
 }

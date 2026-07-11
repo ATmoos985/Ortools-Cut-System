@@ -158,7 +158,7 @@ class LocalNeighborhoodSequenceOptimizerTest {
     }
 
     private SequenceGroupPostProcessor.GroupStats stats(int groups, int odd, int small) {
-        return new SequenceGroupPostProcessor.GroupStats(groups, odd, small);
+        return new SequenceGroupPostProcessor.GroupStats(groups, odd, 0, small);
     }
 
     private Class<?> moveClass() throws ClassNotFoundException {

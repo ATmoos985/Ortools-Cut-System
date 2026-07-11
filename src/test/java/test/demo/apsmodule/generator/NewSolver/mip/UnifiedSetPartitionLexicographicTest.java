@@ -3,8 +3,10 @@ package test.demo.apsmodule.generator.NewSolver.mip;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import test.demo.apsmodule.generator.NewSolver.mip.UnifiedSetPartitionSolver.Column;
+import test.demo.apsmodule.generator.NewSolver.mip.UnifiedSetPartitionSolver.ColumnUse;
 import test.demo.apsmodule.generator.NewSolver.mip.UnifiedSetPartitionSolver.GroupCapResult;
 import test.demo.apsmodule.generator.NewSolver.mip.UnifiedSetPartitionSolver.LexicographicResult;
+import test.demo.apsmodule.generator.NewSolver.mip.UnifiedSetPartitionSolver.MetricCapResult;
 
 import java.util.List;
 import java.util.Map;
@@ -49,6 +51,24 @@ class UnifiedSetPartitionLexicographicTest {
     }
 
     @Test
+    void minimizesSingleCarBlocksAfterGroupsAndOddAreFixed() {
+        List<Column> columns = List.of(
+                column(List.of("A", "A", "A")),
+                column(List.of("B", "B", "B")),
+                column(List.of("A", "B", "B")));
+
+        LexicographicResult result = new UnifiedSetPartitionSolver().solveLexicographic(
+                columns, Map.of(key("A"), 3, key("B"), 12),
+                5, 0, 3000, 10_000L, List.of());
+
+        assertProven(result);
+        assertEquals(2, result.result().groups());
+        assertEquals(1, result.result().oddBlocks());
+        assertEquals(0, result.result().oneCarBlocks());
+        assertEquals(List.of(2, 3), sortedCounts(result));
+    }
+
+    @Test
     void repeatedSolveKeepsEveryPhaseAndFinalSignatureStable() {
         Map<String, Integer> demand = Map.of(
                 key("A"), 8,
@@ -85,10 +105,13 @@ class UnifiedSetPartitionLexicographicTest {
 
     @Test
     void groupCapFindsWitnessAtKnownMinimum() {
+        List<Column> columns = pool();
         GroupCapResult result = new UnifiedSetPartitionSolver().checkGroupCap(
-                pool(),
+                columns,
                 Map.of(key("A"), 8, key("B"), 20),
-                14, 0, TOTAL_WIDTH, 2, 10_000L);
+                14, 0, TOTAL_WIDTH, 2, 10_000L,
+                List.of(new ColumnUse(columns.get(0), 4),
+                        new ColumnUse(columns.get(2), 10)));
 
         assertTrue(result.proven());
         assertTrue(result.feasible());
@@ -102,6 +125,56 @@ class UnifiedSetPartitionLexicographicTest {
                 pool(),
                 Map.of(key("A"), 8, key("B"), 20),
                 14, 0, TOTAL_WIDTH, 1, 10_000L);
+
+        assertTrue(result.proven());
+        assertTrue(!result.feasible());
+        assertNotNull(result.result());
+        assertEquals("INFEASIBLE", result.result().status());
+    }
+
+    @Test
+    void smallPolishRespectsGroupAndOddCaps() {
+        List<Column> columns = pool();
+        UnifiedSetPartitionSolver.Result result =
+                new UnifiedSetPartitionSolver().minimizeSmallAtCaps(
+                        columns,
+                        Map.of(key("A"), 8, key("B"), 20),
+                        14, 0, TOTAL_WIDTH, 2, 0, 10_000L,
+                        List.of(new ColumnUse(columns.get(0), 4),
+                                new ColumnUse(columns.get(2), 10)));
+
+        assertNotNull(result);
+        assertEquals("OPTIMAL", result.status());
+        assertEquals(2, result.groups());
+        assertEquals(0, result.oddBlocks());
+        assertEquals(0, result.smallBlocks());
+    }
+
+    @Test
+    void metricCapsFindKnownFeasibleWitness() {
+        List<Column> columns = pool();
+        MetricCapResult result = new UnifiedSetPartitionSolver().checkMetricCaps(
+                columns,
+                Map.of(key("A"), 8, key("B"), 20),
+                14, 0, TOTAL_WIDTH, 2, 0, 0, 0, 10_000L,
+                List.of(new ColumnUse(columns.get(0), 4),
+                        new ColumnUse(columns.get(2), 10)));
+
+        assertTrue(result.proven());
+        assertTrue(result.feasible());
+        assertNotNull(result.result());
+        assertEquals(2, result.result().groups());
+        assertEquals(0, result.result().oddBlocks());
+        assertEquals(0, result.result().oneCarBlocks());
+        assertEquals(0, result.result().smallBlocks());
+    }
+
+    @Test
+    void metricCapsProveImpossibleSmallBoundary() {
+        MetricCapResult result = new UnifiedSetPartitionSolver().checkMetricCaps(
+                pool(),
+                Map.of(key("A"), 10, key("B"), 2),
+                6, 0, TOTAL_WIDTH, 2, 2, 0, 1, 10_000L, List.of());
 
         assertTrue(result.proven());
         assertTrue(!result.feasible());
@@ -127,9 +200,11 @@ class UnifiedSetPartitionLexicographicTest {
     }
 
     private Column column(String first, String second) {
-        return Column.of(
-                Map.of(WIDTH, 2),
-                Map.of(WIDTH, List.of(first, second)));
+        return column(List.of(first, second));
+    }
+
+    private Column column(List<String> messages) {
+        return Column.of(Map.of(WIDTH, messages.size()), Map.of(WIDTH, messages));
     }
 
     private static String key(String message) {
@@ -147,7 +222,7 @@ class UnifiedSetPartitionLexicographicTest {
         assertNotNull(result);
         assertTrue(result.provenOptimal());
         assertNotNull(result.result());
-        assertEquals(3, result.phases().size());
+        assertEquals(4, result.phases().size());
         assertTrue(result.phases().stream().allMatch(phase -> "OPTIMAL".equals(phase.status())));
     }
 }

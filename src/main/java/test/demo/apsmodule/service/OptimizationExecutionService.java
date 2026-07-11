@@ -40,9 +40,11 @@ public class OptimizationExecutionService {
         solverProperties.put("cutting.lns.enabled", "true");
         solverProperties.put("cutting.lns.enrichPatterns", Boolean.toString(request.isLnsEnrichPatterns()));
         if (request.isQualityMode()) {
-            // 质量模式：A层 parity{0,0.1} 扫描 + B层双 LNS 邻域变体，全候选经
-            // isBetterPlan（车数→组→odd→small）评优——结构上永不劣于快路径，耗时约×2
             solverProperties.put("cutting.quality", "true");
+            // Exact solve is one request-scoped profile for both the UI and APS callers.
+            solverProperties.put("cutting.spr.reverseTiePass", "true");
+            solverProperties.put("cutting.spr.reverseTieMaxIterations", "1");
+            solverProperties.put("cutting.spr.portfolioPass", "false");
         }
         return SolverRuntimeProperties.withOverrides(
                 solverProperties,

@@ -116,6 +116,60 @@ class CuttingSolverTest {
         assertFalse(reverse);
     }
 
+    @Test
+    void qualityModeAddsOneNestedWidthCandidateByDefault() {
+        String previousQuality = System.getProperty("cutting.quality");
+        String previousSteps = System.getProperty("cutting.nestedWidthCandidateSteps");
+        try {
+            SolverParameters params = SolverParameters.createDefault();
+            params.setMinRollWidth(4300);
+            params.setMaxRollWidth(4410);
+            params.setStepSize(10);
+
+            System.clearProperty("cutting.quality");
+            System.clearProperty("cutting.nestedWidthCandidateSteps");
+            assertEquals(-1, CuttingSolver.nestedWidthCandidateCap(params));
+
+            System.setProperty("cutting.quality", "true");
+            assertEquals(4400, CuttingSolver.nestedWidthCandidateCap(params));
+
+            params.setMaxRollWidth(4400);
+            assertEquals(-1, CuttingSolver.nestedWidthCandidateCap(params));
+
+            params.setMaxRollWidth(4410);
+            System.setProperty("cutting.nestedWidthCandidateSteps", "0");
+            assertEquals(-1, CuttingSolver.nestedWidthCandidateCap(params));
+        } finally {
+            restore("cutting.quality", previousQuality);
+            restore("cutting.nestedWidthCandidateSteps", previousSteps);
+        }
+    }
+
+    @Test
+    void isBetterPlanRejectsOverproductionBeforeSequenceGroupGain() throws Exception {
+        CuttingSolver solver = new CuttingSolver(SolverParameters.createDefault());
+        Object exact = groupSolvePlan("exact", solverResult(2, 300, 0, 10), 11, 0, 0);
+        Object overproduced = groupSolvePlan(
+                "over", solverResult(1, 200, 1, 10), 10, 0, 0);
+
+        Method method = betterPlanMethod();
+        assertTrue((boolean) method.invoke(solver, exact, overproduced));
+        assertFalse((boolean) method.invoke(solver, overproduced, exact));
+    }
+
+    @Test
+    void isBetterPlanPrefersZeroSingleCarGroupsBeforeSequenceGroupGain() throws Exception {
+        CuttingSolver solver = new CuttingSolver(SolverParameters.createDefault());
+        Object zeroSingle = groupSolvePlan(
+                "zero-single", solverResult(2, 300, 0, 10), 11, 0, 0);
+        Object singleCar = groupSolvePlan(
+                "single", solverResult(2, 300, 0, 10), 10, 1, 1);
+
+        Method method = betterPlanMethod();
+        assertTrue((boolean) method.invoke(solver, zeroSingle, singleCar));
+        assertFalse((boolean) method.invoke(solver, singleCar, zeroSingle));
+    }
+
     private static Method betterPlanMethod() throws Exception {
         Class<?> planClass = Class.forName("test.demo.apsmodule.generator.NewSolver.CuttingSolver$GroupSolvePlan");
         Method method = CuttingSolver.class.getDeclaredMethod("isBetterPlan", planClass, planClass);
@@ -124,11 +178,23 @@ class CuttingSolverTest {
     }
 
     private static Object groupSolvePlan(String name, SolverResult result, int groups, int order) throws Exception {
+        return groupSolvePlan(name, result, groups, 0, 0, order);
+    }
+
+    private static Object groupSolvePlan(String name, SolverResult result, int groups,
+            int oddGroups, int oneCarGroups) throws Exception {
+        return groupSolvePlan(name, result, groups, oddGroups, oneCarGroups, 0);
+    }
+
+    private static Object groupSolvePlan(String name, SolverResult result, int groups,
+            int oddGroups, int oneCarGroups, int order) throws Exception {
         Class<?> planClass = Class.forName("test.demo.apsmodule.generator.NewSolver.CuttingSolver$GroupSolvePlan");
         Constructor<?> constructor = planClass.getDeclaredConstructor(
-                String.class, SolverResult.class, List.class, int.class, int.class, int.class, String.class, int.class);
+                String.class, SolverResult.class, List.class, int.class, int.class,
+                int.class, int.class, String.class, int.class);
         constructor.setAccessible(true);
-        return constructor.newInstance(name, result, List.of(), groups, 0, 0, name, order);
+        return constructor.newInstance(
+                name, result, List.of(), groups, oddGroups, oneCarGroups, 0, name, order);
     }
 
     private static SolverResult solverResult(int patternCount, int totalWaste, int totalOver, int totalRolls) {

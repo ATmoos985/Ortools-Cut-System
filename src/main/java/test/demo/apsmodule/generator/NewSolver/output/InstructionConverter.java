@@ -160,6 +160,7 @@ public class InstructionConverter {
                     new LocalNeighborhoodSequenceOptimizer(params, this::arrangeForSequenceGroups);
             LocalNeighborhoodSequenceOptimizer.LnsResult lnsResult =
                     runLnsVariants(optimizer, selectedInstructions, groupItems);
+            SolverRunColumnArchive.recordInstructions(lnsResult.instructions());
             if (lnsResult.improved()) {
                 selectedInstructions = lnsResult.instructions();
                 selectedName = selectedName + "+lns";
@@ -233,6 +234,7 @@ public class InstructionConverter {
 
         log.info("Sequence-group selection: winner={} groups={} candidates={}",
                 selectedName, selectedGroups, summarizeCandidates(candidates));
+        SolverRunColumnArchive.recordInstructions(selectedInstructions);
         return new ConversionResult(
                 selectedInstructions,
                 selectedName,
@@ -271,18 +273,17 @@ public class InstructionConverter {
         LocalNeighborhoodSequenceOptimizer.LnsResult resultQuality =
                 LocalNeighborhoodSequenceOptimizer.withPropertyOverrides(qualityVariant,
                         () -> optimizer.improve(instructions, groupItems));
+        SolverRunColumnArchive.recordInstructions(resultDefault.instructions());
+        SolverRunColumnArchive.recordInstructions(resultQuality.instructions());
         SequenceGroupPostProcessor.GroupStats statsDefault =
                 SequenceGroupPostProcessor.computeGroupStats(resultDefault.instructions());
         SequenceGroupPostProcessor.GroupStats statsQuality =
                 SequenceGroupPostProcessor.computeGroupStats(resultQuality.instructions());
-        boolean qualityWins = statsQuality.groups() < statsDefault.groups()
-                || (statsQuality.groups() == statsDefault.groups()
-                        && (statsQuality.oddCarGroups() < statsDefault.oddCarGroups()
-                                || (statsQuality.oddCarGroups() == statsDefault.oddCarGroups()
-                                        && statsQuality.smallCarGroups() < statsDefault.smallCarGroups())));
-        log.info("LNS variants: default={}/{}/{} quality={}/{}/{} -> winner={}",
-                statsDefault.groups(), statsDefault.oddCarGroups(), statsDefault.smallCarGroups(),
-                statsQuality.groups(), statsQuality.oddCarGroups(), statsQuality.smallCarGroups(),
+        boolean qualityWins = compareGroupStats(statsQuality, statsDefault) < 0;
+        log.info("LNS variants: default={}/{}/{}/{} quality={}/{}/{}/{} -> winner={}",
+                statsDefault.groups(), statsDefault.oddCarGroups(), statsDefault.oneCarGroups(),
+                statsDefault.smallCarGroups(), statsQuality.groups(), statsQuality.oddCarGroups(),
+                statsQuality.oneCarGroups(), statsQuality.smallCarGroups(),
                 qualityWins ? "quality" : "default");
         return qualityWins ? resultQuality : resultDefault;
     }
@@ -308,6 +309,7 @@ public class InstructionConverter {
         candidate = optimizeInstructionFamilies(candidate);
         compactInstructionRollOrder(candidate);
         reorderInstructionsForSequenceGroups(candidate);
+        SolverRunColumnArchive.recordInstructions(candidate);
 
         SequenceGroupPostProcessor.GroupStats after = SequenceGroupPostProcessor.computeGroupStats(candidate);
         int afterCars = candidate.stream().mapToInt(CuttingInstruction::getUsageCount).sum();
@@ -316,14 +318,12 @@ public class InstructionConverter {
         boolean conserved = afterCars == beforeCars
                 && afterWaste == beforeWaste
                 && beforeDemand.equals(countAssignmentsByDemandKey(candidate));
-        boolean lexBetter = after.groups() < before.groups()
-                || (after.groups() == before.groups()
-                        && (after.oddCarGroups() < before.oddCarGroups()
-                                || (after.oddCarGroups() == before.oddCarGroups()
-                                        && after.smallCarGroups() < before.smallCarGroups())));
-        log.info("Odd-repair pass: groups {}->{}, odd {}->{} (floor={}), small {}->{}, conserved={}, accepted={}",
+        boolean lexBetter = compareGroupStats(after, before) < 0;
+        log.info("Odd-repair pass: groups {}->{}, odd {}->{} (floor={}), one {}->{}, "
+                        + "small {}->{}, conserved={}, accepted={}",
                 before.groups(), after.groups(),
                 before.oddCarGroups(), after.oddCarGroups(), oddFloor,
+                before.oneCarGroups(), after.oneCarGroups(),
                 before.smallCarGroups(), after.smallCarGroups(),
                 conserved, conserved && lexBetter);
         return conserved && lexBetter ? candidate : null;
@@ -349,6 +349,10 @@ public class InstructionConverter {
             log.info("Set-partition refine pass: not applicable (structure) — kept original");
             return null;
         }
+        List<CuttingInstruction> repaired = oddRepairPass(candidate);
+        if (repaired != null) {
+            candidate = repaired;
+        }
         compactInstructionRollOrder(candidate);
         reorderInstructionsForSequenceGroups(candidate);
 
@@ -359,14 +363,12 @@ public class InstructionConverter {
         boolean conserved = afterCars == beforeCars
                 && afterWaste == beforeWaste
                 && beforeDemand.equals(countAssignmentsByDemandKey(candidate));
-        boolean lexBetter = after.groups() < before.groups()
-                || (after.groups() == before.groups()
-                        && (after.oddCarGroups() < before.oddCarGroups()
-                                || (after.oddCarGroups() == before.oddCarGroups()
-                                        && after.smallCarGroups() < before.smallCarGroups())));
-        log.info("Set-partition refine pass: groups {}->{}, odd {}->{}, small {}->{}, conserved={}, accepted={}",
+        boolean lexBetter = compareGroupStats(after, before) < 0;
+        log.info("Set-partition refine pass: groups {}->{}, odd {}->{}, one {}->{}, "
+                        + "small {}->{}, conserved={}, accepted={}",
                 before.groups(), after.groups(),
                 before.oddCarGroups(), after.oddCarGroups(),
+                before.oneCarGroups(), after.oneCarGroups(),
                 before.smallCarGroups(), after.smallCarGroups(),
                 conserved, conserved && lexBetter);
         return conserved && lexBetter ? candidate : null;
@@ -593,11 +595,15 @@ public class InstructionConverter {
             return;
         }
 
+        SolverRunColumnArchive.recordInstructions(candidate);
         SequenceGroupPostProcessor.GroupStats stats = SequenceGroupPostProcessor.computeGroupStats(candidate);
         candidates.add(new ScoredInstructionPlan(
-                name, candidate, stats.groups(), stats.oddCarGroups(), stats.smallCarGroups()));
-        log.info("Sequence-group candidate: {} groups={} oddCars={} smallCars={} instructions={}",
-                name, stats.groups(), stats.oddCarGroups(), stats.smallCarGroups(), candidate.size());
+                name, candidate, stats.groups(), stats.oddCarGroups(),
+                stats.oneCarGroups(), stats.smallCarGroups()));
+        log.info("Sequence-group candidate: {} groups={} oddCars={} oneCars={} "
+                        + "smallCars={} instructions={}",
+                name, stats.groups(), stats.oddCarGroups(), stats.oneCarGroups(),
+                stats.smallCarGroups(), candidate.size());
     }
 
     private Map<String, Integer> countAssignmentsByDemandKey(List<CuttingInstruction> instructions) {
@@ -1569,12 +1575,26 @@ public class InstructionConverter {
     }
 
     private ScoredInstructionPlan selectBestCandidate(List<ScoredInstructionPlan> candidates) {
-        // Priority: fewer groups > fewer odd-car groups > fewer small-car groups > preference.
         candidates.sort(Comparator.comparingInt(ScoredInstructionPlan::sequenceGroupCount)
                 .thenComparingInt(ScoredInstructionPlan::oddCarGroups)
+                .thenComparingInt(ScoredInstructionPlan::oneCarGroups)
                 .thenComparingInt(ScoredInstructionPlan::smallCarGroups)
                 .thenComparingInt(candidate -> candidatePreference(candidate.name())));
         return candidates.get(0);
+    }
+
+    private static int compareGroupStats(SequenceGroupPostProcessor.GroupStats first,
+            SequenceGroupPostProcessor.GroupStats second) {
+        int groups = Integer.compare(first.groups(), second.groups());
+        if (groups != 0) {
+            return groups;
+        }
+        int odd = Integer.compare(first.oddCarGroups(), second.oddCarGroups());
+        if (odd != 0) {
+            return odd;
+        }
+        int one = Integer.compare(first.oneCarGroups(), second.oneCarGroups());
+        return one != 0 ? one : Integer.compare(first.smallCarGroups(), second.smallCarGroups());
     }
 
     private String summarizeCandidates(List<ScoredInstructionPlan> candidates) {
@@ -1617,6 +1637,7 @@ public class InstructionConverter {
             List<CuttingInstruction> instructions,
             int sequenceGroupCount,
             int oddCarGroups,
+            int oneCarGroups,
             int smallCarGroups) {
     }
 

@@ -32,7 +32,8 @@ public class SequenceGroupPostProcessor {
     public static final int SMALL_CAR_MAX_CARS = 5;
 
     /** Aggregate sequence-group shape metrics for a full instruction list. */
-    public record GroupStats(int groups, int oddCarGroups, int smallCarGroups) {
+    public record GroupStats(int groups, int oddCarGroups, int oneCarGroups,
+            int smallCarGroups) {
     }
 
     public static void optimize(List<CuttingInstruction> instructions) {
@@ -177,11 +178,12 @@ public class SequenceGroupPostProcessor {
      */
     public static GroupStats computeGroupStats(List<CuttingInstruction> instructions) {
         if (instructions == null || instructions.isEmpty()) {
-            return new GroupStats(0, 0, 0);
+            return new GroupStats(0, 0, 0, 0);
         }
 
         int groups = 0;
         int oddCarGroups = 0;
+        int oneCarGroups = 0;
         int smallCarGroups = 0;
         List<StationAssignment> previousRoll = null;
         int currentRun = 0;
@@ -200,6 +202,7 @@ public class SequenceGroupPostProcessor {
                     if (currentRun > 0) {
                         groups++;
                         if (currentRun % 2 != 0) oddCarGroups++;
+                        if (currentRun == 1) oneCarGroups++;
                         if (currentRun <= SMALL_CAR_MAX_CARS) smallCarGroups++;
                     }
                     currentRun = 1;
@@ -213,10 +216,11 @@ public class SequenceGroupPostProcessor {
         if (currentRun > 0) {
             groups++;
             if (currentRun % 2 != 0) oddCarGroups++;
+            if (currentRun == 1) oneCarGroups++;
             if (currentRun <= SMALL_CAR_MAX_CARS) smallCarGroups++;
         }
 
-        return new GroupStats(groups, oddCarGroups, smallCarGroups);
+        return new GroupStats(groups, oddCarGroups, oneCarGroups, smallCarGroups);
     }
 
     public static int countGroups(CuttingInstruction instruction) {

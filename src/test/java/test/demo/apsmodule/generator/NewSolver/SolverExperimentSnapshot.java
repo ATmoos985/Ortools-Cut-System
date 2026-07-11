@@ -10,6 +10,7 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -21,6 +22,7 @@ import java.util.TreeMap;
 final class SolverExperimentSnapshot {
 
     private static final String FORMAT = "solver-experiment-snapshot-v1";
+    private static final String COLUMN_ARCHIVE_FORMAT = "solver-column-archive-v1";
 
     private SolverExperimentSnapshot() {
     }
@@ -29,6 +31,9 @@ final class SolverExperimentSnapshot {
     }
 
     record Snapshot(String dataset, Metrics metrics, List<ColumnUse> uses) {
+    }
+
+    record ColumnArchive(String dataset, List<Column> columns) {
     }
 
     static List<ColumnUse> fromInstructions(List<CuttingInstruction> instructions) {
@@ -157,6 +162,76 @@ final class SolverExperimentSnapshot {
             throw new IOException("Snapshot metadata does not match its columns: " + path);
         }
         return new Snapshot(metadata.get("dataset"), metrics, List.copyOf(uses));
+    }
+
+    static ColumnArchive mergeColumnArchive(Path path, String dataset,
+            Iterable<Column> discovered) throws IOException {
+        Map<String, Column> merged = new TreeMap<>();
+        if (Files.exists(path)) {
+            for (Column column : readColumnArchive(path).columns()) {
+                merged.putIfAbsent(column.signature(), column);
+            }
+        }
+        for (Column column : discovered) {
+            if (column != null) {
+                merged.putIfAbsent(column.signature(), column);
+            }
+        }
+        writeColumnArchive(path, dataset, merged.values());
+        return new ColumnArchive(dataset, List.copyOf(merged.values()));
+    }
+
+    static void writeColumnArchive(Path path, String dataset, Iterable<Column> columns)
+            throws IOException {
+        Map<String, Column> unique = new TreeMap<>();
+        for (Column column : columns) {
+            if (column != null) {
+                unique.putIfAbsent(column.signature(), column);
+            }
+        }
+        List<String> lines = new ArrayList<>();
+        lines.add("# format=" + COLUMN_ARCHIVE_FORMAT);
+        lines.add("# dataset=" + dataset);
+        lines.add("# columns=" + unique.size());
+        lines.addAll(unique.keySet());
+        writeAtomically(path, lines);
+    }
+
+    static ColumnArchive readColumnArchive(Path path) throws IOException {
+        Map<String, String> metadata = new LinkedHashMap<>();
+        Map<String, Column> columns = new TreeMap<>();
+        for (String line : Files.readAllLines(path, StandardCharsets.UTF_8)) {
+            if (line.isBlank()) {
+                continue;
+            }
+            if (line.startsWith("# ")) {
+                int equals = line.indexOf('=');
+                metadata.put(line.substring(2, equals), line.substring(equals + 1));
+            } else {
+                Column column = columnFromSignature(line);
+                columns.putIfAbsent(column.signature(), column);
+            }
+        }
+        if (!COLUMN_ARCHIVE_FORMAT.equals(metadata.get("format"))) {
+            throw new IOException("Unsupported column archive format: " + metadata.get("format"));
+        }
+        if (integer(metadata, "columns") != columns.size()) {
+            throw new IOException("Column archive metadata does not match its columns: " + path);
+        }
+        return new ColumnArchive(metadata.get("dataset"), List.copyOf(columns.values()));
+    }
+
+    private static void writeAtomically(Path path, List<String> lines) throws IOException {
+        Path absolute = path.toAbsolutePath().normalize();
+        Files.createDirectories(absolute.getParent());
+        Path temporary = absolute.resolveSibling(absolute.getFileName() + ".tmp");
+        Files.write(temporary, lines, StandardCharsets.UTF_8);
+        try {
+            Files.move(temporary, absolute, StandardCopyOption.ATOMIC_MOVE,
+                    StandardCopyOption.REPLACE_EXISTING);
+        } catch (IOException atomicMoveUnsupported) {
+            Files.move(temporary, absolute, StandardCopyOption.REPLACE_EXISTING);
+        }
     }
 
     private static int inferTotalWidth(List<ColumnUse> uses, int waste) throws IOException {

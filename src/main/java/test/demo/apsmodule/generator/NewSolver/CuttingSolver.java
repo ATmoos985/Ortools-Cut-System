@@ -177,6 +177,37 @@ public class CuttingSolver implements CuttingSolverAlgorithm {
                         }
                     }
                 }
+                int nestedWidthCap = nestedWidthCandidateCap(params);
+                if (nestedWidthCap >= params.getMinRollWidth()) {
+                    List<PatternCandidate> nestedPatterns = patterns.stream()
+                            .filter(pattern -> pattern.getRollWidth() <= nestedWidthCap)
+                            .toList();
+                    if (!nestedPatterns.isEmpty()) {
+                        double[] parityPenalties = aLayerParityPenalties();
+                        double nestedParity = parityPenalties[parityPenalties.length - 1];
+                        MultiStageMIPSolver.SolveCandidate nested =
+                                SolverRuntimeProperties.withOverrides(
+                                        Map.of("cutting.aLayerParityPenalty",
+                                                Double.toString(nestedParity)),
+                                        () -> mipSolver.solvePrimaryOnly(
+                                                new ArrayList<>(nestedPatterns), demandOrders.get(0),
+                                                allowOverSet, A_LAYER_SEEDS[0], 0.0,
+                                                alignmentContext));
+                        if (nested != null) {
+                            String sig = solutionSignature(nested.result().getSolution());
+                            if (seenCandidateSigs.add(sig)) {
+                                solveCandidates.add(new MultiStageMIPSolver.SolveCandidate(
+                                        "nested-w" + nestedWidthCap + "-p"
+                                                + formatLambda(nestedParity) + "-" + nested.name(),
+                                        nested.result()));
+                            }
+                        }
+                        log.info("Nested-width candidate: cap={} pool={}/{} added={}",
+                                nestedWidthCap, nestedPatterns.size(), patterns.size(),
+                                solveCandidates.stream().anyMatch(candidate ->
+                                        candidate.name().startsWith("nested-w" + nestedWidthCap)));
+                    }
+                }
                 if (solveCandidates.isEmpty()) {
                     log.warn("Solve failed for group: {}", groupKey);
                     report.writeGroupFailure(
@@ -213,13 +244,15 @@ public class CuttingSolver implements CuttingSolverAlgorithm {
                                 row.selected()));
                     }
 
-                    log.info("Pattern candidate {}: patterns={}, waste={}mm, over={}, groups={}, oddCars={}, smallCars={}, assignmentWinner={}",
+                    log.info("Pattern candidate {}: patterns={}, waste={}mm, over={}, groups={}, "
+                                    + "oddCars={}, oneCars={}, smallCars={}, assignmentWinner={}",
                             solveCandidate.name(),
                             result.getPatternCount(),
                             result.getTotalWaste(),
                             result.getTotalOverProduction(),
                             sequenceGroups,
                             stats.oddCarGroups(),
+                            stats.oneCarGroups(),
                             stats.smallCarGroups(),
                             conversion.selectedName());
 
@@ -235,6 +268,7 @@ public class CuttingSolver implements CuttingSolverAlgorithm {
                             instructions,
                             sequenceGroups,
                             stats.oddCarGroups(),
+                            stats.oneCarGroups(),
                             stats.smallCarGroups(),
                             conversion.selectedName(),
                             candidateIndex);
@@ -351,6 +385,22 @@ public class CuttingSolver implements CuttingSolverAlgorithm {
         return SolverRuntimeProperties.getBoolean("cutting.quality", false);
     }
 
+    static int nestedWidthCandidateCap(SolverParameters params) {
+        String configuredSteps = SolverRuntimeProperties.get("cutting.nestedWidthCandidateSteps");
+        int stepSize = Math.max(1, params.getStepSize());
+        int defaultSteps = qualityMode()
+                && Math.floorMod(params.getMaxRollWidth(), 100) == stepSize
+                ? 1
+                : 0;
+        int steps = configuredSteps == null || configuredSteps.isBlank()
+                ? defaultSteps
+                : Math.max(0, SolverRuntimeProperties.getInt(
+                        "cutting.nestedWidthCandidateSteps", defaultSteps));
+        return steps == 0
+                ? -1
+                : params.getMaxRollWidth() - steps * stepSize;
+    }
+
     /**
      * A-layer parity 惩罚扫描列表。默认 {0}（不生效）；质量模式默认 {0, 0.1}；
      * -Dcutting.aLayerParityPenalties=0,0.1,0.2 显式覆盖。
@@ -464,9 +514,17 @@ public class CuttingSolver implements CuttingSolverAlgorithm {
     }
 
     private boolean isBetterPlan(GroupSolvePlan candidate, GroupSolvePlan currentBest) {
+        if (candidate.result().getTotalOverProduction()
+                != currentBest.result().getTotalOverProduction()) {
+            return candidate.result().getTotalOverProduction()
+                    < currentBest.result().getTotalOverProduction();
+        }
         // Priority 1: rolls — fewer rolls = higher yield (less material consumed)
         if (candidate.result().getTotalRolls() != currentBest.result().getTotalRolls()) {
             return candidate.result().getTotalRolls() < currentBest.result().getTotalRolls();
+        }
+        if (candidate.oneCarGroups() != currentBest.oneCarGroups()) {
+            return candidate.oneCarGroups() < currentBest.oneCarGroups();
         }
         // Priority 2: sequence groups — fewer is better for production efficiency
         if (candidate.sequenceGroupCount() != currentBest.sequenceGroupCount()) {
@@ -488,10 +546,6 @@ public class CuttingSolver implements CuttingSolverAlgorithm {
         if (candidate.result().getTotalWaste() != currentBest.result().getTotalWaste()) {
             return candidate.result().getTotalWaste() < currentBest.result().getTotalWaste();
         }
-        // Priority 5: over-production, then candidate order
-        if (candidate.result().getTotalOverProduction() != currentBest.result().getTotalOverProduction()) {
-            return candidate.result().getTotalOverProduction() < currentBest.result().getTotalOverProduction();
-        }
         return candidate.order() < currentBest.order();
     }
 
@@ -501,6 +555,7 @@ public class CuttingSolver implements CuttingSolverAlgorithm {
             List<CuttingInstruction> instructions,
             int sequenceGroupCount,
             int oddCarGroups,
+            int oneCarGroups,
             int smallCarGroups,
             String sequenceCandidateName,
             int order) {

@@ -4,12 +4,14 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.junit.jupiter.MockitoExtension;
 import test.demo.apsmodule.generator.NewSolver.CuttingSolver;
+import test.demo.apsmodule.generator.NewSolver.config.SolverRuntimeProperties;
 import test.demo.apsmodule.generator.NewSolver.output.LocalNeighborhoodSequenceOptimizer;
 import test.demo.apsmodule.generator.NewSolver.output.SetPartitionRefiner;
 import test.demo.rest.dto.OptimizationRequest;
 
 import java.util.List;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -119,6 +121,12 @@ class OptimizationExecutionServiceTest {
             when(optimizationService.optimizeUnified(anyList(), same(config))).thenAnswer(invocation -> {
                 assertTrue(LocalNeighborhoodSequenceOptimizer.isEnabled());
                 assertTrue(CuttingSolver.qualityMode());
+                assertTrue(SolverRuntimeProperties.getBoolean(
+                        "cutting.spr.reverseTiePass", false));
+                assertEquals(1, SolverRuntimeProperties.getInt(
+                        "cutting.spr.reverseTieMaxIterations", -1));
+                assertFalse(SolverRuntimeProperties.getBoolean(
+                        "cutting.spr.portfolioPass", true));
                 return expected;
             });
 

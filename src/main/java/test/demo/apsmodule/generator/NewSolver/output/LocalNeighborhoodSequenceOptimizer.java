@@ -248,7 +248,8 @@ public class LocalNeighborhoodSequenceOptimizer {
                 if (candidateCars == originalCars
                         && candidateWaste == originalWaste
                         && originalDemand.equals(candidateDemand)) {
-                    boolean promisingRaw = afterStats.groups() <= beforeGroups
+                    boolean promisingRaw = afterStats.oneCarGroups() < beforeStats.oneCarGroups()
+                            || afterStats.groups() <= beforeGroups
                             || afterFragmentation < beforeFragmentation;
                     long postTimeBudgetMs = longProperty(
                             "cutting.lns.postTimeBudgetMs", DEFAULT_POST_TIME_BUDGET_MS);
@@ -856,6 +857,9 @@ public class LocalNeighborhoodSequenceOptimizer {
         if (afterStats.oddCarGroups() != beforeStats.oddCarGroups()) {
             return afterStats.oddCarGroups() < beforeStats.oddCarGroups();
         }
+        if (afterStats.oneCarGroups() != beforeStats.oneCarGroups()) {
+            return afterStats.oneCarGroups() < beforeStats.oneCarGroups();
+        }
         if (afterStats.smallCarGroups() != beforeStats.smallCarGroups()) {
             return afterStats.smallCarGroups() < beforeStats.smallCarGroups();
         }
@@ -889,6 +893,9 @@ public class LocalNeighborhoodSequenceOptimizer {
             SequenceGroupPostProcessor.GroupStats current) {
         if (candidate.oddCarGroups() != current.oddCarGroups()) {
             return candidate.oddCarGroups() < current.oddCarGroups();
+        }
+        if (candidate.oneCarGroups() != current.oneCarGroups()) {
+            return candidate.oneCarGroups() < current.oneCarGroups();
         }
         if (candidate.smallCarGroups() != current.smallCarGroups()) {
             return candidate.smallCarGroups() < current.smallCarGroups();

@@ -33,6 +33,23 @@ class SolverExperimentSnapshotTest {
                 snapshot.uses().stream().map(use -> use.column().signature()).toList());
     }
 
+    @Test
+    void mergesDurableColumnArchiveWithoutDuplicates() throws Exception {
+        Path path = tempDir.resolve("columns.csv");
+
+        SolverExperimentSnapshot.mergeColumnArchive(path, "fixture",
+                List.of(column("B"), column("A")));
+        SolverExperimentSnapshot.ColumnArchive merged =
+                SolverExperimentSnapshot.mergeColumnArchive(path, "fixture",
+                        List.of(column("A"), column("C")));
+        SolverExperimentSnapshot.ColumnArchive reloaded =
+                SolverExperimentSnapshot.readColumnArchive(path);
+
+        assertEquals(List.of("1000=A", "1000=B", "1000=C"),
+                merged.columns().stream().map(Column::signature).toList());
+        assertEquals(merged, reloaded);
+    }
+
     private static Column column(String message) {
         return Column.of(Map.of(1000, 1), Map.of(1000, List.of(message)));
     }

@@ -5,7 +5,10 @@ import com.google.ortools.linearsolver.MPObjective;
 import com.google.ortools.linearsolver.MPSolver;
 import com.google.ortools.linearsolver.MPVariable;
 import org.junit.jupiter.api.Test;
+import test.demo.apsmodule.generator.NewSolver.mip.UnifiedSetPartitionSolver.Column;
+import test.demo.apsmodule.generator.NewSolver.mip.UnifiedSetPartitionSolver.ColumnUse;
 import test.demo.apsmodule.generator.NewSolver.output.SequenceGroupPostProcessor;
+import test.demo.apsmodule.generator.NewSolver.output.SolverRunColumnArchive;
 import test.demo.apsmodule.service.CuttingInstruction;
 import test.demo.apsmodule.service.SolverConfig;
 import test.demo.apsmodule.service.SolverOrderItem;
@@ -15,8 +18,10 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.stream.Collectors;
 
 /**
  * Real production case "四线T9EST188" (83 orders, ~1825 rolls). Human planners achieve
@@ -28,26 +33,91 @@ class B5SixianTest {
 
     @Test
     void runSixian() throws Exception {
-        List<SolverOrderItem> items = loadItems();
-        SolverConfig config = buildConfig();
+        Path lockPath = Path.of(System.getProperty(
+                "cutting.test.experimentLock", "solver-experiments/solver.lock"));
+        try (SolverExperimentGuard ignored = SolverExperimentGuard.acquire(lockPath)) {
+            List<SolverOrderItem> items = loadItems();
+            SolverConfig config = buildConfig();
 
-        long t0 = System.currentTimeMillis();
-        CuttingSolver solver = new CuttingSolver();
-        List<CuttingInstruction> instructions = solver.solve(items, config);
-        long elapsed = System.currentTimeMillis() - t0;
+            long t0 = System.currentTimeMillis();
+            CuttingSolver solver = new CuttingSolver();
+            SolverRunColumnArchive.Captured<List<CuttingInstruction>> captured =
+                    SolverRunColumnArchive.capture(() -> solver.solve(items, config));
+            List<CuttingInstruction> instructions = captured.value();
+            long elapsed = System.currentTimeMillis() - t0;
 
-        SequenceGroupPostProcessor.GroupStats stats =
-                SequenceGroupPostProcessor.computeGroupStats(instructions);
+            SequenceGroupPostProcessor.GroupStats stats =
+                    SequenceGroupPostProcessor.computeGroupStats(instructions);
+            List<ColumnUse> uses = SolverExperimentSnapshot.fromInstructions(instructions);
+            SolverExperimentSnapshot.Metrics metrics =
+                    SolverExperimentSnapshot.metrics(uses, config.getTotalWidth());
+            org.junit.jupiter.api.Assertions.assertEquals(
+                    SolverExperimentSnapshot.demandOf(items),
+                    SolverExperimentSnapshot.producedBy(uses));
+            org.junit.jupiter.api.Assertions.assertEquals(stats.groups(), metrics.groups());
+            org.junit.jupiter.api.Assertions.assertEquals(stats.oddCarGroups(), metrics.oddGroups());
+            org.junit.jupiter.api.Assertions.assertEquals(stats.smallCarGroups(), metrics.smallGroups());
+            if (CuttingSolver.qualityMode()) {
+                org.junit.jupiter.api.Assertions.assertTrue(stats.groups() <= 42,
+                        "quality groups=" + stats.groups());
+                org.junit.jupiter.api.Assertions.assertTrue(stats.oddCarGroups() <= 2,
+                        "quality odd groups=" + stats.oddCarGroups());
+                org.junit.jupiter.api.Assertions.assertEquals(0, stats.oneCarGroups(),
+                        "quality one-car groups");
+                org.junit.jupiter.api.Assertions.assertTrue(stats.smallCarGroups() <= 12,
+                        "quality small groups=" + stats.smallCarGroups());
+            }
 
-        System.out.println("\n##### SIXIAN RESULT #####");
-        System.out.println("items=" + items.size() + " instructions=" + instructions.size());
-        System.out.println("groups=" + stats.groups()
-                + " oddCarGroups=" + stats.oddCarGroups()
-                + " smallCarGroups=" + stats.smallCarGroups());
-        System.out.println("elapsedMs=" + elapsed + "   (human=47, system=55)");
-        System.out.println("#########################\n");
+            System.out.println("\n##### SIXIAN RESULT #####");
+            System.out.println("items=" + items.size() + " instructions=" + instructions.size());
+            System.out.println("groups=" + stats.groups()
+                    + " oddCarGroups=" + stats.oddCarGroups()
+                    + " oneCarGroups=" + stats.oneCarGroups()
+                    + " smallCarGroups=" + stats.smallCarGroups());
+            System.out.println("cars=" + metrics.cars() + " waste=" + metrics.waste());
+            System.out.println("discoveredColumns=" + captured.columns().size());
+            System.out.println("elapsedMs=" + elapsed + "   (quality target=42/2/12)");
+            System.out.println("#########################\n");
 
-        dumpPatterns(instructions);
+            persistSixianArtifacts(uses, captured.columns(), metrics, config.getTotalWidth());
+            dumpPatterns(instructions);
+        }
+    }
+
+    private void persistSixianArtifacts(List<ColumnUse> uses, List<Column> discoveredColumns,
+            SolverExperimentSnapshot.Metrics metrics, int totalWidth) throws IOException {
+        Path candidateDir = Path.of(System.getProperty(
+                "cutting.test.candidateOutputDir", "solver-experiments"));
+        String resultHash = Integer.toUnsignedString(uses.stream()
+                .map(use -> use.column().signature() + "#" + use.count())
+                .sorted()
+                .collect(Collectors.joining("|")).hashCode(), 16);
+        Path candidatePath = candidateDir.resolve(
+                "sixian-candidate-" + metrics.groups() + "-"
+                        + metrics.oddGroups() + "-" + metrics.smallGroups()
+                        + "-" + resultHash + ".csv");
+        SolverExperimentSnapshot.write(candidatePath, "sixian-candidate", uses, totalWidth);
+        List<Column> allColumns = new ArrayList<>(discoveredColumns);
+        allColumns.addAll(uses.stream().map(ColumnUse::column).toList());
+        Path archivePath = candidateDir.resolve("sixian-columns.csv");
+        SolverExperimentSnapshot.ColumnArchive archive =
+                SolverExperimentSnapshot.mergeColumnArchive(
+                        archivePath, "sixian", allColumns);
+        System.out.println("CANDIDATE SNAPSHOT WRITTEN: " + candidatePath.toAbsolutePath());
+        System.out.println("COLUMN ARCHIVE MERGED: " + archivePath.toAbsolutePath()
+                + " columns=" + archive.columns().size());
+
+        String output = System.getProperty("cutting.test.sixianSnapshotOutput", "").trim();
+        if (output.isEmpty()) {
+            return;
+        }
+        org.junit.jupiter.api.Assertions.assertTrue(metrics.groups()
+                <= Integer.getInteger("cutting.test.sixianSnapshotMaxGroups", 42));
+        org.junit.jupiter.api.Assertions.assertTrue(metrics.oddGroups()
+                <= Integer.getInteger("cutting.test.sixianSnapshotMaxOdd", 2));
+        org.junit.jupiter.api.Assertions.assertTrue(metrics.smallGroups()
+                <= Integer.getInteger("cutting.test.sixianSnapshotMaxSmall", 12));
+        SolverExperimentSnapshot.write(Path.of(output), "sixian", uses, totalWidth);
     }
 
     /**
