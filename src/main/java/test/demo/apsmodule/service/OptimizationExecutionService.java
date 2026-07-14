@@ -33,15 +33,16 @@ public class OptimizationExecutionService {
     }
 
     private CuttingOptimizationResult executeOptimization(OptimizationRequest request, SolverConfig config) {
-        if (!request.isLnsEnabled() && !request.isQualityMode()) {
+        boolean qualityProfile = request.isUseNewSolver() || request.isQualityMode();
+        if (!request.isLnsEnabled() && !qualityProfile) {
             return runOptimization(request, config);
         }
         Map<String, String> solverProperties = new HashMap<>();
         solverProperties.put("cutting.lns.enabled", "true");
         solverProperties.put("cutting.lns.enrichPatterns", Boolean.toString(request.isLnsEnrichPatterns()));
-        if (request.isQualityMode()) {
+        if (qualityProfile) {
             solverProperties.put("cutting.quality", "true");
-            // Exact solve is one request-scoped profile for both the UI and APS callers.
+            // NewSolver exposes one request-scoped quality profile to both UI and APS callers.
             solverProperties.put("cutting.spr.reverseTiePass", "true");
             solverProperties.put("cutting.spr.reverseTieMaxIterations", "1");
             solverProperties.put("cutting.spr.portfolioPass", "false");

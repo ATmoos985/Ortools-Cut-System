@@ -24,9 +24,11 @@ import static org.mockito.Mockito.when;
 class OptimizationExecutionServiceTest {
 
     @Test
-    void defaultsEnableLnsWithoutEnrichedPatternsOnlyDuringOptimization() {
+    void newSolverAlwaysUsesQualityProfileOnlyDuringOptimization() {
         String previous = System.getProperty("cutting.lns.enabled");
+        String previousQuality = System.getProperty("cutting.quality");
         System.clearProperty("cutting.lns.enabled");
+        System.clearProperty("cutting.quality");
         try {
             CuttingOptimizationService optimizationService = mock(CuttingOptimizationService.class);
             SolverConfigFactory solverConfigFactory = mock(SolverConfigFactory.class);
@@ -35,16 +37,21 @@ class OptimizationExecutionServiceTest {
 
             OptimizationRequest request = new OptimizationRequest();
             request.setUseNewSolver(true);
+            request.setLnsEnabled(false);
             request.setOrderItems(List.of());
             SolverConfig config = new SolverConfig();
             CuttingOptimizationResult expected = new CuttingOptimizationResult();
 
-            assertTrue(request.isLnsEnabled());
+            assertFalse(request.isLnsEnabled());
             assertFalse(request.isLnsEnrichPatterns());
+            assertFalse(request.isQualityMode());
 
             when(solverConfigFactory.fromOptimizationRequest(request)).thenReturn(config);
             when(optimizationService.optimizeUnified(anyList(), same(config))).thenAnswer(invocation -> {
                 assertTrue(LocalNeighborhoodSequenceOptimizer.isEnabled());
+                assertTrue(CuttingSolver.qualityMode());
+                assertTrue(SolverRuntimeProperties.getBoolean(
+                        "cutting.spr.reverseTiePass", false));
                 return expected;
             });
 
@@ -52,11 +59,17 @@ class OptimizationExecutionServiceTest {
 
             assertSame(expected, actual.result());
             assertFalse(LocalNeighborhoodSequenceOptimizer.isEnabled());
+            assertFalse(CuttingSolver.qualityMode());
         } finally {
             if (previous == null) {
                 System.clearProperty("cutting.lns.enabled");
             } else {
                 System.setProperty("cutting.lns.enabled", previous);
+            }
+            if (previousQuality == null) {
+                System.clearProperty("cutting.quality");
+            } else {
+                System.setProperty("cutting.quality", previousQuality);
             }
         }
     }

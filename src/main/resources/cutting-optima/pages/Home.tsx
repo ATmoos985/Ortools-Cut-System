@@ -171,7 +171,7 @@ export default function Home() {
         const isFlexible = mode === 'flexible';
         const isNewSolver = mode === 'newsolver';
         const effectiveMaxDistinctWidths =
-            isNewSolver && newSolverQualityMode
+            isNewSolver
                 ? Math.max(newSolverMaxDistinctWidths, 5)
                 : newSolverMaxDistinctWidths;
         const payload = {
@@ -199,9 +199,9 @@ export default function Home() {
             newSolverSeqGroupBeta: newSolverSeqGroupBeta,
             newSolverUseOptimizedAssignment: newSolverUseOptimizedAssignment,
             newSolverUnderPenalty: newSolverUnderPenalty,
-            lnsEnabled: isNewSolver && (newSolverQualityMode || algorithmParams.lnsEnabled),
+            lnsEnabled: isNewSolver,
             lnsEnrichPatterns: isNewSolver && algorithmParams.lnsEnabled && algorithmParams.lnsEnrichPatterns,
-            qualityMode: isNewSolver && newSolverQualityMode,
+            qualityMode: isNewSolver,
             orderItems: orderItems
         };
 
@@ -579,18 +579,11 @@ export default function Home() {
                                     </div>
                                     <div>
                                         <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1.5">求解档位</label>
-                                        <div className="grid grid-cols-2 gap-2 rounded-lg bg-slate-100 p-1">
-                                            <button
-                                                type="button"
-                                                onClick={() => setNewSolverQualityMode(false)}
-                                                className={`py-2 px-3 rounded-md text-sm font-medium transition-all ${!newSolverQualityMode ? 'bg-white text-emerald-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
-                                            >
-                                                快速解
-                                            </button>
+                                        <div className="grid grid-cols-1 gap-2 rounded-lg bg-slate-100 p-1">
                                             <button
                                                 type="button"
                                                 onClick={() => setNewSolverQualityMode(true)}
-                                                className={`py-2 px-3 rounded-md text-sm font-medium transition-all ${newSolverQualityMode ? 'bg-white text-amber-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
+                                                className="bg-white text-amber-700 shadow-sm py-2 px-3 rounded-md text-sm font-medium"
                                             >
                                                 精确解
                                             </button>
