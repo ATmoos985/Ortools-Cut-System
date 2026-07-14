@@ -21,11 +21,12 @@
 改动最小、求解最快，但列池已经参与过需求峰初解，且前置 small polish 实验没有改善，继续只在
 同一列池上优化的成功率偏低。
 
-### 方案 B：残差导向补列后做一次限时全局 small MIP
+### 方案 B：残差导向补列后做一次限时局部 small MIP
 
-从当前 small 块及共享需求的 donor 块提取残差上下文，限量生成 message-aware 互补列；将新列与
-需求峰列池、当前 LNS 可行列合并，以当前解为 warm start，在当前 groups/odd/one 上限下最小化
-small。本轮采用该方案。
+先冻结所有不相关块，只释放一个 small 目标块及最多 3 个关联 donor；在局部精确需求上限量生成
+message-aware 互补列，以被释放块为 warm start，在局部 groups/odd/one/small 上限下寻找可行改善。
+全局模型实测扩大到 504 列、84 个需求键和 449 车后，3 秒仍为 `NOT_SOLVED`；局部模型是本轮最终
+采用的方案。
 
 ### 方案 C：并行或串行运行基线 LNS 与需求峰 LNS 后择优
 
@@ -46,21 +47,23 @@ small。本轮采用该方案。
 处理流程：
 
 1. 从当前指令重建精确 `ColumnUse`，作为可行 warm start 和兜底列。
-2. 按现有 small 口径选取 `usageCount <= 5` 的块，按车数升序、列签名排序，最多取 3 个目标块。
-3. 每个目标块最多选择 2 个 donor；优先共享 `(width|message)` 需求键数量多的块，再按车数和签名
-   稳定排序。
-4. 汇总目标与 donor 的残差需求，从需求峰花型中筛选可覆盖这些宽度的形状，复用
+2. 对每个 `usageCount <= 5` 的目标块构造候选邻域：先选择同一物理花型且共享需求键最多的主 donor，
+   再围绕目标与主 donor 的差异键，从另一个物理花型家族中选择最多 2 个 donor。
+3. 按邻域释放车数、共享键数和签名稳定选择一个邻域；实际释放范围最多为“1 个目标块 + 3 个 donor”，
+   其余块全部固定且不进入 MIP。
+4. 汇总被释放块的局部精确需求，从需求峰花型中筛选可覆盖这些宽度的形状，复用
    `DemandPeakColumnPoolBuilder` 生成 message-aware 配置；新增列去重后最多保留 120 条。
-5. 合并“当前可行列 + 需求峰列池 + 残差列”，当前可行列永不因池上限被删除。
-6. 以当前解为 warm start，只运行一次 SCIP small 目标 MIP。
-7. 将结果重建为指令，重新计算实际指标并执行守恒、上限和严格改善验收。
+5. 局部池只合并“被释放的当前列 + 能被局部需求支持的需求峰列 + 残差列”；固定列不进入 MIP。
+6. 以被释放块为 warm start，只运行一次 SCIP 可行性 MIP，要求局部 small 至少减少 1，同时精确保持
+   局部需求、车数和废边并约束 groups/odd/one 不退化。
+7. 将局部结果与固定块重新合并并重建指令，再执行全局守恒、真实指标上限和严格改善验收。
 
-`UnifiedSetPartitionSolver.minimizeSmallAtCaps(...)` 增加带 `maxOne` 的重载，使模型同时约束：
+局部模型复用现有 `UnifiedSetPartitionSolver.checkMetricCaps(...)`，同时约束：
 
 - `groups <= current.groups`；
 - `odd <= current.oddCarGroups`；
 - `one <= current.oneCarGroups`；
-- 目标为最小化 small。
+- `small <= current.small - 1`。
 
 模型仍使用精确需求等式、精确车数和废边上限，不改变业务口径。
 
@@ -70,8 +73,7 @@ small。本轮采用该方案。
 
 - `cutting.demandPeak.smallPolish.enabled=true`；
 - `cutting.demandPeak.smallPolish.timeMs=3000`；
-- `cutting.demandPeak.smallPolish.maxTargets=3`；
-- `cutting.demandPeak.smallPolish.maxDonors=2`；
+- `cutting.demandPeak.smallPolish.maxDonors=3`；
 - `cutting.demandPeak.smallPolish.maxResidualColumns=120`。
 
 该开关只在总开关 `cutting.demandPeak.enabled=true` 且需求峰结果被接受时生效；因此当前正式默认链路
@@ -98,8 +100,6 @@ small。本轮采用该方案。
 
 - 新增 `DemandPeakSmallPolisher`；
 - `InstructionConverter` 的需求峰上下文保留和后置调用；
-- `UnifiedSetPartitionSolver` 的 `maxOne` small 精修重载；
-- `DemandPeakColumnPoolBuilder` 仅在确有必要时增加可复用的有界残差入口；
 - 直接相关的单元测试、sixian 基准和本设计的实测记录。
 
 不修改 PatternGenerator、ColumnGeneration、A 层目标、Phase2、LNS 内部搜索、SPR 内部算法、API、
@@ -112,8 +112,8 @@ small。本轮采用该方案。
 - 同 groups/odd/one 下 small 严格减少并被接受；
 - groups、odd、one、车数、废边或需求任一退化时拒绝；
 - 无 small、无残差列、预算为零和求解无改善时安全回退；
-- `maxOne` 重载确实阻止一车组回退；
-- 当前可行 warm start 始终保留在列池中。
+- 固定块不进入局部 MIP，局部结果与固定块合并后仍全局守恒；
+- 被释放的当前列始终保留在局部池中作为 warm start。
 
 真实数据验收：
 
@@ -121,3 +121,20 @@ small。本轮采用该方案。
 - 结果必须达到 `50/4/1/16` 或更好，且保持 `cars=462 / waste=102240`；
 - 三轮报告最小值、最大值和中位数，中位数必须 `<=49.19s`；
 - 若质量或速度任一门槛失败，需求峰总开关继续默认关闭，不以单轮最好结果宣布成功。
+
+## 8. 2026-07-14 局部架构实测
+
+定向回归实际执行 `25` 个测试，成功 `25`、失败 `0`、错误 `0`、跳过 `0`。
+
+sixian 三轮均得到相同结果签名和业务指标：
+
+| 轮次 | groups/odd/one/small | cars/waste | 局部模型 | small 精修耗时 | 端到端耗时 |
+|---|---:|---:|---:|---:|---:|
+| 1 | `50/4/1/16` | `462/102240` | `9 keys / 62 cars / 13 columns` | `40ms` | `36.849s` |
+| 2 | `50/4/1/16` | `462/102240` | `9 keys / 62 cars / 13 columns` | `38ms` | `36.218s` |
+| 3 | `50/4/1/16` | `462/102240` | `9 keys / 62 cars / 13 columns` | `53ms` | `43.233s` |
+
+端到端最小值 `36.218s`、最大值 `43.233s`、中位数 `36.849s`，比原基线中位数 `54.656s`
+下降约 `32.6%`。局部 SCIP 三轮均为 `OPTIMAL`，求解耗时仅 `1–3ms`。因此“需求峰构造 + 短 LNS +
+局部残差 small 精修”同时通过质量与速度门槛；迁移 APS 时应按完整阶段链迁移，不保留失败的全局 small
+MIP 方案。

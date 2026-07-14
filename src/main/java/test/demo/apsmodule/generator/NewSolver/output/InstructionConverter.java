@@ -154,15 +154,16 @@ public class InstructionConverter {
         List<SequenceCandidateRow> candidateRows = new ArrayList<>(
                 buildSequenceCandidateRows(candidates, selectedName));
         boolean demandPeakImproved = false;
+        DemandPeakFastStage.StageResult demandPeakResult = null;
 
         if (DemandPeakFastStage.isEnabled()) {
             try {
-                DemandPeakFastStage.StageResult demandPeak =
+                demandPeakResult =
                         new DemandPeakFastStage(params).improve(selectedInstructions, groupItems);
-                if (demandPeak.improved()) {
-                    selectedInstructions = demandPeak.instructions();
+                if (demandPeakResult.improved()) {
+                    selectedInstructions = demandPeakResult.instructions();
                     selectedName = selectedName + "+demand-peak";
-                    selectedGroups = demandPeak.afterStats().groups();
+                    selectedGroups = demandPeakResult.afterStats().groups();
                     demandPeakImproved = true;
                     candidateRows = new ArrayList<>(candidateRows.stream()
                             .map(row -> new SequenceCandidateRow(
@@ -236,6 +237,41 @@ public class InstructionConverter {
                 }
             } else {
                 log.info("LNS produced no accepted improvement: {}", lnsResult.reason());
+            }
+        }
+
+        if (demandPeakImproved
+                && !test.demo.apsmodule.generator.NewSolver.CuttingSolver.qualityMode()
+                && DemandPeakSmallPolisher.isEnabled()
+                && demandPeakResult != null
+                && demandPeakResult.initialSolution() != null
+                && demandPeakResult.initialSolution().pool() != null) {
+            try {
+                DemandPeakSmallPolisher.PolishResult polished =
+                        new DemandPeakSmallPolisher(params).polish(
+                                selectedInstructions,
+                                groupItems,
+                                demandPeakResult.initialSolution().pool().columns());
+                if (polished.improved()) {
+                    selectedInstructions = polished.instructions();
+                    selectedName = selectedName + "+small-polish";
+                    selectedGroups = polished.afterStats().groups();
+                    SolverRunColumnArchive.recordInstructions(selectedInstructions);
+                    candidateRows = new ArrayList<>(candidateRows.stream()
+                            .map(row -> new SequenceCandidateRow(
+                                    row.name(),
+                                    row.sequenceGroupCount(),
+                                    row.instructions(),
+                                    false))
+                            .toList());
+                    candidateRows.add(new SequenceCandidateRow(
+                            selectedName,
+                            selectedGroups,
+                            selectedInstructions.size(),
+                            true));
+                }
+            } catch (RuntimeException e) {
+                log.warn("Demand-peak small polish failed; LNS result remains active", e);
             }
         }
 
