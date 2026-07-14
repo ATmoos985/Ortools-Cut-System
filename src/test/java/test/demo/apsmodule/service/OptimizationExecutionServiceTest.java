@@ -24,7 +24,7 @@ import static org.mockito.Mockito.when;
 class OptimizationExecutionServiceTest {
 
     @Test
-    void newSolverAlwaysUsesQualityProfileOnlyDuringOptimization() {
+    void appliesFastProfileOnlyDuringOptimization() {
         String previous = System.getProperty("cutting.lns.enabled");
         String previousQuality = System.getProperty("cutting.quality");
         System.clearProperty("cutting.lns.enabled");
@@ -37,6 +37,7 @@ class OptimizationExecutionServiceTest {
 
             OptimizationRequest request = new OptimizationRequest();
             request.setUseNewSolver(true);
+            request.setSolverProfile(OptimizationRequest.SolverProfile.FAST);
             request.setLnsEnabled(false);
             request.setOrderItems(List.of());
             SolverConfig config = new SolverConfig();
@@ -49,9 +50,12 @@ class OptimizationExecutionServiceTest {
             when(solverConfigFactory.fromOptimizationRequest(request)).thenReturn(config);
             when(optimizationService.optimizeUnified(anyList(), same(config))).thenAnswer(invocation -> {
                 assertTrue(LocalNeighborhoodSequenceOptimizer.isEnabled());
-                assertTrue(CuttingSolver.qualityMode());
+                assertFalse(CuttingSolver.qualityMode());
+                assertTrue(SolverRuntimeProperties.getBoolean("cutting.demandPeak.enabled", false));
                 assertTrue(SolverRuntimeProperties.getBoolean(
-                        "cutting.spr.reverseTiePass", false));
+                        "cutting.demandPeak.smallPolish.enabled", false));
+                assertFalse(SolverRuntimeProperties.getBoolean("cutting.spr.enabled", true));
+                assertFalse(SolverRuntimeProperties.getBoolean("cutting.lns.enrichPatterns", true));
                 return expected;
             });
 
@@ -75,9 +79,9 @@ class OptimizationExecutionServiceTest {
     }
 
     @Test
-    void appliesLnsRequestOverrideOnlyDuringOptimization() {
-        String previous = System.getProperty("cutting.lns.enabled");
-        System.clearProperty("cutting.lns.enabled");
+    void legacyNewSolverRequestKeepsPublishedQualityProfile() {
+        String previousQuality = System.getProperty("cutting.quality");
+        System.clearProperty("cutting.quality");
         try {
             CuttingOptimizationService optimizationService = mock(CuttingOptimizationService.class);
             SolverConfigFactory solverConfigFactory = mock(SolverConfigFactory.class);
@@ -86,27 +90,27 @@ class OptimizationExecutionServiceTest {
 
             OptimizationRequest request = new OptimizationRequest();
             request.setUseNewSolver(true);
-            request.setLnsEnabled(true);
-            request.setLnsEnrichPatterns(true);
             request.setOrderItems(List.of());
             SolverConfig config = new SolverConfig();
             CuttingOptimizationResult expected = new CuttingOptimizationResult();
 
             when(solverConfigFactory.fromOptimizationRequest(request)).thenReturn(config);
             when(optimizationService.optimizeUnified(anyList(), same(config))).thenAnswer(invocation -> {
-                assertTrue(LocalNeighborhoodSequenceOptimizer.isEnabled());
+                assertTrue(CuttingSolver.qualityMode());
+                assertTrue(SolverRuntimeProperties.getBoolean("cutting.spr.enabled", false));
+                assertFalse(SolverRuntimeProperties.getBoolean("cutting.demandPeak.enabled", true));
                 return expected;
             });
 
             OptimizationExecutionService.ExecutionResult actual = executionService.execute(request);
 
             assertSame(expected, actual.result());
-            assertFalse(LocalNeighborhoodSequenceOptimizer.isEnabled());
+            assertFalse(CuttingSolver.qualityMode());
         } finally {
-            if (previous == null) {
-                System.clearProperty("cutting.lns.enabled");
+            if (previousQuality == null) {
+                System.clearProperty("cutting.quality");
             } else {
-                System.setProperty("cutting.lns.enabled", previous);
+                System.setProperty("cutting.quality", previousQuality);
             }
         }
     }
@@ -125,7 +129,7 @@ class OptimizationExecutionServiceTest {
 
             OptimizationRequest request = new OptimizationRequest();
             request.setUseNewSolver(true);
-            request.setQualityMode(true);
+            request.setSolverProfile(OptimizationRequest.SolverProfile.QUALITY);
             request.setOrderItems(List.of());
             SolverConfig config = new SolverConfig();
             CuttingOptimizationResult expected = new CuttingOptimizationResult();
@@ -134,6 +138,8 @@ class OptimizationExecutionServiceTest {
             when(optimizationService.optimizeUnified(anyList(), same(config))).thenAnswer(invocation -> {
                 assertTrue(LocalNeighborhoodSequenceOptimizer.isEnabled());
                 assertTrue(CuttingSolver.qualityMode());
+                assertFalse(SolverRuntimeProperties.getBoolean("cutting.demandPeak.enabled", true));
+                assertTrue(SolverRuntimeProperties.getBoolean("cutting.spr.enabled", false));
                 assertTrue(SolverRuntimeProperties.getBoolean(
                         "cutting.spr.reverseTiePass", false));
                 assertEquals(1, SolverRuntimeProperties.getInt(

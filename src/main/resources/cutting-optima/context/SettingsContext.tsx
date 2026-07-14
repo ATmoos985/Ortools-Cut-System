@@ -12,18 +12,9 @@ export interface CardVisibility {
     executionTime: boolean;   // 计算耗时
 }
 
-// 算法参数配置
-export interface AlgorithmParams {
-    maxIterations: number;    // 最大迭代次数
-    timeoutMs: number;        // 超时时间（毫秒）
-    lnsEnabled: boolean;      // 是否开启 LNS 序号组优化
-    lnsEnrichPatterns: boolean; // 是否开启富花型增强
-}
-
 // 设置状态
 interface SettingsState {
     cardVisibility: CardVisibility;
-    algorithmParams: AlgorithmParams;
 }
 
 // 默认设置
@@ -35,18 +26,11 @@ const defaultSettings: SettingsState = {
         overproduction: true,
         executionTime: true,
     },
-    algorithmParams: {
-        maxIterations: 300,
-        timeoutMs: 240000,
-        lnsEnabled: true,
-        lnsEnrichPatterns: false,
-    },
 };
 
 // 上下文类型
 interface SettingsContextType extends SettingsState {
     setCardVisibility: (key: keyof CardVisibility, visible: boolean) => void;
-    setAlgorithmParams: (params: Partial<AlgorithmParams>) => void;
     resetToDefaults: () => void;
     isSettingsPanelOpen: boolean;
     openSettingsPanel: () => void;
@@ -63,7 +47,6 @@ function loadSettings(): SettingsState {
             const parsed = JSON.parse(saved);
             return {
                 cardVisibility: { ...defaultSettings.cardVisibility, ...parsed.cardVisibility },
-                algorithmParams: { ...defaultSettings.algorithmParams, ...parsed.algorithmParams },
             };
         }
     } catch (e) {
@@ -101,17 +84,6 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
         }));
     };
 
-    // 设置算法参数
-    const setAlgorithmParams = (params: Partial<AlgorithmParams>) => {
-        setSettings(prev => ({
-            ...prev,
-            algorithmParams: {
-                ...prev.algorithmParams,
-                ...params,
-            },
-        }));
-    };
-
     // 重置为默认值
     const resetToDefaults = () => {
         setSettings(defaultSettings);
@@ -124,7 +96,6 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
     const value: SettingsContextType = {
         ...settings,
         setCardVisibility,
-        setAlgorithmParams,
         resetToDefaults,
         isSettingsPanelOpen,
         openSettingsPanel,

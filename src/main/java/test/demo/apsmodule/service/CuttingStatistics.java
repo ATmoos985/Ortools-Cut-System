@@ -12,6 +12,7 @@ public final class CuttingStatistics {
         long totalRollsUsed = 0;
         long totalWaste = 0;
         long totalMaterial = 0;
+        long totalEffectiveMaterial = 0;
         long totalPatternArea = 0;
 
         if (instructions != null) {
@@ -25,11 +26,13 @@ public final class CuttingStatistics {
                 totalRollsUsed += usageCount;
                 totalWaste += (long) Math.max(totalWidth - patternWidth, 0) * length * usageCount;
                 totalMaterial += (long) totalWidth * length * usageCount;
+                totalEffectiveMaterial += (long) effectiveRollWidth(
+                        instruction.getRollWidth(), patternWidth, totalWidth) * length * usageCount;
                 totalPatternArea += (long) patternWidth * length * usageCount;
             }
         }
 
-        return buildSummary(totalRollsUsed, totalWaste, totalMaterial, totalPatternArea);
+        return buildSummary(totalRollsUsed, totalWaste, totalMaterial, totalEffectiveMaterial, totalPatternArea);
     }
 
     public static Summary summarizeLegacyInstructions(
@@ -37,6 +40,7 @@ public final class CuttingStatistics {
         long totalRollsUsed = 0;
         long totalWaste = 0;
         long totalMaterial = 0;
+        long totalEffectiveMaterial = 0;
         long totalPatternArea = 0;
 
         if (instructions != null) {
@@ -48,11 +52,13 @@ public final class CuttingStatistics {
                 totalRollsUsed += usageCount;
                 totalWaste += (long) Math.max(totalWidth - patternWidth, 0) * length * usageCount;
                 totalMaterial += (long) totalWidth * length * usageCount;
+                totalEffectiveMaterial += (long) effectiveRollWidth(
+                        instruction.getRollWidth(), patternWidth, totalWidth) * length * usageCount;
                 totalPatternArea += (long) patternWidth * length * usageCount;
             }
         }
 
-        return buildSummary(totalRollsUsed, totalWaste, totalMaterial, totalPatternArea);
+        return buildSummary(totalRollsUsed, totalWaste, totalMaterial, totalEffectiveMaterial, totalPatternArea);
     }
 
     public static int calculatePatternWidth(Map<Integer, Integer> subRolls) {
@@ -64,17 +70,35 @@ public final class CuttingStatistics {
                 .sum();
     }
 
-    private static Summary buildSummary(long totalRollsUsed, long totalWaste, long totalMaterial, long totalPatternArea) {
+    private static int effectiveRollWidth(int rollWidth, int patternWidth, int totalWidth) {
+        int configuredWidth = rollWidth > 0 ? rollWidth : totalWidth;
+        return Math.max(configuredWidth, patternWidth);
+    }
+
+    private static Summary buildSummary(
+            long totalRollsUsed,
+            long totalWaste,
+            long totalMaterial,
+            long totalEffectiveMaterial,
+            long totalPatternArea) {
         double utilizationRate = totalMaterial > 0
                 ? (double) totalPatternArea / totalMaterial * 100
+                : 0.0;
+        double effectiveUtilizationRate = totalEffectiveMaterial > 0
+                ? (double) totalPatternArea / totalEffectiveMaterial * 100
                 : 0.0;
 
         return new Summary(
                 (int) Math.min(totalRollsUsed, Integer.MAX_VALUE),
                 (int) Math.min(totalWaste, Integer.MAX_VALUE),
-                utilizationRate);
+                utilizationRate,
+                effectiveUtilizationRate);
     }
 
-    public record Summary(int totalRollsUsed, int totalWaste, double utilizationRate) {
+    public record Summary(
+            int totalRollsUsed,
+            int totalWaste,
+            double utilizationRate,
+            double effectiveUtilizationRate) {
     }
 }

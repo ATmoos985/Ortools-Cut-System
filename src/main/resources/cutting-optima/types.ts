@@ -5,6 +5,33 @@ export interface OrderItem {
   [key: string]: any;
 }
 
+export interface OptimizationRequestPayload {
+  orderId: string;
+  orderName: string;
+  customerName: string;
+  description: string;
+  flexibleWidth: true;
+  fixedWidth: 0;
+  totalWidth: number;
+  minWidth: number;
+  maxWidth: number;
+  stepSize: number;
+  totalOverCap: number;
+  maxIterations: number;
+  timeoutMs: number;
+  useNewSolver: true;
+  solverProfile: 'FAST' | 'QUALITY';
+  newSolverTopK: number;
+  newSolverMaxPatterns: number;
+  newSolverMaxDistinctWidths: number;
+  newSolverUseOptimizedAssignment: true;
+  newSolverUnderPenalty: number;
+  lnsEnabled: true;
+  lnsEnrichPatterns: false;
+  qualityMode: boolean;
+  orderItems: OrderItem[];
+}
+
 export interface ParseExcelResponse {
   success: boolean;
   orderItems: OrderItem[];
@@ -120,10 +147,12 @@ export interface PreviewData {
   revisionId?: string;
   totalRollsUsed: number;
   utilizationRate: number;
+  effectiveUtilizationRate?: number;
   totalWaste: number;
   totalGroups: number;
   preview: PreviewGroup[];
   message?: string;
+  oddUsageGroups?: number;
   singleUsageGroups?: number;
 }
 

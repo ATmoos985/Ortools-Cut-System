@@ -103,12 +103,7 @@ public class CuttingExportController {
 
             CuttingStatistics.Summary summary = CuttingStatistics.summarizeLegacyInstructions(
                     filteredInstructions, result.getTotalWidth());
-            long singleUsageGroups = previewGroups.stream()
-                    .filter(group -> {
-                        Object usageCount = group.get("usageCount");
-                        return usageCount instanceof Number number && number.intValue() == 1;
-                    })
-                    .count();
+            UsageGroupSummary usageGroupSummary = summarizeUsageGroups(previewGroups);
 
             Map<String, Object> response = new HashMap<>();
             response.put("success", true);
@@ -119,7 +114,10 @@ public class CuttingExportController {
             response.put("patternCount", filteredInstructions.size());
             response.put("totalWaste", summary.totalWaste());
             response.put("utilizationRate", Math.round(summary.utilizationRate() * 100.0) / 100.0);
-            response.put("singleUsageGroups", singleUsageGroups);
+            response.put("effectiveUtilizationRate",
+                    Math.round(summary.effectiveUtilizationRate() * 100.0) / 100.0);
+            response.put("oddUsageGroups", usageGroupSummary.oddUsageGroups());
+            response.put("singleUsageGroups", usageGroupSummary.singleUsageGroups());
             response.put("groupKey", groupKey);
             response.put("jobId", optimizationContext.getLastJobId());
             response.put("planId", planId);
@@ -130,6 +128,28 @@ public class CuttingExportController {
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
                     .body(Map.of("success", false, "message", exception.getMessage()));
         }
+    }
+
+    static UsageGroupSummary summarizeUsageGroups(List<Map<String, Object>> previewGroups) {
+        long oddUsageGroups = 0;
+        long singleUsageGroups = 0;
+        for (Map<String, Object> group : previewGroups) {
+            Object usageCountValue = group.get("usageCount");
+            if (!(usageCountValue instanceof Number number)) {
+                continue;
+            }
+            int usageCount = number.intValue();
+            if (usageCount > 0 && usageCount % 2 != 0) {
+                oddUsageGroups++;
+            }
+            if (usageCount == 1) {
+                singleUsageGroups++;
+            }
+        }
+        return new UsageGroupSummary(oddUsageGroups, singleUsageGroups);
+    }
+
+    record UsageGroupSummary(long oddUsageGroups, long singleUsageGroups) {
     }
 
     @PostMapping("/v2/sequence-groups/delete-row")

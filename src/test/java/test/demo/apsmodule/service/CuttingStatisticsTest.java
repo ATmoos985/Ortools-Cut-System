@@ -25,6 +25,7 @@ class CuttingStatisticsTest {
         assertEquals(2, summary.totalRollsUsed());
         assertEquals(5600, summary.totalWaste());
         assertEquals(92.17877094972067, summary.utilizationRate(), 1e-9);
+        assertEquals(100.0, summary.effectiveUtilizationRate(), 1e-9);
     }
 
     @Test
@@ -44,5 +45,28 @@ class CuttingStatisticsTest {
         assertEquals(1, summary.totalRollsUsed());
         assertEquals(5600, summary.totalWaste());
         assertEquals(92.17877094972067, summary.utilizationRate(), 1e-9);
+        assertEquals(100.0, summary.effectiveUtilizationRate(), 1e-9);
+    }
+
+    @Test
+    void effectiveUtilizationFallsBackToMotherWidthAndNeverExceedsOneHundredPercent() {
+        CuttingOptimizationResult.CuttingInstruction missingRollWidth = legacyInstruction(1, 10, 0, 3300);
+        CuttingOptimizationResult.CuttingInstruction narrowerRollWidth = legacyInstruction(1, 20, 3200, 3300);
+
+        CuttingStatistics.Summary summary = CuttingStatistics.summarizeLegacyInstructions(
+                List.of(missingRollWidth, narrowerRollWidth), 3580);
+
+        double expected = (3300.0 * 10 + 3300.0 * 20) / (3580.0 * 10 + 3300.0 * 20) * 100;
+        assertEquals(expected, summary.effectiveUtilizationRate(), 1e-9);
+    }
+
+    private CuttingOptimizationResult.CuttingInstruction legacyInstruction(
+            int usageCount, int length, int rollWidth, int patternWidth) {
+        CuttingOptimizationResult.CuttingInstruction instruction = new CuttingOptimizationResult.CuttingInstruction();
+        instruction.setUsageCount(usageCount);
+        instruction.setLength(length);
+        instruction.setRollWidth(rollWidth);
+        instruction.setSubRolls(Map.of(patternWidth, 1));
+        return instruction;
     }
 }

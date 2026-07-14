@@ -28,9 +28,20 @@ class SolverConfigFactoryTest {
         assertEquals(4600, config.getMaxWidth());
         assertEquals(4600, config.getTotalWidth());
         assertEquals(0, config.getStepSize());
-        assertEquals(30, config.getTotalOverCap());
+        assertEquals(0, config.getTotalOverCap());
         assertEquals(300, config.getMaxIterations());
         assertEquals(120000, config.getTimeoutMs());
+    }
+
+    @Test
+    void explicitSolverProfileSelectsNewSolverWithoutLegacyFlag() {
+        OptimizationRequest request = new OptimizationRequest();
+        request.setSolverProfile(OptimizationRequest.SolverProfile.FAST);
+
+        SolverConfig config = factory.fromOptimizationRequest(request);
+
+        assertTrue(config.isUseNewSolver());
+        assertEquals(30, config.getTotalOverCap());
     }
 
     @Test

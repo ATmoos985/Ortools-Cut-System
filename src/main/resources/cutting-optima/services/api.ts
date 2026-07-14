@@ -1,4 +1,4 @@
-import { DiagnosisResult, OptimizationResult, OrderItem, PreviewData, DataValidationResult, ParseExcelResponse } from "../types";
+import { DiagnosisResult, OptimizationResult, OptimizationRequestPayload, OrderItem, PreviewData, DataValidationResult, ParseExcelResponse } from "../types";
 
 const API_BASE = '/api/cutting';
 
@@ -18,7 +18,7 @@ export const diagnoseGrouping = async (orderItems: OrderItem[]): Promise<Diagnos
   return response.json();
 };
 
-export const optimizeCutting = async (payload: any): Promise<{ success: boolean; result: OptimizationResult; message?: string }> => {
+export const optimizeCutting = async (payload: OptimizationRequestPayload): Promise<{ success: boolean; result: OptimizationResult; message?: string }> => {
   const response = await fetch(`${API_BASE}/optimize`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

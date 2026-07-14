@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import * as api from '../services/api';
 import { PreviewData } from '../types';
 import { Button } from '../components/ui/Button';
-import { ArrowLeft, Download, Layers, Trash2, PieChart, AlertOctagon, LayoutDashboard } from 'lucide-react';
+import { ArrowLeft, Download, Layers, PieChart, AlertOctagon, CircleDot, LayoutDashboard } from 'lucide-react';
 import { useAppContext } from '../context/AppContext';
 
 export default function Preview() {
@@ -134,22 +134,31 @@ export default function Preview() {
                         <div className="text-xs text-blue-100">总用卷数</div>
                     </div>
                 </div>
-                <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm flex items-center gap-4">
-                    <div className="p-3 bg-emerald-50 text-emerald-600 rounded-lg"><PieChart className="w-6 h-6" /></div>
-                    <div>
-                        <div className="text-2xl font-bold text-slate-800">{data.utilizationRate.toFixed(2)}%</div>
-                        <div className="text-xs text-slate-400">平均利用率</div>
+                <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-sm flex items-center gap-3">
+                    <div className="p-3 bg-emerald-50 text-emerald-600 rounded-lg flex-shrink-0"><PieChart className="w-6 h-6" /></div>
+                    <div className="flex-1 min-w-0">
+                        <div className="text-xs font-medium text-slate-400 mb-1.5">得率</div>
+                        <div className="grid grid-cols-2 divide-x divide-slate-200">
+                            <div className="pr-2">
+                                <div className="text-lg font-bold text-slate-800 whitespace-nowrap">{data.utilizationRate.toFixed(2)}%</div>
+                                <div className="text-[11px] text-slate-400 whitespace-nowrap">含废边</div>
+                            </div>
+                            <div className="pl-2">
+                                <div className="text-lg font-bold text-emerald-700 whitespace-nowrap">{(data.effectiveUtilizationRate ?? data.utilizationRate).toFixed(2)}%</div>
+                                <div className="text-[11px] text-slate-400 whitespace-nowrap">有效宽度</div>
+                            </div>
+                        </div>
                     </div>
                 </div>
                 <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm flex items-center gap-4">
-                    <div className="p-3 bg-red-50 text-red-500 rounded-lg"><Trash2 className="w-6 h-6" /></div>
+                    <div className="p-3 bg-amber-50 text-amber-600 rounded-lg"><AlertOctagon className="w-6 h-6" /></div>
                     <div>
-                        <div className="text-2xl font-bold text-slate-800">{data.totalWaste}</div>
-                        <div className="text-xs text-slate-400">总废料 (mm)</div>
+                        <div className="text-2xl font-bold text-slate-800">{data.oddUsageGroups ?? 0}</div>
+                        <div className="text-xs text-slate-400">奇数车数</div>
                     </div>
                 </div>
                 <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm flex items-center gap-4">
-                    <div className="p-3 bg-purple-50 text-purple-600 rounded-lg"><AlertOctagon className="w-6 h-6" /></div>
+                    <div className="p-3 bg-purple-50 text-purple-600 rounded-lg"><CircleDot className="w-6 h-6" /></div>
                     <div>
                         <div className="text-2xl font-bold text-slate-800">{data.singleUsageGroups || 0}</div>
                         <div className="text-xs text-slate-400">单次搭切</div>
@@ -159,7 +168,7 @@ export default function Preview() {
                     <div className="p-3 bg-purple-50 text-purple-600 rounded-lg"><Layers className="w-6 h-6" /></div>
                     <div>
                         <div className="text-2xl font-bold text-slate-800">{data.totalGroups}</div>
-                        <div className="text-xs text-slate-400">方案分组</div>
+                        <div className="text-xs text-slate-400">序号组数</div>
                     </div>
                 </div>
             </div>

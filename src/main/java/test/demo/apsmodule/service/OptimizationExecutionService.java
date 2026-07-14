@@ -33,16 +33,30 @@ public class OptimizationExecutionService {
     }
 
     private CuttingOptimizationResult executeOptimization(OptimizationRequest request, SolverConfig config) {
-        boolean qualityProfile = request.isUseNewSolver() || request.isQualityMode();
-        if (!request.isLnsEnabled() && !qualityProfile) {
+        OptimizationRequest.SolverProfile profile = resolveProfile(request);
+        if (profile == null && !request.isLnsEnabled()) {
             return runOptimization(request, config);
         }
         Map<String, String> solverProperties = new HashMap<>();
         solverProperties.put("cutting.lns.enabled", "true");
-        solverProperties.put("cutting.lns.enrichPatterns", Boolean.toString(request.isLnsEnrichPatterns()));
-        if (qualityProfile) {
+        if (profile == null) {
+            solverProperties.put(
+                    "cutting.lns.enrichPatterns",
+                    Boolean.toString(request.isLnsEnrichPatterns()));
+        } else {
+            solverProperties.put("cutting.lns.enrichPatterns", "false");
+        }
+        if (profile == OptimizationRequest.SolverProfile.FAST) {
+            solverProperties.put("cutting.quality", "false");
+            solverProperties.put("cutting.aLayerParityPenalties", "0");
+            solverProperties.put("cutting.demandPeak.enabled", "true");
+            solverProperties.put("cutting.demandPeak.smallPolish.enabled", "true");
+            solverProperties.put("cutting.spr.enabled", "false");
+        } else if (profile == OptimizationRequest.SolverProfile.QUALITY) {
             solverProperties.put("cutting.quality", "true");
-            // NewSolver exposes one request-scoped quality profile to both UI and APS callers.
+            solverProperties.put("cutting.aLayerParityPenalties", "0,0.1");
+            solverProperties.put("cutting.demandPeak.enabled", "false");
+            solverProperties.put("cutting.spr.enabled", "true");
             solverProperties.put("cutting.spr.reverseTiePass", "true");
             solverProperties.put("cutting.spr.reverseTieMaxIterations", "1");
             solverProperties.put("cutting.spr.portfolioPass", "false");
@@ -50,6 +64,16 @@ public class OptimizationExecutionService {
         return SolverRuntimeProperties.withOverrides(
                 solverProperties,
                 () -> runOptimization(request, config));
+    }
+
+    private OptimizationRequest.SolverProfile resolveProfile(OptimizationRequest request) {
+        if (request.getSolverProfile() != null) {
+            return request.getSolverProfile();
+        }
+        if (request.isUseNewSolver() || request.isQualityMode()) {
+            return OptimizationRequest.SolverProfile.QUALITY;
+        }
+        return null;
     }
 
     private CuttingOptimizationResult runOptimization(OptimizationRequest request, SolverConfig config) {

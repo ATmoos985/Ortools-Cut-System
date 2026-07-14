@@ -4,6 +4,11 @@ import test.demo.apsmodule.service.excel.ExcelImportService;
 import java.util.List;
 
 public class OptimizationRequest {
+    public enum SolverProfile {
+        FAST,
+        QUALITY
+    }
+
     private String orderId;
     private String orderName;
     private String customerName;
@@ -29,6 +34,7 @@ public class OptimizationRequest {
     private double newSolverUnderPenalty = 1e6;
     private boolean lnsEnabled = true;
     private boolean lnsEnrichPatterns = false;
+    private SolverProfile solverProfile;
     /** 质量模式：A层 parity{0,0.1} × B层双LNS邻域 多候选评优（isBetterPlan 拣优，永不劣于快路径；耗时约×2）。 */
     private boolean qualityMode = false;
     private List<ExcelImportService.OrderItem> orderItems;
@@ -241,5 +247,13 @@ public class OptimizationRequest {
 
     public void setLnsEnrichPatterns(boolean lnsEnrichPatterns) {
         this.lnsEnrichPatterns = lnsEnrichPatterns;
+    }
+
+    public SolverProfile getSolverProfile() {
+        return solverProfile;
+    }
+
+    public void setSolverProfile(SolverProfile solverProfile) {
+        this.solverProfile = solverProfile;
     }
 }

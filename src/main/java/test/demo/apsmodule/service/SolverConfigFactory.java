@@ -23,10 +23,10 @@ public class SolverConfigFactory {
             config.setTotalWidth(fixedWidth);
         }
 
-        config.setTotalOverCap(request.getTotalOverCap() > 0 ? request.getTotalOverCap() : 30);
+        config.setTotalOverCap(Math.max(0, request.getTotalOverCap()));
         config.setMaxIterations(request.getMaxIterations() > 0 ? request.getMaxIterations() : 300);
         config.setTimeoutMs(request.getTimeoutMs() > 0 ? request.getTimeoutMs() : 120000);
-        config.setUseNewSolver(request.isUseNewSolver());
+        config.setUseNewSolver(request.isUseNewSolver() || request.getSolverProfile() != null);
         config.setNewSolverTopK(request.getNewSolverTopK() > 0 ? request.getNewSolverTopK() : 3);
         config.setNewSolverMaxPatterns(request.getNewSolverMaxPatterns());
         config.setNewSolverMaxDistinctWidths(request.getNewSolverMaxDistinctWidths());

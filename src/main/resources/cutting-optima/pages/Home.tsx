@@ -3,7 +3,7 @@ import { Upload, FileSpreadsheet, Settings, Trash2, Save, Play, CheckCircle, Sea
 import { Card } from '../components/ui/Card';
 import { Button } from '../components/ui/Button';
 import * as api from '../services/api';
-import { OrderItem, Preset, DiagnosisResult, OptimizationResult, OptimizationResultGroup } from '../types';
+import { OrderItem, Preset, DiagnosisResult, OptimizationRequestPayload, OptimizationResult, OptimizationResultGroup } from '../types';
 import { useNavigate } from 'react-router-dom';
 import { useAppContext } from '../context/AppContext';
 import { useSettings } from '../context/SettingsContext';
@@ -19,27 +19,17 @@ export default function Home() {
         orderItems, setOrderItems,
         fileName, setFileName,
         importSource, setImportSource,
-        mode, setMode,
-        fixedWidth, setFixedWidth,
+        solverProfile, setSolverProfile,
         totalWidth, setTotalWidth,
         minWidth, setMinWidth,
         maxWidth, setMaxWidth,
         stepSize, setStepSize,
-        flexTotalWidth, setFlexTotalWidth,
         totalOverCap, setTotalOverCap,
-        // NewSolver 参数
-        newSolverTotalWidth, setNewSolverTotalWidth,
-        newSolverTopK, setNewSolverTopK,
-        newSolverMaxIterations, setNewSolverMaxIterations,
-        newSolverTimeLimit, setNewSolverTimeLimit,
-        newSolverQualityMode, setNewSolverQualityMode,
-        newSolverMaxPatterns, setNewSolverMaxPatterns,
-        newSolverMaxDistinctWidths, setNewSolverMaxDistinctWidths,
-        newSolverStage4TimeLimit, setNewSolverStage4TimeLimit,
-        newSolverSeqGroupAlpha, setNewSolverSeqGroupAlpha,
-        newSolverSeqGroupBeta, setNewSolverSeqGroupBeta,
-        newSolverUseOptimizedAssignment, setNewSolverUseOptimizedAssignment,
-        newSolverUnderPenalty, setNewSolverUnderPenalty,
+        newSolverTopK,
+        newSolverMaxIterations,
+        newSolverTimeLimit,
+        newSolverMaxPatterns,
+        newSolverMaxDistinctWidths,
         diagnosis, setDiagnosis,
         optimizationResult, setOptimizationResult,
         selectedGroupKey, setSelectedGroupKey,
@@ -56,7 +46,7 @@ export default function Home() {
     const [demandSortOrder, setDemandSortOrder] = useState<'none' | 'asc' | 'desc'>('none');
 
     // 获取设置上下文
-    const { cardVisibility, algorithmParams } = useSettings();
+    const { cardVisibility } = useSettings();
 
     // Load Presets from localStorage
     useEffect(() => {
@@ -127,7 +117,7 @@ export default function Home() {
     const handleSavePreset = () => {
         const name = prompt('请输入预设名称:', `预设方案 ${presets.length + 1}`);
         if (!name) return;
-        const newPreset: Preset = { name, minWidth, maxWidth, stepSize, totalWidth: flexTotalWidth };
+        const newPreset: Preset = { name, minWidth, maxWidth, stepSize, totalWidth };
         const newPresets = [...presets, newPreset];
         setPresets(newPresets);
         localStorage.setItem(PRESET_KEY, JSON.stringify(newPresets));
@@ -142,7 +132,7 @@ export default function Home() {
             setMinWidth(p.minWidth);
             setMaxWidth(p.maxWidth);
             setStepSize(p.stepSize);
-            setFlexTotalWidth(p.totalWidth);
+            setTotalWidth(p.totalWidth);
         }
     };
 
@@ -167,41 +157,38 @@ export default function Home() {
 
     const handleOptimize = async () => {
         if (!orderItems.length) return;
+        if (minWidth <= 0 || maxWidth < minWidth || stepSize <= 0 || totalWidth <= 0 || totalOverCap < 0) {
+            alert('请检查宽度设置：最小幅宽、步长和总宽必须大于 0，最大幅宽不能小于最小幅宽，超产上限不能为负数。');
+            return;
+        }
         setLoading("智能运算中，请稍候...");
-        const isFlexible = mode === 'flexible';
-        const isNewSolver = mode === 'newsolver';
-        const effectiveMaxDistinctWidths =
-            isNewSolver
-                ? Math.max(newSolverMaxDistinctWidths, 5)
-                : newSolverMaxDistinctWidths;
-        const payload = {
+        const effectiveMaxDistinctWidths = solverProfile === 'QUALITY'
+            ? Math.max(newSolverMaxDistinctWidths, 5)
+            : newSolverMaxDistinctWidths;
+        const payload: OptimizationRequestPayload = {
             orderId: 'ORDER_' + Date.now(),
             orderName: 'Optimization',
             customerName: 'Customer',
             description: 'Optimization',
-            flexibleWidth: isFlexible || isNewSolver,  // NewSolver 使用自由幅宽模式
-            fixedWidth: (isFlexible || isNewSolver) ? 0 : fixedWidth,
-            totalWidth: isNewSolver ? newSolverTotalWidth : (isFlexible ? flexTotalWidth : totalWidth),
-            // NewSolver 也需要传递 minWidth、maxWidth、stepSize
-            minWidth: (isFlexible || isNewSolver) ? minWidth : 0,
-            maxWidth: (isFlexible || isNewSolver) ? maxWidth : 0,
-            stepSize: (isFlexible || isNewSolver) ? stepSize : 0,
-            totalOverCap: totalOverCap,
-            maxIterations: isNewSolver ? newSolverMaxIterations : algorithmParams.maxIterations,
-            timeoutMs: isNewSolver ? newSolverTimeLimit : algorithmParams.timeoutMs,
-            // 🚀 NewSolver 专用参数
-            useNewSolver: isNewSolver,
+            flexibleWidth: true,
+            fixedWidth: 0,
+            totalWidth,
+            minWidth,
+            maxWidth,
+            stepSize,
+            totalOverCap,
+            maxIterations: newSolverMaxIterations,
+            timeoutMs: newSolverTimeLimit,
+            useNewSolver: true,
+            solverProfile,
             newSolverTopK: newSolverTopK,
             newSolverMaxPatterns: newSolverMaxPatterns,
             newSolverMaxDistinctWidths: effectiveMaxDistinctWidths,
-            newSolverStage4TimeLimit: newSolverStage4TimeLimit,
-            newSolverSeqGroupAlpha: newSolverSeqGroupAlpha,
-            newSolverSeqGroupBeta: newSolverSeqGroupBeta,
-            newSolverUseOptimizedAssignment: newSolverUseOptimizedAssignment,
-            newSolverUnderPenalty: newSolverUnderPenalty,
-            lnsEnabled: isNewSolver,
-            lnsEnrichPatterns: isNewSolver && algorithmParams.lnsEnabled && algorithmParams.lnsEnrichPatterns,
-            qualityMode: isNewSolver,
+            newSolverUseOptimizedAssignment: true,
+            newSolverUnderPenalty: 1000000,
+            lnsEnabled: true,
+            lnsEnrichPatterns: false,
+            qualityMode: solverProfile === 'QUALITY',
             orderItems: orderItems
         };
 
@@ -497,212 +484,63 @@ export default function Home() {
                     </Card>
 
                     <Card title="第二步:参数配置" className="flex-1 flex flex-col min-h-0">
-                        <div className="flex bg-slate-100 p-1 rounded-lg mb-6 flex-shrink-0">
-                            <button
-                                onClick={() => setMode('fixed')}
-                                className={`flex-1 py-2 text-sm font-medium rounded-md transition-all ${mode === 'fixed' ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
-                            >
-                                固定幅宽
-                            </button>
-                            <button
-                                onClick={() => setMode('flexible')}
-                                className={`flex-1 py-2 text-sm font-medium rounded-md transition-all ${mode === 'flexible' ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
-                            >
-                                自由幅宽
-                            </button>
-                            <button
-                                onClick={() => setMode('newsolver')}
-                                className={`flex-1 py-2 text-sm font-medium rounded-md transition-all ${mode === 'newsolver' ? 'bg-white text-emerald-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
-                            >
-                                新求解器
-                            </button>
-                        </div>
+                        <div className="flex-1 overflow-y-auto min-h-0 space-y-5">
+                            <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-4">
+                                <p className="text-sm text-emerald-800 font-semibold">NewSolver 已启用</p>
+                                <p className="text-xs text-emerald-700 mt-1">无需选择算法；只需确认宽度、超产和求解档位即可开始。</p>
+                            </div>
 
-                        <div className="flex-1 overflow-y-auto min-h-0">
-                            {mode === 'fixed' ? (
-                                <div className="space-y-4 animate-in fade-in slide-in-from-left-2">
-                                    <div>
-                                        <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1.5">切割幅宽 (mm)</label>
-                                        <input type="number" value={fixedWidth} onChange={(e) => setFixedWidth(parseInt(e.target.value) || 0)} className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none font-mono text-slate-700" />
-                                    </div>
-                                    <div>
-                                        <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1.5">原料总宽 (mm)</label>
-                                        <input type="number" value={totalWidth} onChange={(e) => setTotalWidth(parseInt(e.target.value) || 0)} className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none font-mono text-slate-700" />
-                                    </div>
+                            <div>
+                                <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-2">求解档位</label>
+                                <div className="grid grid-cols-2 gap-3">
+                                    <button type="button" onClick={() => setSolverProfile('FAST')} className={`text-left rounded-xl border p-3 transition-all ${solverProfile === 'FAST' ? 'border-emerald-500 bg-emerald-50 ring-2 ring-emerald-100' : 'border-slate-200 hover:border-slate-300'}`}>
+                                        <span className="block text-sm font-semibold text-slate-800">快捷解</span>
+                                        <span className="block text-xs text-slate-500 mt-1">推荐 · 快速稳定</span>
+                                    </button>
+                                    <button type="button" onClick={() => setSolverProfile('QUALITY')} className={`text-left rounded-xl border p-3 transition-all ${solverProfile === 'QUALITY' ? 'border-amber-500 bg-amber-50 ring-2 ring-amber-100' : 'border-slate-200 hover:border-slate-300'}`}>
+                                        <span className="block text-sm font-semibold text-slate-800">精确解</span>
+                                        <span className="block text-xs text-slate-500 mt-1">深度搜索 · 质量优先</span>
+                                    </button>
                                 </div>
-                            ) : mode === 'flexible' ? (
-                                <div className="space-y-4 animate-in fade-in slide-in-from-right-2">
-                                    <div>
-                                        <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1.5">加载预设</label>
-                                        <div className="flex gap-2">
-                                            <select value={selectedPresetIndex} onChange={(e) => handleLoadPreset(e.target.value)} className="flex-1 p-2.5 bg-slate-50 border border-slate-200 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none text-sm">
-                                                <option value="">-- 选择预设配置 --</option>
-                                                {presets.map((p, i) => (
-                                                    <option key={i} value={i}>{p.name}</option>
-                                                ))}
-                                            </select>
-                                            <button onClick={handleSavePreset} className="p-2.5 text-blue-600 hover:bg-blue-50 rounded-lg border border-transparent hover:border-blue-100" title="保存预设"><Save className="w-5 h-5" /></button>
-                                            <button onClick={handleDeletePreset} className="p-2.5 text-red-500 hover:bg-red-50 rounded-lg border border-transparent hover:border-red-100" title="删除预设"><Trash2 className="w-5 h-5" /></button>
-                                        </div>
-                                    </div>
-                                    <div className="grid grid-cols-2 gap-4">
-                                        <div>
-                                            <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1.5">最小幅宽</label>
-                                            <input type="number" value={minWidth} onChange={(e) => setMinWidth(parseInt(e.target.value) || 0)} className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-lg font-mono text-sm" />
-                                        </div>
-                                        <div>
-                                            <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1.5">最大幅宽</label>
-                                            <input type="number" value={maxWidth} onChange={(e) => setMaxWidth(parseInt(e.target.value) || 0)} className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-lg font-mono text-sm" />
-                                        </div>
-                                    </div>
-                                    <div className="grid grid-cols-2 gap-4">
-                                        <div>
-                                            <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1.5">步长</label>
-                                            <input type="number" value={stepSize} onChange={(e) => setStepSize(parseInt(e.target.value) || 0)} className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-lg font-mono text-sm" />
-                                        </div>
-                                        <div>
-                                            <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1.5">总宽</label>
-                                            <input type="number" value={flexTotalWidth} onChange={(e) => setFlexTotalWidth(parseInt(e.target.value) || 0)} className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-lg font-mono text-sm" />
-                                        </div>
-                                    </div>
-                                    <div>
-                                        <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1.5">超产上限 (卷)</label>
-                                        <input type="number" value={totalOverCap} onChange={(e) => setTotalOverCap(parseInt(e.target.value) || 0)} className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-lg font-mono text-sm" placeholder="默认30" />
-                                    </div>
+                                <p className="text-xs text-slate-400 mt-2">{solverProfile === 'FAST' ? '适合日常单据，目标是在较短时间内得到稳定好解。' : '适合最终定稿，会运行更多候选与精修阶段，耗时更长。'}</p>
+                            </div>
+
+                            <div>
+                                <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1.5">宽度预设</label>
+                                <div className="flex gap-2">
+                                    <select value={selectedPresetIndex} onChange={e => handleLoadPreset(e.target.value)} className="flex-1 p-2.5 bg-slate-50 border border-slate-200 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none text-sm">
+                                        <option value="">-- 选择预设配置 --</option>
+                                        {presets.map((preset, index) => <option key={index} value={index}>{preset.name}</option>)}
+                                    </select>
+                                    <button onClick={handleSavePreset} className="p-2.5 text-blue-600 hover:bg-blue-50 rounded-lg" title="保存预设"><Save className="w-5 h-5" /></button>
+                                    <button onClick={handleDeletePreset} className="p-2.5 text-red-500 hover:bg-red-50 rounded-lg" title="删除预设"><Trash2 className="w-5 h-5" /></button>
                                 </div>
-                            ) : (
-                                /* NewSolver 配置面板 - 与自由幅宽相同的参数 + 新求解器特有参数 */
-                                <div className="space-y-4 animate-in fade-in slide-in-from-right-2">
-                                    <div className="bg-emerald-50 border border-emerald-200 rounded-lg p-3 mb-4">
-                                        <p className="text-sm text-emerald-700 font-medium">🚀 新求解器（实验性）</p>
-                                        <p className="text-xs text-emerald-600 mt-1">采用模块化架构，支持更多配置参数</p>
-                                    </div>
-                                    <div>
-                                        <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1.5">求解档位</label>
-                                        <div className="grid grid-cols-1 gap-2 rounded-lg bg-slate-100 p-1">
-                                            <button
-                                                type="button"
-                                                onClick={() => setNewSolverQualityMode(true)}
-                                                className="bg-white text-amber-700 shadow-sm py-2 px-3 rounded-md text-sm font-medium"
-                                            >
-                                                精确解
-                                            </button>
-                                        </div>
-                                        <p className="text-xs text-slate-400 mt-1">
-                                            精确解会启用质量模式，并把不同宽幅上限提升到至少 5。
-                                        </p>
-                                    </div>
-                                    {/* 预设加载 - 与自由幅宽相同 */}
-                                    <div>
-                                        <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1.5">加载预设</label>
-                                        <div className="flex gap-2">
-                                            <select value={selectedPresetIndex} onChange={(e) => handleLoadPreset(e.target.value)} className="flex-1 p-2.5 bg-slate-50 border border-slate-200 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none text-sm">
-                                                <option value="">-- 选择预设配置 --</option>
-                                                {presets.map((p, i) => (
-                                                    <option key={i} value={i}>{p.name}</option>
-                                                ))}
-                                            </select>
-                                            <button onClick={handleSavePreset} className="p-2.5 text-blue-600 hover:bg-blue-50 rounded-lg border border-transparent hover:border-blue-100" title="保存预设"><Save className="w-5 h-5" /></button>
-                                            <button onClick={handleDeletePreset} className="p-2.5 text-red-500 hover:bg-red-50 rounded-lg border border-transparent hover:border-red-100" title="删除预设"><Trash2 className="w-5 h-5" /></button>
-                                        </div>
-                                    </div>
-                                    {/* 与自由幅宽相同的参数 */}
-                                    <div className="grid grid-cols-2 gap-4">
-                                        <div>
-                                            <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1.5">最小幅宽</label>
-                                            <input type="number" value={minWidth} onChange={(e) => setMinWidth(parseInt(e.target.value) || 0)} className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-lg font-mono text-sm" />
-                                        </div>
-                                        <div>
-                                            <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1.5">最大幅宽</label>
-                                            <input type="number" value={maxWidth} onChange={(e) => setMaxWidth(parseInt(e.target.value) || 0)} className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-lg font-mono text-sm" />
-                                        </div>
-                                    </div>
-                                    <div className="grid grid-cols-2 gap-4">
-                                        <div>
-                                            <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1.5">步长</label>
-                                            <input type="number" value={stepSize} onChange={(e) => setStepSize(parseInt(e.target.value) || 0)} className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-lg font-mono text-sm" />
-                                        </div>
-                                        <div>
-                                            <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1.5">总宽</label>
-                                            <input type="number" value={newSolverTotalWidth} onChange={(e) => setNewSolverTotalWidth(parseInt(e.target.value) || 0)} className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-lg font-mono text-sm" />
-                                        </div>
-                                    </div>
-                                    <div>
-                                        <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1.5">超产上限 (卷)</label>
-                                        <input type="number" value={totalOverCap} onChange={(e) => setTotalOverCap(parseInt(e.target.value) || 0)} className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-lg font-mono text-sm" placeholder="默认30" />
-                                    </div>
-                                    {/* 新求解器特有参数 */}
-                                    <div className="border-t border-slate-200 pt-4 mt-4">
-                                        <p className="text-xs font-semibold text-emerald-600 uppercase tracking-wider mb-3">高级参数</p>
-                                        <div className="grid grid-cols-2 gap-4">
-                                            <div>
-                                                <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1.5">TOP K 超产</label>
-                                                <input type="number" value={newSolverTopK} onChange={(e) => setNewSolverTopK(parseInt(e.target.value) || 0)} className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-lg font-mono text-sm" />
-                                                <p className="text-xs text-slate-400 mt-1">允许超产的前K个大需求宽度</p>
-                                            </div>
-                                            <div>
-                                                <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1.5">最大迭代次数</label>
-                                                <input type="number" value={newSolverMaxIterations} onChange={(e) => setNewSolverMaxIterations(parseInt(e.target.value) || 0)} className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-lg font-mono text-sm" />
-                                            </div>
-                                        </div>
-                                        <div className="mt-4">
-                                            <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1.5">求解时限 (毫秒)</label>
-                                            <input type="number" value={newSolverTimeLimit} onChange={(e) => setNewSolverTimeLimit(parseInt(e.target.value) || 0)} className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-lg font-mono text-sm" />
-                                            <p className="text-xs text-slate-400 mt-1">MIP 求解器超时时间</p>
-                                        </div>
-                                        <div className="grid grid-cols-2 gap-4 mt-4">
-                                            <div>
-                                                <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1.5">最大花型池</label>
-                                                <input type="number" value={newSolverMaxPatterns} onChange={(e) => setNewSolverMaxPatterns(parseInt(e.target.value) || 0)} className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-lg font-mono text-sm" />
-                                            </div>
-                                            <div>
-                                                <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1.5">不同宽幅上限</label>
-                                                <input type="number" value={newSolverMaxDistinctWidths} onChange={(e) => setNewSolverMaxDistinctWidths(parseInt(e.target.value) || 0)} className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-lg font-mono text-sm" />
-                                                {newSolverQualityMode && newSolverMaxDistinctWidths < 5 && (
-                                                    <p className="text-xs text-amber-600 mt-1">精确解运行时按 5 传入</p>
-                                                )}
-                                            </div>
-                                        </div>
-                                        <div className="grid grid-cols-2 gap-4 mt-4">
-                                            <div>
-                                                <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1.5">Stage4 时限</label>
-                                                <input type="number" value={newSolverStage4TimeLimit} onChange={(e) => setNewSolverStage4TimeLimit(parseInt(e.target.value) || 0)} className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-lg font-mono text-sm" />
-                                            </div>
-                                            <div>
-                                                <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1.5">欠产惩罚</label>
-                                                <input type="number" value={newSolverUnderPenalty} onChange={(e) => setNewSolverUnderPenalty(parseFloat(e.target.value) || 0)} className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-lg font-mono text-sm" />
-                                            </div>
-                                        </div>
-                                        <div className="grid grid-cols-2 gap-4 mt-4">
-                                            <div>
-                                                <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1.5">组数 Alpha</label>
-                                                <input type="number" step="0.1" value={newSolverSeqGroupAlpha} onChange={(e) => setNewSolverSeqGroupAlpha(parseFloat(e.target.value) || 0)} className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-lg font-mono text-sm" />
-                                            </div>
-                                            <div>
-                                                <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1.5">组数 Beta</label>
-                                                <input type="number" step="0.1" value={newSolverSeqGroupBeta} onChange={(e) => setNewSolverSeqGroupBeta(parseFloat(e.target.value) || 0)} className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-lg font-mono text-sm" />
-                                            </div>
-                                        </div>
-                                        <label className="flex items-center justify-between p-3 bg-slate-50 rounded-lg hover:bg-slate-100 transition-colors cursor-pointer group mt-4">
-                                            <div className="flex-1 pr-4">
-                                                <div className="font-medium text-slate-700 group-hover:text-slate-900 text-sm">
-                                                    优化装配
-                                                </div>
-                                            </div>
-                                            <div className="relative">
-                                                <input
-                                                    type="checkbox"
-                                                    checked={newSolverUseOptimizedAssignment}
-                                                    onChange={(e) => setNewSolverUseOptimizedAssignment(e.target.checked)}
-                                                    className="sr-only peer"
-                                                />
-                                                <div className="w-11 h-6 bg-slate-300 peer-focus:ring-2 peer-focus:ring-emerald-300 rounded-full peer peer-checked:bg-emerald-600 transition-colors"></div>
-                                                <div className="absolute left-0.5 top-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform peer-checked:translate-x-5"></div>
-                                            </div>
-                                        </label>
-                                    </div>
+                            </div>
+
+                            <div className="grid grid-cols-2 gap-4">
+                                <div>
+                                    <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1.5">最小幅宽</label>
+                                    <input type="number" min={1} value={minWidth} onChange={e => setMinWidth(parseInt(e.target.value) || 0)} className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-lg font-mono text-sm" />
                                 </div>
-                            )}
+                                <div>
+                                    <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1.5">最大幅宽</label>
+                                    <input type="number" min={1} value={maxWidth} onChange={e => setMaxWidth(parseInt(e.target.value) || 0)} className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-lg font-mono text-sm" />
+                                </div>
+                                <div>
+                                    <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1.5">步长</label>
+                                    <input type="number" min={1} value={stepSize} onChange={e => setStepSize(parseInt(e.target.value) || 0)} className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-lg font-mono text-sm" />
+                                </div>
+                                <div>
+                                    <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1.5">标准总宽</label>
+                                    <input type="number" min={1} value={totalWidth} onChange={e => setTotalWidth(parseInt(e.target.value) || 0)} className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-lg font-mono text-sm" />
+                                </div>
+                            </div>
+
+                            <div>
+                                <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1.5">超产上限（卷）</label>
+                                <input type="number" min={0} value={totalOverCap} onChange={e => setTotalOverCap(parseInt(e.target.value) || 0)} className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-lg font-mono text-sm" />
+                                <p className="text-xs text-slate-400 mt-1">允许的总超产卷数上限；设置为 0 表示不允许超产。</p>
+                            </div>
                         </div>
 
                         <div className="pt-6 mt-6 border-t border-slate-100 flex-shrink-0">
