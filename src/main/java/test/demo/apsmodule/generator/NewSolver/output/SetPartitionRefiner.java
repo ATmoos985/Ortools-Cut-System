@@ -1219,7 +1219,7 @@ public final class SetPartitionRefiner {
     }
 
     /** 列使用 → 指令：一块一指令，工位序号按卷×宽度×工位铺开（与构建端约定一致）。 */
-    private static List<CuttingInstruction> toInstructions(List<ColumnUse> uses,
+    static List<CuttingInstruction> toInstructions(List<ColumnUse> uses,
             CuttingInstruction template, SolverParameters params) {
         int totalWidth = params.getTotalWidth();
         List<CuttingInstruction> out = new ArrayList<>();

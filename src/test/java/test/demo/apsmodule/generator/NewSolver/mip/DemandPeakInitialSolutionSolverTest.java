@@ -4,6 +4,7 @@ import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import test.demo.apsmodule.generator.NewSolver.mip.DemandPeakColumnPoolBuilder.Config;
 import test.demo.apsmodule.generator.NewSolver.mip.UnifiedSetPartitionSolver.Column;
+import test.demo.apsmodule.generator.NewSolver.mip.UnifiedSetPartitionSolver.ColumnUse;
 
 import java.util.List;
 import java.util.Map;
@@ -37,6 +38,28 @@ class DemandPeakInitialSolutionSolverTest {
         assertEquals(0, result.solution().waste());
         assertEquals(1, result.solution().groups());
         assertEquals(2000, result.pool().peaks().get(0).patternWidth());
+    }
+
+    @Test
+    void acceptsExactProtectedUsesAsFeasibleWarmStart() {
+        Column together = column(List.of("A", "B"));
+        Column onlyA = column(List.of("A", "A"));
+        Column onlyB = column(List.of("B", "B"));
+        List<ColumnUse> protectedUses = List.of(
+                new ColumnUse(onlyA, 2),
+                new ColumnUse(onlyB, 2));
+
+        DemandPeakInitialSolutionSolver.InitialSolution result =
+                new DemandPeakInitialSolutionSolver().solve(
+                        List.of(together, onlyA, onlyB),
+                        Map.of("1000|A", 4, "1000|B", 4),
+                        protectedUses.stream().map(ColumnUse::column).toList(),
+                        new Config(2, 4, 8, 8, 1, 0, 10),
+                        4, 0, 2000, 10_000L, protectedUses);
+
+        assertTrue(result.feasible());
+        assertEquals(4, result.solution().cars());
+        assertEquals(1, result.solution().groups());
     }
 
     private static Column column(List<String> messages) {

@@ -153,13 +153,56 @@ public class InstructionConverter {
         int selectedGroups = bestPlan.sequenceGroupCount();
         List<SequenceCandidateRow> candidateRows = new ArrayList<>(
                 buildSequenceCandidateRows(candidates, selectedName));
+        boolean demandPeakImproved = false;
+
+        if (DemandPeakFastStage.isEnabled()) {
+            try {
+                DemandPeakFastStage.StageResult demandPeak =
+                        new DemandPeakFastStage(params).improve(selectedInstructions, groupItems);
+                if (demandPeak.improved()) {
+                    selectedInstructions = demandPeak.instructions();
+                    selectedName = selectedName + "+demand-peak";
+                    selectedGroups = demandPeak.afterStats().groups();
+                    demandPeakImproved = true;
+                    candidateRows = new ArrayList<>(candidateRows.stream()
+                            .map(row -> new SequenceCandidateRow(
+                                    row.name(),
+                                    row.sequenceGroupCount(),
+                                    row.instructions(),
+                                    false))
+                            .toList());
+                    candidateRows.add(new SequenceCandidateRow(
+                            selectedName,
+                            selectedGroups,
+                            selectedInstructions.size(),
+                            true));
+                }
+            } catch (RuntimeException e) {
+                log.warn("Demand-peak fast stage failed; Stage5/LNS fallback remains active", e);
+            }
+        }
 
         if (LocalNeighborhoodSequenceOptimizer.isEnabled()
                 || test.demo.apsmodule.generator.NewSolver.CuttingSolver.qualityMode()) {
             LocalNeighborhoodSequenceOptimizer optimizer =
                     new LocalNeighborhoodSequenceOptimizer(params, this::arrangeForSequenceGroups);
-            LocalNeighborhoodSequenceOptimizer.LnsResult lnsResult =
-                    runLnsVariants(optimizer, selectedInstructions, groupItems);
+            final List<CuttingInstruction> lnsInput = selectedInstructions;
+            LocalNeighborhoodSequenceOptimizer.LnsResult lnsResult;
+            if (demandPeakImproved
+                    && !test.demo.apsmodule.generator.NewSolver.CuttingSolver.qualityMode()) {
+                Map<String, String> shortenedLns = Map.of(
+                        "cutting.lns.maxIterations", Integer.toString(
+                                SolverRuntimeProperties.getInt(
+                                        "cutting.demandPeak.lnsMaxIterations", 24)),
+                        "cutting.lns.maxNoImprove", Integer.toString(
+                                SolverRuntimeProperties.getInt(
+                                        "cutting.demandPeak.lnsMaxNoImprove", 8)));
+                lnsResult = LocalNeighborhoodSequenceOptimizer.withPropertyOverrides(
+                        shortenedLns,
+                        () -> runLnsVariants(optimizer, lnsInput, groupItems));
+            } else {
+                lnsResult = runLnsVariants(optimizer, lnsInput, groupItems);
+            }
             SolverRunColumnArchive.recordInstructions(lnsResult.instructions());
             if (lnsResult.improved()) {
                 selectedInstructions = lnsResult.instructions();

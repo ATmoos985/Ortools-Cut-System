@@ -49,9 +49,24 @@ public final class DemandPeakInitialSolutionSolver {
                                  int wasteCap,
                                  int totalWidth,
                                  long timeLimitMs) {
+        return solve(generatedColumns, demand, protectedColumns, poolConfig,
+                exactCars, wasteCap, totalWidth, timeLimitMs, List.of());
+    }
+
+    public InitialSolution solve(Collection<Column> generatedColumns,
+                                 Map<String, Integer> demand,
+                                 Collection<Column> protectedColumns,
+                                 Config poolConfig,
+                                 int exactCars,
+                                 int wasteCap,
+                                 int totalWidth,
+                                 long timeLimitMs,
+                                 List<ColumnUse> feasibleWarmStart) {
         Result pool = poolBuilder.select(generatedColumns, demand, protectedColumns, poolConfig);
-        List<ColumnUse> warmStart = UnifiedSetPartitionSolver.greedyAlignedWarmStart(
-                pool.columns(), demand, exactCars, wasteCap, totalWidth);
+        List<ColumnUse> warmStart = feasibleWarmStart == null || feasibleWarmStart.isEmpty()
+                ? UnifiedSetPartitionSolver.greedyAlignedWarmStart(
+                        pool.columns(), demand, exactCars, wasteCap, totalWidth)
+                : List.copyOf(feasibleWarmStart);
         UnifiedSetPartitionSolver.Result solution = masterSolver.solve(
                 pool.columns(), demand, exactCars, wasteCap, totalWidth,
                 timeLimitMs, 0.02, warmStart);
