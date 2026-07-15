@@ -439,12 +439,15 @@ public class ExcelImportService {
             }
 
             Map<String, Integer> columnIndexMap = buildColumnIndexMap(headerRow);
-            if (isApsTemplate(sheet, columnIndexMap)) {
+            boolean apsTemplate = isApsTemplate(sheet, columnIndexMap);
+            if (apsTemplate) {
                 templateType = TEMPLATE_TYPE_APS;
                 templateSource = TEMPLATE_SOURCE_APS;
             }
+            String messageTextColumn = selectMessageTextColumn(sheet, columnIndexMap, apsTemplate);
             log.info("字段映射: " + columnIndexMap);
             log.info("识别导入来源: " + templateSource + " (" + templateType + ")");
+            log.info("统一编号来源列: " + messageTextColumn);
 
             // 🔥 特别检查关键列的映射
             log.info("========== 关键列映射检查 ==========");
@@ -469,14 +472,14 @@ public class ExcelImportService {
                     continue;
 
                 try {
-                    OrderItem orderItem = parseOrderItemFromRow(row, columnIndexMap);
+                    OrderItem orderItem = parseOrderItemFromRow(row, columnIndexMap, messageTextColumn);
                     if (orderItem != null) {
                         orderItems.add(orderItem);
                     } else {
                         skippedCount++;
                     }
                 } catch (Exception e) {
-                    String msgText = getCellValueAsString(row, columnIndexMap, "消息文本");
+                    String msgText = getCellValueAsString(row, columnIndexMap, messageTextColumn);
                     log.error("❌ 异常跳过第 " + (i + 1) + "行（消息文本=" + msgText + "): " + e.getMessage());
                     skippedCount++;
                 }
@@ -603,11 +606,14 @@ public class ExcelImportService {
     /**
      * 从行数据解析订单项
      */
-    private OrderItem parseOrderItemFromRow(Row row, Map<String, Integer> columnIndexMap) {
+    private OrderItem parseOrderItemFromRow(
+            Row row,
+            Map<String, Integer> columnIndexMap,
+            String messageTextColumn) {
         int rowNum = row.getRowNum() + 1; // Excel行号（从1开始）
 
         // 获取核心字段
-        String messageText = getMessageTextWithFallback(row, columnIndexMap);
+        String messageText = getCellValueAsString(row, columnIndexMap, messageTextColumn);
         Integer width = getCellNumericValue(row, columnIndexMap, "宽度mm");
         Integer quantity = getCellNumericValue(row, columnIndexMap, "卷数");
         Integer length = getCellNumericValue(row, columnIndexMap, "长度m");
@@ -767,21 +773,42 @@ public class ExcelImportService {
         return getCellValueAsString(cell);
     }
 
-    private String getMessageTextWithFallback(Row row, Map<String, Integer> columnIndexMap) {
-        String[] messageTextColumns = {
-                "来源销售分卷ID",
-                "分卷收集订单号",
-                "分卷收集订单编号",
-                "分卷收集订单ID",
-                "消息文本"
-        };
+    private String selectMessageTextColumn(
+            Sheet sheet,
+            Map<String, Integer> columnIndexMap,
+            boolean apsTemplate) {
+        String[] messageTextColumns = apsTemplate
+                ? new String[] {
+                        "分卷收集订单编号",
+                        "分卷收集订单号",
+                        "分卷收集订单ID",
+                        "来源销售分卷ID",
+                        "消息文本"
+                }
+                : new String[] {
+                        "消息文本",
+                        "来源销售分卷ID",
+                        "分卷收集订单号",
+                        "分卷收集订单编号",
+                        "分卷收集订单ID"
+                };
         for (String columnName : messageTextColumns) {
-            String value = getCellValueAsString(row, columnIndexMap, columnName);
-            if (value != null && !value.trim().isEmpty()) {
-                return value;
+            Integer columnIndex = findColumnIndex(columnIndexMap, columnName);
+            if (columnIndex == null) {
+                continue;
+            }
+            for (int rowIndex = 1; rowIndex <= sheet.getLastRowNum(); rowIndex++) {
+                Row row = sheet.getRow(rowIndex);
+                if (row == null) {
+                    continue;
+                }
+                String value = getCellValueAsString(row.getCell(columnIndex));
+                if (value != null && !value.trim().isEmpty()) {
+                    return columnName;
+                }
             }
         }
-        return "";
+        return "消息文本";
     }
 
     /**
@@ -1018,12 +1045,15 @@ public class ExcelImportService {
             }
 
             columnMapping = buildColumnIndexMap(headerRow);
-            if (isApsTemplate(sheet, columnMapping)) {
+            boolean apsTemplate = isApsTemplate(sheet, columnMapping);
+            if (apsTemplate) {
                 templateType = TEMPLATE_TYPE_APS;
                 templateSource = TEMPLATE_SOURCE_APS;
             }
+            String messageTextColumn = selectMessageTextColumn(sheet, columnMapping, apsTemplate);
             log.info("字段映射: " + columnMapping);
             log.info("识别导入来源: " + templateSource + " (" + templateType + ")");
+            log.info("统一编号来源列: " + messageTextColumn);
 
             // 从第二行开始读取数据
             for (int i = 1; i <= sheet.getLastRowNum(); i++) {
@@ -1032,7 +1062,7 @@ public class ExcelImportService {
                     continue;
 
                 try {
-                    OrderItem orderItem = parseOrderItemFromRow(row, columnMapping);
+                    OrderItem orderItem = parseOrderItemFromRow(row, columnMapping, messageTextColumn);
                     if (orderItem != null) {
                         orderItems.add(orderItem);
                         log.info("解析到订单项: " + orderItem);

@@ -39,7 +39,7 @@ class ExcelImportServiceTest {
         assertEquals("aps", result.getTemplateType());
         assertEquals("APS模板", result.getTemplateSource());
         assertEquals(1, items.size());
-        assertEquals("2066782195533422594", item.getMessageText());
+        assertEquals("2090446662663374409", item.getMessageText());
         assertEquals("杨传志", item.getSalesperson());
         assertEquals("30012543", item.getMaterialCode());
         assertEquals("反射膜_T10_ESY_188_990_1350_B2-61A1D", item.getDescription());
@@ -79,6 +79,46 @@ class ExcelImportServiceTest {
         assertEquals("aps", result.getTemplateType());
         assertEquals(1, result.getOrderItems().size());
         assertEquals("2090446662663374409", result.getOrderItems().get(0).getMessageText());
+    }
+
+    @Test
+    void parseExcelFileWithSourceUsesOneCollectionOrderColumnForWholeApsWorkbook() throws IOException {
+        Workbook workbook = new XSSFWorkbook();
+        var sheet = workbook.createSheet("分卷收集明细");
+        writeRow(sheet.createRow(0),
+                "*业务员编号", "*业务员姓名", "*物料编号", "物料名称", "型号",
+                "*最终数量", "*最终期望交期", "物料组", "单位", "出货型号",
+                "*厚度(μm)", "*宽度(mm)", "*长度(m)", "*卷数", "*包装形式",
+                "涂布类型", "表面处理", "客户名称", "客户编号", "备注",
+                "来源销售分卷ID", "分卷收集订单编号");
+        writeRow(sheet.createRow(1),
+                "03354", "杨传志", "30012543", "反射膜_A", "T10_ESY188",
+                66825, "2026-07-15 00:00:00", "31001", "M2", "SDY188",
+                188, 990, 1350, 50, "B2-61A1D",
+                "", "不电晕/不涂布", "客户A", "10031", "",
+                "", "PSR202607149910");
+        writeRow(sheet.createRow(2),
+                "03354", "杨传志", "30012543", "反射膜_B", "T10_ESY188",
+                66825, "2026-07-15 00:00:00", "31001", "M2", "SDY188",
+                188, 1040, 1000, 81, "B2-61A1D",
+                "", "不电晕/不涂布", "客户B", "10031", "",
+                "2076858997966585857", "PSR202607149909");
+        writeRow(sheet.createRow(3),
+                "03354", "杨传志", "30012543", "反射膜_C", "T10_ESY188",
+                66825, "2026-07-15 00:00:00", "31001", "M2", "SDY188",
+                188, 1150, 1000, 27, "B2-61A1D",
+                "", "不电晕/不涂布", "客户C", "10031", "",
+                "2076858997966585999", "");
+
+        ExcelImportService.ParseResult result = new ExcelImportService()
+                .parseExcelFileWithSource(workbookFile(workbook));
+
+        assertEquals("aps", result.getTemplateType());
+        assertEquals(
+                List.of("PSR202607149910", "PSR202607149909"),
+                result.getOrderItems().stream()
+                        .map(ExcelImportService.OrderItem::getMessageText)
+                        .toList());
     }
 
     @Test
