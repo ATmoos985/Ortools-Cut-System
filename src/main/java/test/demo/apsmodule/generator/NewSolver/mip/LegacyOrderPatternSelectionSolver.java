@@ -175,9 +175,12 @@ class LegacyOrderPatternSelectionSolver {
             long deadlineMs) {
         // Distribute remaining budget across stages. Stage1/2 are critical;
         // Stage3/4 are refinements and get whatever is left.
+        boolean fastPreview = SolverRuntimeProperties.getBoolean("cutting.fast.preview", false);
         long now = System.currentTimeMillis();
-        long remaining = Math.max(5000, deadlineMs - now);
-        long stage1Time = Math.max(5000, remaining / 6);
+        long remaining = Math.max(fastPreview ? 500 : 5000, deadlineMs - now);
+        long stage1Time = fastPreview
+                ? Math.max(500, remaining * 25 / 100)
+                : Math.max(5000, remaining / 6);
         int[] stage1Result = solveMIPStage1(patterns, demands, allowOverSet, stage1Time);
         if (stage1Result == null) {
             return Collections.emptyMap();
@@ -185,8 +188,10 @@ class LegacyOrderPatternSelectionSolver {
 
         int optimalOver = Arrays.stream(stage1Result).sum();
         log.info("Legacy Stage1 completed: optimalOver={}", optimalOver);
-        remaining = Math.max(5000, deadlineMs - System.currentTimeMillis());
-        long stage2Time = Math.max(5000, remaining * 55 / 100);
+        remaining = Math.max(fastPreview ? 750 : 5000, deadlineMs - System.currentTimeMillis());
+        long stage2Time = fastPreview
+                ? Math.max(750, remaining * 60 / 100)
+                : Math.max(5000, remaining * 55 / 100);
         Map<PatternCandidate, Integer> stage2Solution = solveMIPStage2(
                 patterns, demands, allowOverSet, optimalOver, stage2Time);
         if (stage2Solution == null || stage2Solution.isEmpty()) {
@@ -199,8 +204,15 @@ class LegacyOrderPatternSelectionSolver {
         log.info("Legacy Stage2 completed: rolls={}, patterns={}, waste={}mm, sig#={}",
                 totalRolls, stage2Patterns, stage2Waste, solutionSignatureHash(stage2Solution));
 
-        remaining = Math.max(3000, deadlineMs - System.currentTimeMillis());
-        long stage3Time = Math.max(3000, remaining * 60 / 100);
+        if (fastPreview && System.currentTimeMillis() >= deadlineMs) {
+            log.info("Fast preview A-layer budget reached after Stage2; using roll-optimal solution");
+            return stage2Solution;
+        }
+
+        remaining = Math.max(fastPreview ? 500 : 3000, deadlineMs - System.currentTimeMillis());
+        long stage3Time = fastPreview
+                ? Math.max(500, remaining)
+                : Math.max(3000, remaining * 60 / 100);
         Map<PatternCandidate, Integer> stage3Solution = solveMIPStage3(
                 patterns, demands, allowOverSet, optimalOver, totalRolls, stage3Time);
         if (stage3Solution == null || stage3Solution.isEmpty()) {
@@ -213,6 +225,11 @@ class LegacyOrderPatternSelectionSolver {
         int stage3Patterns = stage3Solution.size();
         log.info("Legacy Stage3 completed: rolls={}, patterns={}, waste={}mm, sig#={}",
                 stage3Rolls, stage3Patterns, totalWaste, solutionSignatureHash(stage3Solution));
+
+        if (fastPreview) {
+            log.info("Fast preview skips A-layer Stage4 pattern-count refinement");
+            return stage3Solution;
+        }
 
         int wasteSlack = Math.max(200, (int) (totalWaste * 0.05));
         log.info("Legacy Stage4 constraints: maxRolls={}, maxWaste={}, wasteSlack={}, wasteCap={}",

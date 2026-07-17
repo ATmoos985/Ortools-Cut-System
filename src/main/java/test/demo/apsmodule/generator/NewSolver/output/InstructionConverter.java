@@ -33,8 +33,9 @@ import java.util.stream.Collectors;
 /**
  * Converts the selected patterns into executable instructions.
  *
- * Stage 5 MIP and greedy assignment are candidate generators. The final winner
- * is the candidate with the smallest real sequence-group count.
+ * The quality path compares Stage 5 MIP and fallback assignment candidates.
+ * The fast-preview entry deliberately performs one deterministic greedy
+ * conversion without sequence-group optimization.
  */
 public class InstructionConverter {
 
@@ -94,6 +95,37 @@ public class InstructionConverter {
             return refineWithSetPartition(base);
         }
         return base;
+    }
+
+    /**
+     * Builds a complete deterministic preview without entering Stage5 or any
+     * sequence-group quality stage. The natural greedy block order is retained.
+     */
+    public ConversionResult convertFastPreview(Map<PatternCandidate, Integer> solution,
+            String groupKey,
+            List<SolverOrderItem> groupItems,
+            Map<Integer, Integer> demands) {
+        List<CuttingInstruction> instructions = buildFromGreedyAssignment(
+                solution,
+                groupKey,
+                groupItems,
+                OrderAssignmentOptimizer.GreedyStrategy.BATCH_FIRST,
+                false);
+        if (!isCompletePreview(instructions, groupItems, demands)) {
+            log.warn("Fast preview rejected because assignment conservation failed for group {}", groupKey);
+            return new ConversionResult(new ArrayList<>(), "none", 0, List.of());
+        }
+
+        SolverRunColumnArchive.recordInstructions(instructions);
+        SequenceGroupPostProcessor.GroupStats stats =
+                SequenceGroupPostProcessor.computeGroupStats(instructions);
+        String selectedName = "fast-greedy";
+        return new ConversionResult(
+                instructions,
+                selectedName,
+                stats.groups(),
+                List.of(new SequenceCandidateRow(
+                        selectedName, stats.groups(), instructions.size(), true)));
     }
 
     /**
@@ -591,16 +623,36 @@ public class InstructionConverter {
             List<SolverOrderItem> groupItems,
             OrderAssignmentOptimizer.GreedyStrategy strategy) {
 
+        return buildFromGreedyAssignment(solution, groupKey, groupItems, strategy, true);
+    }
+
+    private List<CuttingInstruction> buildFromGreedyAssignment(
+            Map<PatternCandidate, Integer> solution,
+            String groupKey,
+            List<SolverOrderItem> groupItems,
+            OrderAssignmentOptimizer.GreedyStrategy strategy,
+            boolean optimizeSequenceQuality) {
+
         List<CuttingInstruction> instructions = new ArrayList<>();
         Map<Integer, List<SolverOrderItem>> widthToItems = groupItems.stream()
-                .collect(Collectors.groupingBy(SolverOrderItem::getWidth));
+                .collect(Collectors.groupingBy(
+                        SolverOrderItem::getWidth,
+                        LinkedHashMap::new,
+                        Collectors.toList()));
 
         Map<String, Integer> remainingDemands = new HashMap<>();
         for (SolverOrderItem item : groupItems) {
             remainingDemands.merge(demandKey(item.getWidth(), item.getMessageText()), item.getDemand(), Integer::sum);
         }
 
-        for (Map.Entry<PatternCandidate, Integer> entry : solution.entrySet()) {
+        List<Map.Entry<PatternCandidate, Integer>> orderedSolution = solution.entrySet().stream()
+                .filter(entry -> entry.getValue() != null && entry.getValue() > 0)
+                .sorted(Comparator
+                        .comparingInt((Map.Entry<PatternCandidate, Integer> entry) ->
+                                entry.getKey().getRollWidth())
+                        .thenComparing(entry -> entry.getKey().signature()))
+                .toList();
+        for (Map.Entry<PatternCandidate, Integer> entry : orderedSolution) {
             PatternCandidate pattern = entry.getKey();
             int usageCount = entry.getValue();
 
@@ -662,12 +714,64 @@ public class InstructionConverter {
             instructions.add(instruction);
         }
 
-        rebalanceAssignments(instructions, groupItems);
-        optimizeInstructionBlocks(instructions);
-        instructions = optimizeInstructionFamilies(instructions);
-        compactInstructionRollOrder(instructions);
-        reorderInstructionsForSequenceGroups(instructions);
+        if (optimizeSequenceQuality) {
+            rebalanceAssignments(instructions, groupItems);
+            optimizeInstructionBlocks(instructions);
+            instructions = optimizeInstructionFamilies(instructions);
+            compactInstructionRollOrder(instructions);
+            reorderInstructionsForSequenceGroups(instructions);
+        }
         return instructions;
+    }
+
+    private boolean isCompletePreview(List<CuttingInstruction> instructions,
+            List<SolverOrderItem> groupItems,
+            Map<Integer, Integer> demands) {
+        if (instructions == null || instructions.isEmpty()) {
+            return false;
+        }
+
+        Map<String, Integer> assigned = countAssignmentsByDemandKey(instructions);
+        Map<String, Integer> demanded = new HashMap<>();
+        for (SolverOrderItem item : groupItems) {
+            demanded.merge(demandKey(item.getWidth(), item.getMessageText()), item.getDemand(), Integer::sum);
+        }
+        for (Map.Entry<String, Integer> demand : demanded.entrySet()) {
+            if (assigned.getOrDefault(demand.getKey(), 0) < demand.getValue()) {
+                return false;
+            }
+        }
+
+        Map<Integer, Integer> producedByWidth = new HashMap<>();
+        for (CuttingInstruction instruction : instructions) {
+            if (instruction.getSubRolls() == null || instruction.getStationAssignments() == null) {
+                return false;
+            }
+            int stationsPerRoll = instruction.getSubRolls().values().stream()
+                    .mapToInt(Integer::intValue)
+                    .sum();
+            if (instruction.getStationAssignments().size()
+                    != stationsPerRoll * instruction.getUsageCount()) {
+                return false;
+            }
+            Map<Integer, Long> assignedByWidth = instruction.getStationAssignments().stream()
+                    .collect(Collectors.groupingBy(
+                            StationAssignment::getWidth,
+                            Collectors.counting()));
+            for (Map.Entry<Integer, Integer> cut : instruction.getSubRolls().entrySet()) {
+                long expected = (long) cut.getValue() * instruction.getUsageCount();
+                if (assignedByWidth.getOrDefault(cut.getKey(), 0L) != expected) {
+                    return false;
+                }
+                producedByWidth.merge(cut.getKey(), (int) expected, Integer::sum);
+            }
+        }
+        for (Map.Entry<Integer, Integer> demand : demands.entrySet()) {
+            if (producedByWidth.getOrDefault(demand.getKey(), 0) < demand.getValue()) {
+                return false;
+            }
+        }
+        return true;
     }
 
     private void addCandidate(List<ScoredInstructionPlan> candidates, String name, List<CuttingInstruction> instructions) {

@@ -27,8 +27,10 @@ class OptimizationExecutionServiceTest {
     void appliesFastProfileOnlyDuringOptimization() {
         String previous = System.getProperty("cutting.lns.enabled");
         String previousQuality = System.getProperty("cutting.quality");
+        String previousFast = System.getProperty("cutting.fast.preview");
         System.clearProperty("cutting.lns.enabled");
         System.clearProperty("cutting.quality");
+        System.clearProperty("cutting.fast.preview");
         try {
             CuttingOptimizationService optimizationService = mock(CuttingOptimizationService.class);
             SolverConfigFactory solverConfigFactory = mock(SolverConfigFactory.class);
@@ -49,11 +51,15 @@ class OptimizationExecutionServiceTest {
 
             when(solverConfigFactory.fromOptimizationRequest(request)).thenReturn(config);
             when(optimizationService.optimizeUnified(anyList(), same(config))).thenAnswer(invocation -> {
-                assertTrue(LocalNeighborhoodSequenceOptimizer.isEnabled());
+                assertFalse(LocalNeighborhoodSequenceOptimizer.isEnabled());
                 assertFalse(CuttingSolver.qualityMode());
-                assertTrue(SolverRuntimeProperties.getBoolean("cutting.demandPeak.enabled", false));
-                assertTrue(SolverRuntimeProperties.getBoolean(
-                        "cutting.demandPeak.smallPolish.enabled", false));
+                assertTrue(CuttingSolver.fastPreviewMode());
+                assertEquals(OptimizationExecutionService.DEFAULT_FAST_BUDGET_MS,
+                        SolverRuntimeProperties.getLong("cutting.fast.budgetMs", -1));
+                assertFalse(SolverRuntimeProperties.getBoolean("cutting.phase2.enabled", true));
+                assertFalse(SolverRuntimeProperties.getBoolean("cutting.demandPeak.enabled", true));
+                assertFalse(SolverRuntimeProperties.getBoolean(
+                        "cutting.demandPeak.smallPolish.enabled", true));
                 assertFalse(SolverRuntimeProperties.getBoolean("cutting.spr.enabled", true));
                 assertFalse(SolverRuntimeProperties.getBoolean("cutting.lns.enrichPatterns", true));
                 return expected;
@@ -64,6 +70,7 @@ class OptimizationExecutionServiceTest {
             assertSame(expected, actual.result());
             assertFalse(LocalNeighborhoodSequenceOptimizer.isEnabled());
             assertFalse(CuttingSolver.qualityMode());
+            assertFalse(CuttingSolver.fastPreviewMode());
         } finally {
             if (previous == null) {
                 System.clearProperty("cutting.lns.enabled");
@@ -74,6 +81,11 @@ class OptimizationExecutionServiceTest {
                 System.clearProperty("cutting.quality");
             } else {
                 System.setProperty("cutting.quality", previousQuality);
+            }
+            if (previousFast == null) {
+                System.clearProperty("cutting.fast.preview");
+            } else {
+                System.setProperty("cutting.fast.preview", previousFast);
             }
         }
     }
@@ -97,6 +109,7 @@ class OptimizationExecutionServiceTest {
             when(solverConfigFactory.fromOptimizationRequest(request)).thenReturn(config);
             when(optimizationService.optimizeUnified(anyList(), same(config))).thenAnswer(invocation -> {
                 assertTrue(CuttingSolver.qualityMode());
+                assertFalse(CuttingSolver.fastPreviewMode());
                 assertTrue(SolverRuntimeProperties.getBoolean("cutting.spr.enabled", false));
                 assertFalse(SolverRuntimeProperties.getBoolean("cutting.demandPeak.enabled", true));
                 return expected;
@@ -138,6 +151,7 @@ class OptimizationExecutionServiceTest {
             when(optimizationService.optimizeUnified(anyList(), same(config))).thenAnswer(invocation -> {
                 assertTrue(LocalNeighborhoodSequenceOptimizer.isEnabled());
                 assertTrue(CuttingSolver.qualityMode());
+                assertFalse(CuttingSolver.fastPreviewMode());
                 assertFalse(SolverRuntimeProperties.getBoolean("cutting.demandPeak.enabled", true));
                 assertTrue(SolverRuntimeProperties.getBoolean("cutting.spr.enabled", false));
                 assertTrue(SolverRuntimeProperties.getBoolean(

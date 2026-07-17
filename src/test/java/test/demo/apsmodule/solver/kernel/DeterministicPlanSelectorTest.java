@@ -38,6 +38,14 @@ class DeterministicPlanSelectorTest {
         assertEquals("earlier", selected.value());
     }
 
+    @Test
+    void zeroOverproductionBeatsFewerRollsWithOverproduction() {
+        PlanQuality zeroOverTwelveRolls = quality(0, 12, 99, 99, 99, 99, 99, 999, 0);
+        PlanQuality overOneTenRolls = quality(1, 10, 1, 0, 0, 0, 1, 1, 1);
+
+        assertTrue(selector.isBetter(zeroOverTwelveRolls, overOneTenRolls));
+    }
+
     private void assertBetter(PlanQuality candidate, PlanQuality baseline) {
         assertTrue(selector.isBetter(candidate, baseline));
     }

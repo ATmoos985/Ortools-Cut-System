@@ -15,9 +15,32 @@ import java.util.Map;
 import java.lang.reflect.Method;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class InstructionConverterTest {
+
+    @Test
+    void fastPreviewSkipsStage5AndReturnsCompleteNaturalPlan() {
+        SolverParameters params = testParams();
+        PatternCandidate pattern = new PatternCandidate(linkedPattern(1000, 1, 1200, 1), 2200);
+        Map<PatternCandidate, Integer> solution = Map.of(pattern, 3);
+        List<SolverOrderItem> items = orderItems();
+        TestInstructionConverter converter =
+                new TestInstructionConverter(params, pattern, null, false, false);
+
+        InstructionConverter.ConversionResult result = converter.convertFastPreview(
+                solution, "group-a", items, Map.of(1000, 3, 1200, 3));
+
+        assertFalse(converter.mipCalled);
+        assertEquals("fast-greedy", result.selectedName());
+        assertEquals(1, result.instructions().size());
+        assertEquals(3, result.instructions().get(0).getUsageCount());
+        assertEquals(Map.of("A", 2L, "B", 1L),
+                messageCounts(result.instructions().get(0), 1000));
+        assertEquals(Map.of("X", 3L),
+                messageCounts(result.instructions().get(0), 1200));
+    }
 
     @Test
     void convertChoosesCandidateWithFewestRealSequenceGroups() {
@@ -275,6 +298,7 @@ class InstructionConverterTest {
         private final boolean mutatePostProcess;
         private final List<List<StationAssignment>> hintRolls;
         private boolean hintCollected;
+        private boolean mipCalled;
 
         private TestInstructionConverter(SolverParameters params,
                 PatternCandidate pattern,
@@ -302,6 +326,7 @@ class InstructionConverterTest {
         protected Map<PatternCandidate, List<AssignmentMIPSolver.AssignmentBlock>> solveAssignmentWithMip(
                 Map<PatternCandidate, Integer> solution,
                 List<SolverOrderItem> groupItems) {
+            mipCalled = true;
             if (skipMip) {
                 return null;
             }

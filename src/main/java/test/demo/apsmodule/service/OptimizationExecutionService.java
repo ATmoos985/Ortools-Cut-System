@@ -10,6 +10,8 @@ import java.util.Map;
 @Service
 public class OptimizationExecutionService {
 
+    static final long DEFAULT_FAST_BUDGET_MS = 10_000L;
+
     public record ExecutionResult(
             OptimizationRequest request,
             SolverConfig config,
@@ -47,12 +49,20 @@ public class OptimizationExecutionService {
             solverProperties.put("cutting.lns.enrichPatterns", "false");
         }
         if (profile == OptimizationRequest.SolverProfile.FAST) {
+            solverProperties.put("cutting.fast.preview", "true");
+            solverProperties.put("cutting.fast.budgetMs", Long.toString(DEFAULT_FAST_BUDGET_MS));
             solverProperties.put("cutting.quality", "false");
             solverProperties.put("cutting.aLayerParityPenalties", "0");
-            solverProperties.put("cutting.demandPeak.enabled", "true");
-            solverProperties.put("cutting.demandPeak.smallPolish.enabled", "true");
+            solverProperties.put("cutting.aLayerAlignmentLambdas", "0");
+            solverProperties.put("cutting.nestedWidthCandidateSteps", "0");
+            solverProperties.put("cutting.candidateOrders", "1");
+            solverProperties.put("cutting.lns.enabled", "false");
+            solverProperties.put("cutting.phase2.enabled", "false");
+            solverProperties.put("cutting.demandPeak.enabled", "false");
+            solverProperties.put("cutting.demandPeak.smallPolish.enabled", "false");
             solverProperties.put("cutting.spr.enabled", "false");
         } else if (profile == OptimizationRequest.SolverProfile.QUALITY) {
+            solverProperties.put("cutting.fast.preview", "false");
             solverProperties.put("cutting.quality", "true");
             solverProperties.put("cutting.aLayerParityPenalties", "0,0.1");
             solverProperties.put("cutting.demandPeak.enabled", "false");

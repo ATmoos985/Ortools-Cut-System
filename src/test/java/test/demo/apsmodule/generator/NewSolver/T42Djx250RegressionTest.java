@@ -22,6 +22,52 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class T42Djx250RegressionTest {
 
     @Test
+    void fastPreviewReturnsCompletePlan() throws Exception {
+        List<SolverOrderItem> items = loadItems();
+        SolverConfig config = buildConfig(4410);
+
+        long startedAt = System.currentTimeMillis();
+        List<CuttingInstruction> instructions = SolverRuntimeProperties.withOverrides(
+                Map.ofEntries(
+                        Map.entry("cutting.fast.preview", "true"),
+                        Map.entry("cutting.fast.budgetMs", "10000"),
+                        Map.entry("cutting.quality", "false"),
+                        Map.entry("cutting.aLayerParityPenalties", "0"),
+                        Map.entry("cutting.aLayerAlignmentLambdas", "0"),
+                        Map.entry("cutting.nestedWidthCandidateSteps", "0"),
+                        Map.entry("cutting.candidateOrders", "1"),
+                        Map.entry("cutting.lns.enabled", "false"),
+                        Map.entry("cutting.phase2.enabled", "false"),
+                        Map.entry("cutting.demandPeak.enabled", "false"),
+                        Map.entry("cutting.spr.enabled", "false")),
+                () -> new CuttingSolver().solve(items, config));
+        long elapsedMs = System.currentTimeMillis() - startedAt;
+
+        SequenceGroupPostProcessor.GroupStats stats =
+                SequenceGroupPostProcessor.computeGroupStats(instructions);
+        List<ColumnUse> uses = SolverExperimentSnapshot.fromInstructions(instructions);
+        SolverExperimentSnapshot.Metrics metrics =
+                SolverExperimentSnapshot.metrics(uses, config.getTotalWidth());
+        Map<String, Integer> demand = SolverExperimentSnapshot.demandOf(items);
+        Map<String, Integer> produced = SolverExperimentSnapshot.producedBy(uses);
+        int under = demand.entrySet().stream()
+                .mapToInt(entry -> Math.max(0,
+                        entry.getValue() - produced.getOrDefault(entry.getKey(), 0)))
+                .sum();
+        int over = produced.entrySet().stream()
+                .mapToInt(entry -> Math.max(0,
+                        entry.getValue() - demand.getOrDefault(entry.getKey(), 0)))
+                .sum();
+
+        assertTrue(!instructions.isEmpty());
+        assertEquals(0, under);
+        System.out.printf("T42DJX250 FAST: groups=%d odd=%d one=%d small=%d cars=%d "
+                        + "over=%d waste=%d elapsedMs=%d%n",
+                stats.groups(), stats.oddCarGroups(), stats.oneCarGroups(),
+                stats.smallCarGroups(), metrics.cars(), over, metrics.waste(), elapsedMs);
+    }
+
+    @Test
     void exactQualityProfileEliminatesSingleCarGroup() throws Exception {
         verifyExactQualityProfile(4400);
     }

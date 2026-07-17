@@ -94,7 +94,13 @@ public class CuttingSolver implements CuttingSolverAlgorithm {
         PatternGenerator patternGenerator = new PatternGenerator(params);
         ColumnGenerationSolver colGenSolver = new ColumnGenerationSolver(params);
         Map<String, List<SolverOrderItem>> groups = items.stream()
-                .collect(Collectors.groupingBy(SolverOrderItem::getGroupKey));
+                .collect(Collectors.groupingBy(
+                        SolverOrderItem::getGroupKey,
+                        TreeMap::new,
+                        Collectors.toList()));
+        long fastDeadlineMs = fastPreviewMode()
+                ? startTime + fastBudgetMs()
+                : Long.MAX_VALUE;
 
         log.info("Group count: {}", groups.size());
 
@@ -104,10 +110,13 @@ public class CuttingSolver implements CuttingSolverAlgorithm {
             log.info("Solve report: {}", report.getFilePath());
 
             int totalGroups = groups.size();
+            int groupIndex = 0;
             for (Map.Entry<String, List<SolverOrderItem>> group : groups.entrySet()) {
                 String groupKey = group.getKey();
                 List<SolverOrderItem> groupItems = group.getValue();
                 long groupStart = System.currentTimeMillis();
+                int groupsRemaining = Math.max(1, totalGroups - groupIndex++);
+                long aLayerDeadlineMs = allocateALayerDeadline(fastDeadlineMs, groupsRemaining);
 
                 log.info("--- Processing group: {} ({} items) ---", groupKey, groupItems.size());
 
@@ -168,7 +177,8 @@ public class CuttingSolver implements CuttingSolverAlgorithm {
                                         seed,
                                         alignmentLambda,
                                         parityPenalty,
-                                        alignmentContext));
+                                        alignmentContext,
+                                        false));
                             }
                         }
                     }
@@ -190,8 +200,21 @@ public class CuttingSolver implements CuttingSolverAlgorithm {
                                 A_LAYER_SEEDS[0],
                                 0.0,
                                 nestedParity,
-                                alignmentContext));
+                                alignmentContext,
+                                false));
                     }
+                }
+                if (qualityMode()) {
+                    aLayerTasks.add(new ALayerTask(
+                            "fast-baseline-",
+                            patterns,
+                            demandOrders.get(0),
+                            allowOverSet,
+                            A_LAYER_SEEDS[0],
+                            0.0,
+                            0.0,
+                            alignmentContext,
+                            true));
                 }
                 List<MultiStageMIPSolver.SolveCandidate> rawCandidates;
                 try (SolverTaskExecutor executor = createTaskExecutor(
@@ -199,7 +222,7 @@ public class CuttingSolver implements CuttingSolverAlgorithm {
                         "cutting.parallel.aLayer.threads", aLayerTasks.size())) {
                     logParallelStage("A-layer", executor, aLayerTasks.size());
                     rawCandidates = executor.mapOrdered(aLayerTasks,
-                                    task -> solveALayerTask(task, params)).stream()
+                                    task -> solveALayerTask(task, params, aLayerDeadlineMs)).stream()
                             .filter(Objects::nonNull)
                             .toList();
                 }
@@ -218,9 +241,8 @@ public class CuttingSolver implements CuttingSolverAlgorithm {
                     continue;
                 }
 
-                // Full assignment (Stage5 + Phase2) on every pattern candidate. Cheap
-                // greedy screening was tried but its group ordering does not track the
-                // Stage5 result, so it dropped the genuinely best candidates.
+                // FAST uses one deterministic greedy conversion. QUALITY keeps that
+                // conversion as the baseline before evaluating Stage5/LNS/SPR.
                 GroupSolvePlan bestPlan = null;
                 List<SolveReportWriter.CandidateRow> reportRows = new ArrayList<>();
                 List<SolveReportWriter.SequenceCandidateRow> sequenceReportRows = new ArrayList<>();
@@ -324,12 +346,25 @@ public class CuttingSolver implements CuttingSolverAlgorithm {
     }
 
     private MultiStageMIPSolver.SolveCandidate solveALayerTask(
-            ALayerTask task, SolverParameters params) {
+            ALayerTask task, SolverParameters params, long deadlineMs) {
         try {
+            SolverParameters taskParams = params.copy();
+            if (deadlineMs != Long.MAX_VALUE) {
+                long remainingMs = Math.max(500L, deadlineMs - System.currentTimeMillis());
+                taskParams.setTimeoutMs(Math.min(taskParams.getTimeoutMs(), remainingMs));
+            }
+            if (task.fastBaselineCandidate()) {
+                taskParams.setTimeoutMs(Math.min(taskParams.getTimeoutMs(), fastBudgetMs()));
+            }
+            Map<String, String> taskOverrides = new HashMap<>();
+            taskOverrides.put("cutting.aLayerParityPenalty",
+                    Double.toString(task.parityPenalty()));
+            if (task.fastBaselineCandidate()) {
+                taskOverrides.put("cutting.fast.preview", "true");
+            }
             MultiStageMIPSolver.SolveCandidate primary = SolverRuntimeProperties.withOverrides(
-                    Map.of("cutting.aLayerParityPenalty",
-                            Double.toString(task.parityPenalty())),
-                    () -> new MultiStageMIPSolver(params).solvePrimaryOnly(
+                    taskOverrides,
+                    () -> new MultiStageMIPSolver(taskParams).solvePrimaryOnly(
                             new ArrayList<>(task.patterns()),
                             task.demands(),
                             task.allowOverWidths(),
@@ -363,7 +398,9 @@ public class CuttingSolver implements CuttingSolverAlgorithm {
                 "candidate", "cutting.parallel.candidates.enabled",
                 "cutting.parallel.candidates.threads", tasks.size())) {
             boolean outerParallel = executor.parallelism(tasks.size()) > 1;
-            logParallelStage("Stage5+LNS candidates", executor, tasks.size());
+            logParallelStage(fastPreviewMode()
+                    ? "FAST preview candidates"
+                    : "Stage5+LNS candidates", executor, tasks.size());
             baseEvaluations = executor.mapOrdered(tasks,
                             task -> evaluateBaseCandidate(
                                     task, groupKey, groupItems, demands, params, outerParallel))
@@ -412,23 +449,54 @@ public class CuttingSolver implements CuttingSolverAlgorithm {
             boolean outerParallel) {
         try {
             InstructionConverter converter = new InstructionConverter(params);
-            InstructionConverter.ConversionResult conversion;
-            if (outerParallel) {
-                conversion = SolverRuntimeProperties.withOverrides(
-                        Map.of(
-                                "cutting.lns.parallel", "false",
-                                "cutting.spr.parallel", "false"),
-                        () -> converter.convertWithoutSetPartition(
-                                task.candidate().result().getSolution(),
-                                groupKey,
-                                groupItems,
-                                demands));
-            } else {
-                conversion = converter.convertWithoutSetPartition(
+            InstructionConverter.ConversionResult fastBaseline = null;
+            if (fastPreviewMode() || qualityMode()) {
+                fastBaseline = converter.convertFastPreview(
                         task.candidate().result().getSolution(),
                         groupKey,
                         groupItems,
                         demands);
+                if (fastPreviewMode()) {
+                    return fastBaseline.instructions().isEmpty()
+                            ? null
+                            : new CandidateEvaluation(task.order(), task.candidate(), fastBaseline);
+                }
+            }
+
+            InstructionConverter.ConversionResult conversion;
+            try {
+                if (outerParallel) {
+                    conversion = SolverRuntimeProperties.withOverrides(
+                            Map.of(
+                                    "cutting.lns.parallel", "false",
+                                    "cutting.spr.parallel", "false"),
+                            () -> converter.convertWithoutSetPartition(
+                                    task.candidate().result().getSolution(),
+                                    groupKey,
+                                    groupItems,
+                                    demands));
+                } else {
+                    conversion = converter.convertWithoutSetPartition(
+                            task.candidate().result().getSolution(),
+                            groupKey,
+                            groupItems,
+                            demands);
+                }
+            } catch (RuntimeException qualityFailure) {
+                if (fastBaseline != null && !fastBaseline.instructions().isEmpty()) {
+                    log.warn("Quality conversion failed for {}; fast baseline remains active",
+                            task.candidate().name(), qualityFailure);
+                    return new CandidateEvaluation(
+                            task.order(), task.candidate(), fastBaseline);
+                }
+                throw qualityFailure;
+            }
+            if (qualityMode() && fastBaseline != null && !fastBaseline.instructions().isEmpty()) {
+                conversion = selectQualityOrFastBaseline(
+                        task.candidate().result(), conversion, fastBaseline, task.order());
+            }
+            if (conversion.instructions().isEmpty()) {
+                return null;
             }
             return new CandidateEvaluation(task.order(), task.candidate(), conversion);
         } catch (RuntimeException e) {
@@ -545,6 +613,24 @@ public class CuttingSolver implements CuttingSolverAlgorithm {
      */
     public static boolean qualityMode() {
         return SolverRuntimeProperties.getBoolean("cutting.quality", false);
+    }
+
+    public static boolean fastPreviewMode() {
+        return SolverRuntimeProperties.getBoolean("cutting.fast.preview", false);
+    }
+
+    private static long fastBudgetMs() {
+        return Math.max(1_000L, SolverRuntimeProperties.getLong(
+                "cutting.fast.budgetMs", 10_000L));
+    }
+
+    private long allocateALayerDeadline(long requestDeadlineMs, int groupsRemaining) {
+        if (requestDeadlineMs == Long.MAX_VALUE) {
+            return Long.MAX_VALUE;
+        }
+        long now = System.currentTimeMillis();
+        long remainingMs = Math.max(1_000L, requestDeadlineMs - now);
+        return now + Math.max(1_000L, remainingMs / Math.max(1, groupsRemaining));
     }
 
     static int nestedWidthCandidateCap(SolverParameters params) {
@@ -693,6 +779,44 @@ public class CuttingSolver implements CuttingSolverAlgorithm {
                 plan.order());
     }
 
+    private InstructionConverter.ConversionResult selectQualityOrFastBaseline(
+            SolverResult result,
+            InstructionConverter.ConversionResult quality,
+            InstructionConverter.ConversionResult fast,
+            int order) {
+        if (quality == null || quality.instructions().isEmpty()) {
+            return fast;
+        }
+        PlanQuality qualityScore = conversionQuality(result, quality, order * 2);
+        PlanQuality fastScore = conversionQuality(result, fast, order * 2 + 1);
+        boolean qualityWins = PLAN_SELECTOR.isBetter(qualityScore, fastScore);
+        log.info("Quality baseline selection: fast={}/{}/{}/{} quality={}/{}/{}/{} -> {}",
+                fastScore.sequenceGroups(), fastScore.oddCarGroups(),
+                fastScore.oneCarGroups(), fastScore.smallCarGroups(),
+                qualityScore.sequenceGroups(), qualityScore.oddCarGroups(),
+                qualityScore.oneCarGroups(), qualityScore.smallCarGroups(),
+                qualityWins ? quality.selectedName() : fast.selectedName());
+        return qualityWins ? quality : fast;
+    }
+
+    private PlanQuality conversionQuality(
+            SolverResult result,
+            InstructionConverter.ConversionResult conversion,
+            int sourceOrder) {
+        SequenceGroupPostProcessor.GroupStats stats =
+                SequenceGroupPostProcessor.computeGroupStats(conversion.instructions());
+        return new PlanQuality(
+                result.getTotalOverProduction(),
+                result.getTotalRolls(),
+                stats.groups(),
+                stats.oddCarGroups(),
+                stats.oneCarGroups(),
+                stats.smallCarGroups(),
+                result.getPatternCount(),
+                result.getTotalWaste(),
+                sourceOrder);
+    }
+
     private record ALayerTask(
             String namePrefix,
             List<PatternCandidate> patterns,
@@ -701,7 +825,8 @@ public class CuttingSolver implements CuttingSolverAlgorithm {
             int seed,
             double alignmentLambda,
             double parityPenalty,
-            PatternAlignmentContext alignmentContext) {
+            PatternAlignmentContext alignmentContext,
+            boolean fastBaselineCandidate) {
 
         private ALayerTask {
             patterns = List.copyOf(patterns);
