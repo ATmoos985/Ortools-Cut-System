@@ -12,6 +12,7 @@ import test.demo.apsmodule.generator.NewSolver.config.SolverRuntimeProperties;
 import test.demo.apsmodule.service.CuttingInstruction;
 import test.demo.apsmodule.service.SolverOrderItem;
 import test.demo.apsmodule.service.StationAssignment;
+import test.demo.apsmodule.solver.kernel.execution.BoundedSolverTaskExecutor;
 
 import java.util.ArrayDeque;
 import java.util.ArrayList;
@@ -175,13 +176,13 @@ public class LocalNeighborhoodSequenceOptimizer {
         // sixian (49) and t9est188 (69); ON by default — set -Dcutting.lns.parallel=false for serial.
         boolean parallel = booleanProperty("cutting.lns.parallel", true);
         int requestedParallelism = intProperty(
-                "cutting.lns.parallelism", BoundedSolverExecutor.globalParallelism());
-        BoundedSolverExecutor executor = parallel
-                ? BoundedSolverExecutor.create("lns", requestedParallelism)
+                "cutting.lns.parallelism", BoundedSolverTaskExecutor.globalParallelism());
+        BoundedSolverTaskExecutor executor = parallel
+                ? BoundedSolverTaskExecutor.create("lns", requestedParallelism)
                 : null;
         if (executor != null) {
             log.info("LNS executor: requestThreads={}, globalThreads={}",
-                    executor.configuredParallelism(), BoundedSolverExecutor.globalParallelism());
+                    executor.configuredParallelism(), BoundedSolverTaskExecutor.globalParallelism());
         }
         try {
             for (int iteration = 0; iteration < maxIterations; iteration++) {

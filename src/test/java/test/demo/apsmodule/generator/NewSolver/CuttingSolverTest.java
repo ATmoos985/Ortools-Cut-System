@@ -170,6 +170,13 @@ class CuttingSolverTest {
         assertTrue((boolean) method.invoke(solver, singleCar, zeroSingle));
     }
 
+    @Test
+    void sprShortlistUsesBestBaseGroupCountAndInclusiveGap() {
+        assertTrue(CuttingSolver.isSprShortlisted(54, 46, 8));
+        assertFalse(CuttingSolver.isSprShortlisted(55, 46, 8));
+        assertTrue(CuttingSolver.isSprShortlisted(46, 46, -1));
+    }
+
     private static Method betterPlanMethod() throws Exception {
         Class<?> planClass = Class.forName("test.demo.apsmodule.generator.NewSolver.CuttingSolver$GroupSolvePlan");
         Method method = CuttingSolver.class.getDeclaredMethod("isBetterPlan", planClass, planClass);

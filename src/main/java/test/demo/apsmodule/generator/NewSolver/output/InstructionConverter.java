@@ -56,13 +56,6 @@ public class InstructionConverter {
 
     private final SolverParameters params;
 
-    /**
-     * 同 groupKey 已见最好（最少）组数——供 set-partition 精修段的劣候选提前弃修使用。
-     * 一个 CuttingSolver 请求内所有候选共用一个 converter 实例，故按 groupKey 累积；
-     * 候选按序处理，首候选无参照必修。
-     */
-    private final Map<String, Integer> bestGroupsByKey = new HashMap<>();
-
     public InstructionConverter(SolverParameters params) {
         this.params = params;
     }
@@ -90,6 +83,25 @@ public class InstructionConverter {
     }
 
     public ConversionResult convertWithDetails(Map<PatternCandidate, Integer> solution,
+            String groupKey,
+            List<SolverOrderItem> groupItems,
+            Map<Integer, Integer> demands) {
+        ConversionResult base = convertWithoutSetPartition(
+                solution, groupKey, groupItems, demands);
+        boolean refineEnabled = test.demo.apsmodule.generator.NewSolver.CuttingSolver.qualityMode()
+                && SetPartitionRefiner.isEnabled();
+        if (refineEnabled) {
+            return refineWithSetPartition(base);
+        }
+        return base;
+    }
+
+    /**
+     * Builds and locally improves one candidate without running the expensive
+     * cross-pattern set-partition refinement. Every parallel task must own its
+     * converter instance.
+     */
+    public ConversionResult convertWithoutSetPartition(Map<PatternCandidate, Integer> solution,
             String groupKey,
             List<SolverOrderItem> groupItems,
             Map<Integer, Integer> demands) {
@@ -275,42 +287,6 @@ public class InstructionConverter {
             }
         }
 
-        // 质量模式第三段：set-partition 微邻域精修（残差导向列注入，笔记13 L12）。
-        // LNS/Phase O 是 B 层花型内重排；本段跨花型重组块（拆弱块+捐赠块，残差上比例
-        // 匹配生成新列，小 MIP 精确重建），B6 L12c 实证 47/3→46/1 追平人工。
-        if (test.demo.apsmodule.generator.NewSolver.CuttingSolver.qualityMode()
-                && SetPartitionRefiner.isEnabled()) {
-            // 劣候选提前弃修：落后同 groupKey 已见最好组数超过阈值时，精修追不平（实测
-            // 最多追回 9 组），直接跳过——省质量模式约一半耗时且零质量风险。
-            Integer bestSeen = bestGroupsByKey.get(groupKey);
-            int gap = SetPartitionRefiner.skipGapThreshold();
-            if (bestSeen != null && selectedGroups - bestSeen > gap) {
-                log.info("Set-partition refine pass: skipped (candidate {} groups vs best {} > gap {})",
-                        selectedGroups, bestSeen, gap);
-            } else {
-                List<CuttingInstruction> refined = setPartitionRefinePass(selectedInstructions);
-                if (refined != null) {
-                    selectedInstructions = refined;
-                    selectedGroups = SequenceGroupPostProcessor
-                            .computeGroupStats(selectedInstructions).groups();
-                    selectedName = selectedName + "+spr";
-                    candidateRows = new ArrayList<>(candidateRows.stream()
-                            .map(row -> new SequenceCandidateRow(
-                                    row.name(),
-                                    row.sequenceGroupCount(),
-                                    row.instructions(),
-                                    false))
-                            .toList());
-                    candidateRows.add(new SequenceCandidateRow(
-                            selectedName,
-                            selectedGroups,
-                            selectedInstructions.size(),
-                            true));
-                }
-            }
-            bestGroupsByKey.merge(groupKey, selectedGroups, Math::min);
-        }
-
         log.info("Sequence-group selection: winner={} groups={} candidates={}",
                 selectedName, selectedGroups, summarizeCandidates(candidates));
         SolverRunColumnArchive.recordInstructions(selectedInstructions);
@@ -319,6 +295,40 @@ public class InstructionConverter {
                 selectedName,
                 selectedGroups,
                 candidateRows);
+    }
+
+    /**
+     * Runs only the set-partition refinement for a previously evaluated base
+     * candidate. If no strict improvement is found, the original result is
+     * returned unchanged.
+     */
+    public ConversionResult refineWithSetPartition(ConversionResult base) {
+        Objects.requireNonNull(base, "base");
+        if (base.instructions().isEmpty()) {
+            return base;
+        }
+        List<CuttingInstruction> refined = setPartitionRefinePass(base.instructions());
+        if (refined == null) {
+            return base;
+        }
+        int selectedGroups = SequenceGroupPostProcessor.computeGroupStats(refined).groups();
+        String selectedName = base.selectedName() + "+spr";
+        List<SequenceCandidateRow> candidateRows = new ArrayList<>(base.candidateRows().stream()
+                .map(row -> new SequenceCandidateRow(
+                        row.name(),
+                        row.sequenceGroupCount(),
+                        row.instructions(),
+                        false))
+                .toList());
+        candidateRows.add(new SequenceCandidateRow(
+                selectedName,
+                selectedGroups,
+                refined.size(),
+                true));
+        SolverRunColumnArchive.recordInstructions(refined);
+        log.info("Set-partition refine pass accepted: groups {} -> {}",
+                base.selectedSequenceGroups(), selectedGroups);
+        return new ConversionResult(refined, selectedName, selectedGroups, candidateRows);
     }
 
     /**

@@ -1,4 +1,4 @@
-package test.demo.apsmodule.generator.NewSolver.output;
+package test.demo.apsmodule.solver.kernel.execution;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -18,7 +18,7 @@ import java.util.function.Function;
  * Request-owned executor for independent single-threaded solver tasks.
  * A process-wide semaphore prevents concurrent requests from oversubscribing the host.
  */
-final class BoundedSolverExecutor implements AutoCloseable {
+public final class BoundedSolverTaskExecutor implements SolverTaskExecutor {
 
     private static final int AVAILABLE_PROCESSORS =
             Math.max(1, Runtime.getRuntime().availableProcessors());
@@ -35,35 +35,37 @@ final class BoundedSolverExecutor implements AutoCloseable {
     private ExecutorService executor;
     private boolean closed;
 
-    static BoundedSolverExecutor create(String scope, int configuredParallelism) {
-        return new BoundedSolverExecutor(scope, configuredParallelism, GLOBAL_SLOTS);
+    public static BoundedSolverTaskExecutor create(String scope, int configuredParallelism) {
+        return new BoundedSolverTaskExecutor(scope, configuredParallelism, GLOBAL_SLOTS);
     }
 
-    static BoundedSolverExecutor forTesting(String scope, int configuredParallelism,
+    static BoundedSolverTaskExecutor forTesting(String scope, int configuredParallelism,
             Semaphore slots) {
-        return new BoundedSolverExecutor(scope, configuredParallelism, slots);
+        return new BoundedSolverTaskExecutor(scope, configuredParallelism, slots);
     }
 
-    static int globalParallelism() {
+    public static int globalParallelism() {
         return GLOBAL_PARALLELISM;
     }
 
-    private BoundedSolverExecutor(String scope, int configuredParallelism, Semaphore slots) {
+    private BoundedSolverTaskExecutor(String scope, int configuredParallelism, Semaphore slots) {
         this.scope = Objects.requireNonNull(scope, "scope");
         this.configuredParallelism = Math.max(1,
                 Math.min(configuredParallelism, AVAILABLE_PROCESSORS));
         this.slots = Objects.requireNonNull(slots, "slots");
     }
 
-    int parallelism(int taskCount) {
+    @Override
+    public int parallelism(int taskCount) {
         return Math.max(1, Math.min(configuredParallelism, Math.max(1, taskCount)));
     }
 
-    int configuredParallelism() {
+    public int configuredParallelism() {
         return configuredParallelism;
     }
 
-    <T, R> List<R> mapOrdered(List<T> inputs, Function<T, R> mapper) {
+    @Override
+    public <T, R> List<R> mapOrdered(List<T> inputs, Function<T, R> mapper) {
         Objects.requireNonNull(inputs, "inputs");
         Objects.requireNonNull(mapper, "mapper");
         if (closed) {
@@ -72,19 +74,22 @@ final class BoundedSolverExecutor implements AutoCloseable {
         if (inputs.isEmpty()) {
             return List.of();
         }
+        SolverExecutionContext capturedContext = SolverExecutionContext.current();
         int workerCount = parallelism(inputs.size());
         if (workerCount == 1) {
             List<R> results = new ArrayList<>(inputs.size());
             for (T input : inputs) {
-                results.add(withSlot(() -> mapper.apply(input)));
+                results.add(withSlot(() -> SolverExecutionContext.callWith(
+                        capturedContext, () -> mapper.apply(input))));
             }
-            return results;
+            return List.copyOf(results);
         }
 
         ensureExecutor();
         List<Callable<R>> tasks = new ArrayList<>(inputs.size());
         for (T input : inputs) {
-            tasks.add(() -> withSlot(() -> mapper.apply(input)));
+            tasks.add(() -> withSlot(() -> SolverExecutionContext.callWith(
+                    capturedContext, () -> mapper.apply(input))));
         }
         try {
             List<Future<R>> futures = executor.invokeAll(tasks);
@@ -92,7 +97,7 @@ final class BoundedSolverExecutor implements AutoCloseable {
             for (Future<R> future : futures) {
                 results.add(future.get());
             }
-            return results;
+            return List.copyOf(results);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             throw new IllegalStateException(scope + " solver tasks interrupted", e);

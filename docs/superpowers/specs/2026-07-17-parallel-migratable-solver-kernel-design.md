@@ -45,7 +45,7 @@
 - `PlanQuality`：不含任何 OR-Tools 类型的业务质量向量。
 - `DeterministicPlanSelector`：集中承载现有 `isBetterPlan` 的字典序。
 
-第一版契约仍使用项目已有的 `SolverOrderItem`、`SolverConfig` 和 `CuttingInstruction` 作为项目语义 DTO；所有列表和诊断在契约边界做不可变快照。未来若内核拆成独立进程，再在该边界增加序列化 DTO，不影响当前内核与调度器。
+第一版输入边界使用独立的 `SolverKernelOrderItem` 和 `SolverKernelSettings`，避免未来内核直接依赖当前请求模型；输出暂时复用项目已有的 `CuttingInstruction`。所有列表和诊断在契约边界做不可变快照。未来若内核拆成独立进程，可继续把输出替换为序列化 DTO，不影响当前内核与调度器。
 
 当前 `CuttingSolver` 通过 `CurrentNewSolverKernelAdapter` 接入契约。`UnifiedPatternSolver` 只依赖 `SolverKernel` 执行 NewSolver，不再直接依赖其内部算法类。旧固定宽度和可变宽度算法暂时保留原接口，避免扩大改动面。
 

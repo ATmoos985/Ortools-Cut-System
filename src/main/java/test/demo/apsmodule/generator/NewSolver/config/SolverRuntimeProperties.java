@@ -1,8 +1,9 @@
 package test.demo.apsmodule.generator.NewSolver.config;
 
-import java.util.HashMap;
 import java.util.Map;
 import java.util.function.Supplier;
+
+import test.demo.apsmodule.solver.kernel.execution.SolverExecutionContext;
 
 /**
  * Request-scoped solver property overrides.
@@ -13,8 +14,6 @@ import java.util.function.Supplier;
  */
 public final class SolverRuntimeProperties {
 
-    private static final ThreadLocal<Map<String, String>> OVERRIDES = new ThreadLocal<>();
-
     private SolverRuntimeProperties() {
     }
 
@@ -22,28 +21,22 @@ public final class SolverRuntimeProperties {
         if (overrides == null || overrides.isEmpty()) {
             return supplier.get();
         }
-        Map<String, String> previous = OVERRIDES.get();
-        Map<String, String> merged = new HashMap<>();
-        if (previous != null) {
-            merged.putAll(previous);
-        }
-        merged.putAll(overrides);
-        OVERRIDES.set(Map.copyOf(merged));
-        try {
-            return supplier.get();
-        } finally {
-            if (previous == null) {
-                OVERRIDES.remove();
-            } else {
-                OVERRIDES.set(previous);
-            }
-        }
+        SolverExecutionContext merged = SolverExecutionContext.current().withOverrides(overrides);
+        return SolverExecutionContext.callWith(merged, supplier);
+    }
+
+    public static <T> T withContext(SolverExecutionContext context, Supplier<T> supplier) {
+        return SolverExecutionContext.callWith(context, supplier);
+    }
+
+    public static SolverExecutionContext captureContext() {
+        return SolverExecutionContext.current();
     }
 
     public static String get(String key) {
-        Map<String, String> overrides = OVERRIDES.get();
-        if (overrides != null && overrides.containsKey(key)) {
-            return overrides.get(key);
+        String override = SolverExecutionContext.current().get(key);
+        if (override != null) {
+            return override;
         }
         return System.getProperty(key);
     }

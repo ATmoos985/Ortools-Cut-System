@@ -13,12 +13,19 @@ import test.demo.apsmodule.generator.NewSolver.model.PatternCandidate;
 import test.demo.apsmodule.generator.NewSolver.model.SolverResult;
 import test.demo.apsmodule.generator.NewSolver.output.InstructionConverter;
 import test.demo.apsmodule.generator.NewSolver.output.SequenceGroupPostProcessor;
+import test.demo.apsmodule.generator.NewSolver.output.SetPartitionRefiner;
+import test.demo.apsmodule.generator.NewSolver.output.SolverRunColumnArchive;
 import test.demo.apsmodule.generator.NewSolver.pattern.PatternGenerator;
 import test.demo.apsmodule.generator.NewSolver.report.SolveReportWriter;
 import test.demo.apsmodule.service.CuttingInstruction;
 import test.demo.apsmodule.service.SolverConfig;
 import test.demo.apsmodule.service.SolverOrderItem;
 import test.demo.apsmodule.solver.CuttingSolverAlgorithm;
+import test.demo.apsmodule.solver.kernel.DeterministicPlanSelector;
+import test.demo.apsmodule.solver.kernel.PlanQuality;
+import test.demo.apsmodule.solver.kernel.execution.BoundedSolverTaskExecutor;
+import test.demo.apsmodule.solver.kernel.execution.DirectSolverTaskExecutor;
+import test.demo.apsmodule.solver.kernel.execution.SolverTaskExecutor;
 
 import java.util.*;
 import java.util.stream.Collectors;
@@ -30,6 +37,7 @@ import java.util.stream.Collectors;
 public class CuttingSolver implements CuttingSolverAlgorithm {
 
     private static final Logger log = LoggerFactory.getLogger(CuttingSolver.class);
+    private static final DeterministicPlanSelector PLAN_SELECTOR = new DeterministicPlanSelector();
     private static boolean orToolsLoaded = false;
 
     /**
@@ -85,9 +93,6 @@ public class CuttingSolver implements CuttingSolverAlgorithm {
         // Per-request solver components to keep state isolated.
         PatternGenerator patternGenerator = new PatternGenerator(params);
         ColumnGenerationSolver colGenSolver = new ColumnGenerationSolver(params);
-        MultiStageMIPSolver mipSolver = new MultiStageMIPSolver(params);
-        InstructionConverter converter = new InstructionConverter(params);
-
         Map<String, List<SolverOrderItem>> groups = items.stream()
                 .collect(Collectors.groupingBy(SolverOrderItem::getGroupKey));
 
@@ -130,8 +135,10 @@ public class CuttingSolver implements CuttingSolverAlgorithm {
                 // caps at 81; the demand-descending order reaches a set that hits 79).
                 List<MultiStageMIPSolver.SolveCandidate> solveCandidates = new ArrayList<>();
                 java.util.Set<String> seenCandidateSigs = new java.util.HashSet<>();
+                List<ALayerTask> aLayerTasks = new ArrayList<>();
                 List<Map<Integer, Integer>> demandOrders = buildDemandOrders(demands);
                 double[] alignmentLambdas = aLayerAlignmentLambdas();
+                int nestedWidthCap = nestedWidthCandidateCap(params);
                 for (int orderIdx = 0; orderIdx < demandOrders.size(); orderIdx++) {
                     Map<Integer, Integer> orderedDemands = demandOrders.get(orderIdx);
                     // Every order: cheap primary (legacy) only, swept over a small set of
@@ -142,7 +149,7 @@ public class CuttingSolver implements CuttingSolverAlgorithm {
                     // 85-103, beaten by a legacy primary), so it was ~half the runtime for no
                     // gain. Distinct 花型集 are deduped by signature so the B-layer assignment
                     // runs once per genuinely different set, not once per (order, seed).
-                    List<MultiStageMIPSolver.SolveCandidate> orderCandidates = new ArrayList<>();
+                    List<ALayerTask> orderTasks = new ArrayList<>();
                     double[] parityPenalties = aLayerParityPenalties();
                     for (int seed : A_LAYER_SEEDS) {
                         for (double alignmentLambda : alignmentLambdas) {
@@ -151,33 +158,22 @@ public class CuttingSolver implements CuttingSolverAlgorithm {
                                 // 的 parityPenalty() 读取），调用后立即还原
                                 // Scoped runtime override; do not leak A-layer experiment flags
                                 // through JVM-wide system properties.
-                                final List<PatternCandidate> candidatePatterns = new ArrayList<>(patterns);
-                                MultiStageMIPSolver.SolveCandidate primary =
-                                        SolverRuntimeProperties.withOverrides(
-                                                Map.of("cutting.aLayerParityPenalty",
-                                                        Double.toString(parityPenalty)),
-                                                () -> mipSolver.solvePrimaryOnly(
-                                                        candidatePatterns, orderedDemands, allowOverSet,
-                                                        seed, alignmentLambda, alignmentContext));
-                                if (primary != null) {
-                                    orderCandidates.add(new MultiStageMIPSolver.SolveCandidate(
-                                            "s" + seed + "-a" + formatLambda(alignmentLambda)
-                                                    + "-p" + formatLambda(parityPenalty)
-                                                    + "-" + primary.name(),
-                                            primary.result()));
-                                }
+                                orderTasks.add(new ALayerTask(
+                                        "o" + orderIdx + "-s" + seed + "-a"
+                                                + formatLambda(alignmentLambda)
+                                                + "-p" + formatLambda(parityPenalty) + "-",
+                                        patterns,
+                                        orderedDemands,
+                                        allowOverSet,
+                                        seed,
+                                        alignmentLambda,
+                                        parityPenalty,
+                                        alignmentContext));
                             }
                         }
                     }
-                    for (MultiStageMIPSolver.SolveCandidate candidate : orderCandidates) {
-                        String sig = solutionSignature(candidate.result().getSolution());
-                        if (seenCandidateSigs.add(sig)) {
-                            solveCandidates.add(new MultiStageMIPSolver.SolveCandidate(
-                                    "o" + orderIdx + "-" + candidate.name(), candidate.result()));
-                        }
-                    }
+                    aLayerTasks.addAll(orderTasks);
                 }
-                int nestedWidthCap = nestedWidthCandidateCap(params);
                 if (nestedWidthCap >= params.getMinRollWidth()) {
                     List<PatternCandidate> nestedPatterns = patterns.stream()
                             .filter(pattern -> pattern.getRollWidth() <= nestedWidthCap)
@@ -185,27 +181,32 @@ public class CuttingSolver implements CuttingSolverAlgorithm {
                     if (!nestedPatterns.isEmpty()) {
                         double[] parityPenalties = aLayerParityPenalties();
                         double nestedParity = parityPenalties[parityPenalties.length - 1];
-                        MultiStageMIPSolver.SolveCandidate nested =
-                                SolverRuntimeProperties.withOverrides(
-                                        Map.of("cutting.aLayerParityPenalty",
-                                                Double.toString(nestedParity)),
-                                        () -> mipSolver.solvePrimaryOnly(
-                                                new ArrayList<>(nestedPatterns), demandOrders.get(0),
-                                                allowOverSet, A_LAYER_SEEDS[0], 0.0,
-                                                alignmentContext));
-                        if (nested != null) {
-                            String sig = solutionSignature(nested.result().getSolution());
-                            if (seenCandidateSigs.add(sig)) {
-                                solveCandidates.add(new MultiStageMIPSolver.SolveCandidate(
-                                        "nested-w" + nestedWidthCap + "-p"
-                                                + formatLambda(nestedParity) + "-" + nested.name(),
-                                        nested.result()));
-                            }
-                        }
-                        log.info("Nested-width candidate: cap={} pool={}/{} added={}",
-                                nestedWidthCap, nestedPatterns.size(), patterns.size(),
-                                solveCandidates.stream().anyMatch(candidate ->
-                                        candidate.name().startsWith("nested-w" + nestedWidthCap)));
+                        aLayerTasks.add(new ALayerTask(
+                                "nested-w" + nestedWidthCap + "-p"
+                                        + formatLambda(nestedParity) + "-",
+                                nestedPatterns,
+                                demandOrders.get(0),
+                                allowOverSet,
+                                A_LAYER_SEEDS[0],
+                                0.0,
+                                nestedParity,
+                                alignmentContext));
+                    }
+                }
+                List<MultiStageMIPSolver.SolveCandidate> rawCandidates;
+                try (SolverTaskExecutor executor = createTaskExecutor(
+                        "a-layer", "cutting.parallel.aLayer.enabled",
+                        "cutting.parallel.aLayer.threads", aLayerTasks.size())) {
+                    logParallelStage("A-layer", executor, aLayerTasks.size());
+                    rawCandidates = executor.mapOrdered(aLayerTasks,
+                                    task -> solveALayerTask(task, params)).stream()
+                            .filter(Objects::nonNull)
+                            .toList();
+                }
+                for (MultiStageMIPSolver.SolveCandidate candidate : rawCandidates) {
+                    String sig = solutionSignature(candidate.result().getSolution());
+                    if (seenCandidateSigs.add(sig)) {
+                        solveCandidates.add(candidate);
                     }
                 }
                 if (solveCandidates.isEmpty()) {
@@ -223,13 +224,15 @@ public class CuttingSolver implements CuttingSolverAlgorithm {
                 GroupSolvePlan bestPlan = null;
                 List<SolveReportWriter.CandidateRow> reportRows = new ArrayList<>();
                 List<SolveReportWriter.SequenceCandidateRow> sequenceReportRows = new ArrayList<>();
-                for (int candidateIndex = 0; candidateIndex < solveCandidates.size(); candidateIndex++) {
-                    MultiStageMIPSolver.SolveCandidate solveCandidate = solveCandidates.get(candidateIndex);
+                List<CandidateEvaluation> candidateEvaluations = evaluateCandidates(
+                        solveCandidates, groupKey, groupItems, demands, params);
+                for (CandidateEvaluation evaluation : candidateEvaluations) {
+                    int candidateIndex = evaluation.order();
+                    MultiStageMIPSolver.SolveCandidate solveCandidate = evaluation.candidate();
                     SolverResult result = solveCandidate.result();
                     printSolutionSummary(result, demands);
 
-                    InstructionConverter.ConversionResult conversion = converter.convertWithDetails(
-                            result.getSolution(), groupKey, groupItems, demands);
+                    InstructionConverter.ConversionResult conversion = evaluation.conversion();
                     List<CuttingInstruction> instructions = conversion.instructions();
                     SequenceGroupPostProcessor.GroupStats stats =
                             SequenceGroupPostProcessor.computeGroupStats(instructions);
@@ -272,7 +275,8 @@ public class CuttingSolver implements CuttingSolverAlgorithm {
                             stats.smallCarGroups(),
                             conversion.selectedName(),
                             candidateIndex);
-                    if (bestPlan == null || isBetterPlan(plan, bestPlan)) {
+                    if (bestPlan == null || PLAN_SELECTOR.isBetter(
+                            toPlanQuality(plan), toPlanQuality(bestPlan))) {
                         bestPlan = plan;
                     }
                 }
@@ -317,6 +321,164 @@ public class CuttingSolver implements CuttingSolverAlgorithm {
         log.info("Total instructions: {}", allInstructions.size());
 
         return allInstructions;
+    }
+
+    private MultiStageMIPSolver.SolveCandidate solveALayerTask(
+            ALayerTask task, SolverParameters params) {
+        try {
+            MultiStageMIPSolver.SolveCandidate primary = SolverRuntimeProperties.withOverrides(
+                    Map.of("cutting.aLayerParityPenalty",
+                            Double.toString(task.parityPenalty())),
+                    () -> new MultiStageMIPSolver(params).solvePrimaryOnly(
+                            new ArrayList<>(task.patterns()),
+                            task.demands(),
+                            task.allowOverWidths(),
+                            task.seed(),
+                            task.alignmentLambda(),
+                            task.alignmentContext()));
+            return primary == null
+                    ? null
+                    : new MultiStageMIPSolver.SolveCandidate(
+                            task.namePrefix() + primary.name(), primary.result());
+        } catch (RuntimeException e) {
+            log.warn("A-layer task {} failed; remaining candidates continue",
+                    task.namePrefix(), e);
+            return null;
+        }
+    }
+
+    private List<CandidateEvaluation> evaluateCandidates(
+            List<MultiStageMIPSolver.SolveCandidate> solveCandidates,
+            String groupKey,
+            List<SolverOrderItem> groupItems,
+            Map<Integer, Integer> demands,
+            SolverParameters params) {
+        List<CandidateTask> tasks = new ArrayList<>(solveCandidates.size());
+        for (int i = 0; i < solveCandidates.size(); i++) {
+            tasks.add(new CandidateTask(i, solveCandidates.get(i)));
+        }
+
+        List<CandidateEvaluation> baseEvaluations;
+        try (SolverTaskExecutor executor = createTaskExecutor(
+                "candidate", "cutting.parallel.candidates.enabled",
+                "cutting.parallel.candidates.threads", tasks.size())) {
+            boolean outerParallel = executor.parallelism(tasks.size()) > 1;
+            logParallelStage("Stage5+LNS candidates", executor, tasks.size());
+            baseEvaluations = executor.mapOrdered(tasks,
+                            task -> evaluateBaseCandidate(
+                                    task, groupKey, groupItems, demands, params, outerParallel))
+                    .stream()
+                    .filter(Objects::nonNull)
+                    .toList();
+        }
+
+        if (!qualityMode() || !SetPartitionRefiner.isEnabled() || baseEvaluations.isEmpty()) {
+            return baseEvaluations;
+        }
+        int bestBaseGroups = baseEvaluations.stream()
+                .mapToInt(evaluation -> evaluation.conversion().selectedSequenceGroups())
+                .min()
+                .orElse(Integer.MAX_VALUE);
+        int gap = SetPartitionRefiner.skipGapThreshold();
+        List<CandidateEvaluation> shortlistedEvaluations = baseEvaluations.stream()
+                .filter(evaluation -> isSprShortlisted(
+                        evaluation.conversion().selectedSequenceGroups(), bestBaseGroups, gap))
+                .toList();
+        try (SolverTaskExecutor executor = createTaskExecutor(
+                "spr-candidate", "cutting.parallel.sprCandidates.enabled",
+                "cutting.parallel.sprCandidates.threads", shortlistedEvaluations.size())) {
+            boolean outerParallel = executor.parallelism(shortlistedEvaluations.size()) > 1;
+            log.info("SPR shortlist: {}/{} candidates (bestGroups={}, gap={})",
+                    shortlistedEvaluations.size(), baseEvaluations.size(), bestBaseGroups, gap);
+            logParallelStage("SPR candidates", executor, shortlistedEvaluations.size());
+            List<CandidateEvaluation> refined = executor.mapOrdered(
+                    shortlistedEvaluations,
+                    evaluation -> refineCandidate(evaluation, params, outerParallel));
+            Map<Integer, CandidateEvaluation> refinedByOrder = refined.stream()
+                    .collect(Collectors.toMap(CandidateEvaluation::order, evaluation -> evaluation));
+            return baseEvaluations.stream()
+                    .map(evaluation -> refinedByOrder.getOrDefault(
+                            evaluation.order(), evaluation))
+                    .toList();
+        }
+    }
+
+    private CandidateEvaluation evaluateBaseCandidate(
+            CandidateTask task,
+            String groupKey,
+            List<SolverOrderItem> groupItems,
+            Map<Integer, Integer> demands,
+            SolverParameters params,
+            boolean outerParallel) {
+        try {
+            InstructionConverter converter = new InstructionConverter(params);
+            InstructionConverter.ConversionResult conversion;
+            if (outerParallel) {
+                conversion = SolverRuntimeProperties.withOverrides(
+                        Map.of(
+                                "cutting.lns.parallel", "false",
+                                "cutting.spr.parallel", "false"),
+                        () -> converter.convertWithoutSetPartition(
+                                task.candidate().result().getSolution(),
+                                groupKey,
+                                groupItems,
+                                demands));
+            } else {
+                conversion = converter.convertWithoutSetPartition(
+                        task.candidate().result().getSolution(),
+                        groupKey,
+                        groupItems,
+                        demands);
+            }
+            return new CandidateEvaluation(task.order(), task.candidate(), conversion);
+        } catch (RuntimeException e) {
+            log.warn("Candidate {} conversion failed; remaining candidates continue",
+                    task.candidate().name(), e);
+            return null;
+        }
+    }
+
+    private CandidateEvaluation refineCandidate(
+            CandidateEvaluation evaluation,
+            SolverParameters params,
+            boolean outerParallel) {
+        try {
+            InstructionConverter converter = new InstructionConverter(params);
+            InstructionConverter.ConversionResult refined = outerParallel
+                    ? SolverRuntimeProperties.withOverrides(
+                            Map.of("cutting.spr.parallel", "false"),
+                            () -> converter.refineWithSetPartition(evaluation.conversion()))
+                    : converter.refineWithSetPartition(evaluation.conversion());
+            return new CandidateEvaluation(
+                    evaluation.order(), evaluation.candidate(), refined);
+        } catch (RuntimeException e) {
+            log.warn("SPR candidate {} failed; base result remains active",
+                    evaluation.candidate().name(), e);
+            return evaluation;
+        }
+    }
+
+    static boolean isSprShortlisted(int groups, int bestGroups, int gap) {
+        return groups - bestGroups <= Math.max(0, gap);
+    }
+
+    private SolverTaskExecutor createTaskExecutor(
+            String scope,
+            String enabledProperty,
+            String threadsProperty,
+            int taskCount) {
+        boolean enabled = SolverRuntimeProperties.getBoolean(enabledProperty, true);
+        if (!enabled || taskCount <= 1 || SolverRunColumnArchive.isCaptureActive()) {
+            return new DirectSolverTaskExecutor();
+        }
+        int requestedThreads = SolverRuntimeProperties.getInt(
+                threadsProperty, BoundedSolverTaskExecutor.globalParallelism());
+        return BoundedSolverTaskExecutor.create(scope, requestedThreads);
+    }
+
+    private void logParallelStage(String stage, SolverTaskExecutor executor, int taskCount) {
+        log.info("{} execution: tasks={}, parallelism={}",
+                stage, taskCount, executor.parallelism(taskCount));
     }
 
     private Set<Integer> buildAllowOverSet(Map<Integer, Integer> demands, SolverParameters params) {
@@ -514,40 +676,49 @@ public class CuttingSolver implements CuttingSolverAlgorithm {
     }
 
     private boolean isBetterPlan(GroupSolvePlan candidate, GroupSolvePlan currentBest) {
-        if (candidate.result().getTotalOverProduction()
-                != currentBest.result().getTotalOverProduction()) {
-            return candidate.result().getTotalOverProduction()
-                    < currentBest.result().getTotalOverProduction();
+        return PLAN_SELECTOR.isBetter(
+                toPlanQuality(candidate), toPlanQuality(currentBest));
+    }
+
+    private PlanQuality toPlanQuality(GroupSolvePlan plan) {
+        return new PlanQuality(
+                plan.result().getTotalOverProduction(),
+                plan.result().getTotalRolls(),
+                plan.sequenceGroupCount(),
+                plan.oddCarGroups(),
+                plan.oneCarGroups(),
+                plan.smallCarGroups(),
+                plan.result().getPatternCount(),
+                plan.result().getTotalWaste(),
+                plan.order());
+    }
+
+    private record ALayerTask(
+            String namePrefix,
+            List<PatternCandidate> patterns,
+            Map<Integer, Integer> demands,
+            Set<Integer> allowOverWidths,
+            int seed,
+            double alignmentLambda,
+            double parityPenalty,
+            PatternAlignmentContext alignmentContext) {
+
+        private ALayerTask {
+            patterns = List.copyOf(patterns);
+            demands = Collections.unmodifiableMap(new LinkedHashMap<>(demands));
+            allowOverWidths = Set.copyOf(allowOverWidths);
         }
-        // Priority 1: rolls — fewer rolls = higher yield (less material consumed)
-        if (candidate.result().getTotalRolls() != currentBest.result().getTotalRolls()) {
-            return candidate.result().getTotalRolls() < currentBest.result().getTotalRolls();
-        }
-        // Priority 2: sequence groups — fewer is better for production efficiency
-        if (candidate.sequenceGroupCount() != currentBest.sequenceGroupCount()) {
-            return candidate.sequenceGroupCount() < currentBest.sequenceGroupCount();
-        }
-        // Priority 3: odd-car groups — even car counts per group are preferred
-        if (candidate.oddCarGroups() != currentBest.oddCarGroups()) {
-            return candidate.oddCarGroups() < currentBest.oddCarGroups();
-        }
-        // Priority 4: single-car groups — only improve after groups and odd groups are fixed
-        if (candidate.oneCarGroups() != currentBest.oneCarGroups()) {
-            return candidate.oneCarGroups() < currentBest.oneCarGroups();
-        }
-        // Priority 5: small-car groups (≤5 cars) — fewer tiny groups is better
-        if (candidate.smallCarGroups() != currentBest.smallCarGroups()) {
-            return candidate.smallCarGroups() < currentBest.smallCarGroups();
-        }
-        // Priority 6: pattern count — fewer distinct patterns simplifies production
-        if (candidate.result().getPatternCount() != currentBest.result().getPatternCount()) {
-            return candidate.result().getPatternCount() < currentBest.result().getPatternCount();
-        }
-        // Priority 7: waste — lower waste is better (tie-break within same roll count)
-        if (candidate.result().getTotalWaste() != currentBest.result().getTotalWaste()) {
-            return candidate.result().getTotalWaste() < currentBest.result().getTotalWaste();
-        }
-        return candidate.order() < currentBest.order();
+    }
+
+    private record CandidateTask(
+            int order,
+            MultiStageMIPSolver.SolveCandidate candidate) {
+    }
+
+    private record CandidateEvaluation(
+            int order,
+            MultiStageMIPSolver.SolveCandidate candidate,
+            InstructionConverter.ConversionResult conversion) {
     }
 
     private record GroupSolvePlan(

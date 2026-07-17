@@ -3,8 +3,9 @@ package test.demo.apsmodule.solver;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Component;
-import test.demo.apsmodule.generator.NewSolver.CuttingSolver;
+import test.demo.apsmodule.generator.NewSolver.config.SolverRuntimeProperties;
 import test.demo.apsmodule.generator.PatternSolver;
 import test.demo.apsmodule.generator.PatternSolverFour;
 import test.demo.apsmodule.service.CuttingInstruction;
@@ -12,6 +13,10 @@ import test.demo.apsmodule.service.ProductionOrder;
 import test.demo.apsmodule.service.SolverConfig;
 import test.demo.apsmodule.service.SolverOrderItem;
 import test.demo.apsmodule.service.StationAssignment;
+import test.demo.apsmodule.solver.kernel.SolverKernel;
+import test.demo.apsmodule.solver.kernel.SolverKernelRequest;
+import test.demo.apsmodule.solver.kernel.SolverKernelResult;
+import test.demo.apsmodule.solver.kernel.SolverKernelStatus;
 
 import java.util.List;
 import java.util.Objects;
@@ -21,22 +26,24 @@ public class UnifiedPatternSolver {
 
     private static final Logger log = LoggerFactory.getLogger(UnifiedPatternSolver.class);
 
-    private final CuttingSolverAlgorithm newSolver;
+    private final SolverKernel newSolverKernel;
     private final CuttingSolverAlgorithm fixedWidthSolver;
     private final CuttingSolverAlgorithm flexibleWidthSolver;
 
     @Autowired
-    public UnifiedPatternSolver(List<CuttingSolverAlgorithm> solvers) {
+    public UnifiedPatternSolver(
+            @Qualifier("newSolverKernel") SolverKernel newSolverKernel,
+            List<CuttingSolverAlgorithm> solvers) {
         this(
-                findRequiredSolver(solvers, CuttingSolver.class),
+                newSolverKernel,
                 findRequiredSolver(solvers, PatternSolver.class),
                 findRequiredSolver(solvers, PatternSolverFour.class));
     }
 
-    UnifiedPatternSolver(CuttingSolverAlgorithm newSolver,
+    UnifiedPatternSolver(SolverKernel newSolverKernel,
             CuttingSolverAlgorithm fixedWidthSolver,
             CuttingSolverAlgorithm flexibleWidthSolver) {
-        this.newSolver = Objects.requireNonNull(newSolver, "newSolver");
+        this.newSolverKernel = Objects.requireNonNull(newSolverKernel, "newSolverKernel");
         this.fixedWidthSolver = Objects.requireNonNull(fixedWidthSolver, "fixedWidthSolver");
         this.flexibleWidthSolver = Objects.requireNonNull(flexibleWidthSolver, "flexibleWidthSolver");
     }
@@ -49,10 +56,28 @@ public class UnifiedPatternSolver {
         log.info("Mode: {}", config.isFixedMode() ? "fixed" : "variable");
         log.info("Input items: {}", items.size());
 
-        CuttingSolverAlgorithm selectedSolver = selectSolver(config);
-        log.info("Selected solver: {}", selectedSolver.getClass().getSimpleName());
-
-        List<CuttingInstruction> instructions = selectedSolver.solve(items, config);
+        List<CuttingInstruction> instructions;
+        if (config.isUseNewSolver()) {
+            SolverKernelRequest request = SolverKernelRequest.from(
+                    items, config, SolverRuntimeProperties.captureContext());
+            if (!newSolverKernel.supports(request.settings())) {
+                throw new IllegalStateException(
+                        "Solver kernel does not support request: " + newSolverKernel.id());
+            }
+            log.info("Selected solver kernel: {}", newSolverKernel.id());
+            SolverKernelResult result = newSolverKernel.solve(request);
+            if (result.status() != SolverKernelStatus.SUCCEEDED
+                    && result.status() != SolverKernelStatus.FEASIBLE
+                    && result.status() != SolverKernelStatus.OPTIMAL) {
+                throw new IllegalStateException(
+                        "Solver kernel failed: " + result.kernelId() + " / " + result.status());
+            }
+            instructions = result.instructions();
+        } else {
+            CuttingSolverAlgorithm selectedSolver = selectLegacySolver(config);
+            log.info("Selected legacy solver: {}", selectedSolver.getClass().getSimpleName());
+            instructions = selectedSolver.solve(items, config);
+        }
         log.info("Solve done, generated {} instructions", instructions.size());
 
         int filledCount = 0;
@@ -110,10 +135,7 @@ public class UnifiedPatternSolver {
         return instructions;
     }
 
-    private CuttingSolverAlgorithm selectSolver(SolverConfig config) {
-        if (config.isUseNewSolver()) {
-            return newSolver;
-        }
+    private CuttingSolverAlgorithm selectLegacySolver(SolverConfig config) {
         if (config.isFixedMode()) {
             return fixedWidthSolver;
         }

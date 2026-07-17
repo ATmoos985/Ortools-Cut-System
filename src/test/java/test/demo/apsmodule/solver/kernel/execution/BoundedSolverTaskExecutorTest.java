@@ -1,8 +1,9 @@
-package test.demo.apsmodule.generator.NewSolver.output;
+package test.demo.apsmodule.solver.kernel.execution;
 
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Semaphore;
@@ -12,7 +13,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-class BoundedSolverExecutorTest {
+class BoundedSolverTaskExecutorTest {
 
     @Test
     void mapsInSubmissionOrderWhileRespectingGlobalConcurrencyLimit() {
@@ -20,7 +21,7 @@ class BoundedSolverExecutorTest {
         AtomicInteger active = new AtomicInteger();
         AtomicInteger maxActive = new AtomicInteger();
         CountDownLatch firstPairStarted = new CountDownLatch(2);
-        BoundedSolverExecutor executor = BoundedSolverExecutor.forTesting(
+        BoundedSolverTaskExecutor executor = BoundedSolverTaskExecutor.forTesting(
                 "ordered", 4, globalSlots);
 
         try (executor) {
@@ -48,10 +49,24 @@ class BoundedSolverExecutorTest {
     }
 
     @Test
+    void propagatesImmutableSolverExecutionContextToWorkers() {
+        SolverExecutionContext context = SolverExecutionContext.of(Map.of("mode", "quality"));
+        try (BoundedSolverTaskExecutor executor = BoundedSolverTaskExecutor.forTesting(
+                "context", 2, new Semaphore(2))) {
+            List<String> modes = SolverExecutionContext.callWith(context,
+                    () -> executor.mapOrdered(List.of(1, 2), ignored ->
+                            SolverExecutionContext.current().get("mode")));
+
+            assertEquals(List.of("quality", "quality"), modes);
+            assertTrue(SolverExecutionContext.current().isEmpty());
+        }
+    }
+
+    @Test
     void normalizesParallelismToTaskCountAndAtLeastOneThread() {
-        try (BoundedSolverExecutor oneTask = BoundedSolverExecutor.forTesting(
+        try (BoundedSolverTaskExecutor oneTask = BoundedSolverTaskExecutor.forTesting(
                 "one", 8, new Semaphore(8));
-             BoundedSolverExecutor zeroConfigured = BoundedSolverExecutor.forTesting(
+             BoundedSolverTaskExecutor zeroConfigured = BoundedSolverTaskExecutor.forTesting(
                      "zero", 0, new Semaphore(1))) {
             assertEquals(1, oneTask.parallelism(1));
             assertEquals(1, zeroConfigured.parallelism(5));
@@ -64,9 +79,9 @@ class BoundedSolverExecutorTest {
         AtomicInteger active = new AtomicInteger();
         AtomicInteger maxActive = new AtomicInteger();
 
-        try (BoundedSolverExecutor first = BoundedSolverExecutor.forTesting(
+        try (BoundedSolverTaskExecutor first = BoundedSolverTaskExecutor.forTesting(
                      "first", 4, globalSlots);
-             BoundedSolverExecutor second = BoundedSolverExecutor.forTesting(
+             BoundedSolverTaskExecutor second = BoundedSolverTaskExecutor.forTesting(
                      "second", 4, globalSlots)) {
             CompletableFuture<List<Integer>> firstResult = CompletableFuture.supplyAsync(
                     () -> first.mapOrdered(List.of(1, 2, 3, 4),
@@ -87,7 +102,7 @@ class BoundedSolverExecutorTest {
         AtomicInteger active = new AtomicInteger();
         AtomicInteger maxActive = new AtomicInteger();
 
-        try (BoundedSolverExecutor executor = BoundedSolverExecutor.forTesting(
+        try (BoundedSolverTaskExecutor executor = BoundedSolverTaskExecutor.forTesting(
                 "growing", 4, globalSlots)) {
             executor.mapOrdered(List.of(1, 2),
                     value -> measuredWork(value, active, maxActive));

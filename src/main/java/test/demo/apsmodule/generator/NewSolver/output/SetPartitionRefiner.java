@@ -10,6 +10,7 @@ import test.demo.apsmodule.generator.NewSolver.mip.UnifiedSetPartitionSolver.Col
 import test.demo.apsmodule.generator.NewSolver.mip.UnifiedSetPartitionSolver.Result;
 import test.demo.apsmodule.service.CuttingInstruction;
 import test.demo.apsmodule.service.StationAssignment;
+import test.demo.apsmodule.solver.kernel.execution.BoundedSolverTaskExecutor;
 
 import java.util.ArrayDeque;
 import java.util.ArrayList;
@@ -182,7 +183,7 @@ public final class SetPartitionRefiner {
 
     static int parallelism() {
         return SolverRuntimeProperties.getInt(
-                "cutting.spr.parallelism", BoundedSolverExecutor.globalParallelism());
+                "cutting.spr.parallelism", BoundedSolverTaskExecutor.globalParallelism());
     }
 
     static boolean cacheEnabled() {
@@ -291,12 +292,12 @@ public final class SetPartitionRefiner {
         long deadline = budget > 0 ? System.currentTimeMillis() + budget : Long.MAX_VALUE;
         ConcurrentMap<SubproblemKey, Result> cache = new ConcurrentHashMap<>();
         RefineStats stats = new RefineStats();
-        BoundedSolverExecutor executor = parallelEnabled()
-                ? BoundedSolverExecutor.create("spr", parallelism())
+        BoundedSolverTaskExecutor executor = parallelEnabled()
+                ? BoundedSolverTaskExecutor.create("spr", parallelism())
                 : null;
         if (executor != null) {
             log.info("SPR executor: requestThreads={}, globalThreads={}",
-                    executor.configuredParallelism(), BoundedSolverExecutor.globalParallelism());
+                    executor.configuredParallelism(), BoundedSolverTaskExecutor.globalParallelism());
         }
         List<ColumnUse> improved;
         try {
@@ -672,8 +673,8 @@ public final class SetPartitionRefiner {
         ConcurrentMap<String, Column> discoveredColumns = new ConcurrentHashMap<>();
         archiveColumns(discoveredColumns, start.stream().map(ColumnUse::column).toList());
         RefineStats stats = new RefineStats();
-        BoundedSolverExecutor executor = parallelEnabled()
-                ? BoundedSolverExecutor.create("spr-research", parallelism())
+        BoundedSolverTaskExecutor executor = parallelEnabled()
+                ? BoundedSolverTaskExecutor.create("spr-research", parallelism())
                 : null;
         DonorVariant donorVariant = DonorVariant.parse(donorVariantName);
         List<ColumnUse> improved;
@@ -773,7 +774,7 @@ public final class SetPartitionRefiner {
     private static List<ColumnUse> microIterate(List<ColumnUse> start,
             int donorCount, long budgetMs, int maxIterations, int totalWidth, long deadline,
             ConcurrentMap<SubproblemKey, Result> cache, RefineStats stats,
-            BoundedSolverExecutor executor, ConcurrentMap<String, Column> discoveredColumns,
+            BoundedSolverTaskExecutor executor, ConcurrentMap<String, Column> discoveredColumns,
             DonorVariant donorVariant) {
         List<ColumnUse> current = new ArrayList<>(start);
         for (int iter = 1; iter <= maxIterations; iter++) {

@@ -25,6 +25,10 @@ public final class SolverRunColumnArchive {
     public record Captured<T>(T value, List<Column> columns) {
     }
 
+    public static boolean isCaptureActive() {
+        return ACTIVE.get() != null;
+    }
+
     public static <T> Captured<T> capture(Supplier<T> operation) {
         Collector parent = ACTIVE.get();
         Collector collector = new Collector();
