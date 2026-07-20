@@ -105,12 +105,16 @@ public class InstructionConverter {
             String groupKey,
             List<SolverOrderItem> groupItems,
             Map<Integer, Integer> demands) {
-        List<CuttingInstruction> instructions = buildFromGreedyAssignment(
-                solution,
-                groupKey,
-                groupItems,
-                OrderAssignmentOptimizer.GreedyStrategy.BATCH_FIRST,
-                false);
+        boolean optimizedAssignment = params.isUseOptimizedAssignment();
+        List<CuttingInstruction> instructions = buildFastPreviewAssignments(
+                solution, groupKey, groupItems, optimizedAssignment);
+        String selectedName = "fast-greedy";
+        if (!isCompletePreview(instructions, groupItems, demands) && optimizedAssignment) {
+            log.warn("Fast preview optimized assignment failed conservation for group {}; "
+                    + "falling back to simple deterministic assignment", groupKey);
+            instructions = buildFastPreviewAssignments(solution, groupKey, groupItems, false);
+            selectedName = "fast-simple";
+        }
         if (!isCompletePreview(instructions, groupItems, demands)) {
             log.warn("Fast preview rejected because assignment conservation failed for group {}", groupKey);
             return new ConversionResult(new ArrayList<>(), "none", 0, List.of());
@@ -119,13 +123,26 @@ public class InstructionConverter {
         SolverRunColumnArchive.recordInstructions(instructions);
         SequenceGroupPostProcessor.GroupStats stats =
                 SequenceGroupPostProcessor.computeGroupStats(instructions);
-        String selectedName = "fast-greedy";
         return new ConversionResult(
                 instructions,
                 selectedName,
                 stats.groups(),
                 List.of(new SequenceCandidateRow(
                         selectedName, stats.groups(), instructions.size(), true)));
+    }
+
+    protected List<CuttingInstruction> buildFastPreviewAssignments(
+            Map<PatternCandidate, Integer> solution,
+            String groupKey,
+            List<SolverOrderItem> groupItems,
+            boolean optimizedAssignment) {
+        return buildFromGreedyAssignment(
+                solution,
+                groupKey,
+                groupItems,
+                OrderAssignmentOptimizer.GreedyStrategy.BATCH_FIRST,
+                false,
+                optimizedAssignment);
     }
 
     /**
@@ -633,6 +650,23 @@ public class InstructionConverter {
             OrderAssignmentOptimizer.GreedyStrategy strategy,
             boolean optimizeSequenceQuality) {
 
+        return buildFromGreedyAssignment(
+                solution,
+                groupKey,
+                groupItems,
+                strategy,
+                optimizeSequenceQuality,
+                params.isUseOptimizedAssignment());
+    }
+
+    private List<CuttingInstruction> buildFromGreedyAssignment(
+            Map<PatternCandidate, Integer> solution,
+            String groupKey,
+            List<SolverOrderItem> groupItems,
+            OrderAssignmentOptimizer.GreedyStrategy strategy,
+            boolean optimizeSequenceQuality,
+            boolean optimizedAssignment) {
+
         List<CuttingInstruction> instructions = new ArrayList<>();
         Map<Integer, List<SolverOrderItem>> widthToItems = groupItems.stream()
                 .collect(Collectors.groupingBy(
@@ -672,7 +706,7 @@ public class InstructionConverter {
             }
 
             List<StationAssignment> assignments;
-            if (params.isUseOptimizedAssignment()) {
+            if (optimizedAssignment) {
                 assignments = OrderAssignmentOptimizer.buildTupleBlockAssignments(
                         pattern.getPattern(), usageCount, groupItems, remainingDemands, strategy);
             } else {

@@ -10,6 +10,7 @@ import test.demo.apsmodule.service.SolverOrderItem;
 import test.demo.apsmodule.service.StationAssignment;
 
 import java.util.LinkedHashMap;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.lang.reflect.Method;
@@ -36,6 +37,28 @@ class InstructionConverterTest {
         assertEquals("fast-greedy", result.selectedName());
         assertEquals(1, result.instructions().size());
         assertEquals(3, result.instructions().get(0).getUsageCount());
+        assertEquals(Map.of("A", 2L, "B", 1L),
+                messageCounts(result.instructions().get(0), 1000));
+        assertEquals(Map.of("X", 3L),
+                messageCounts(result.instructions().get(0), 1200));
+    }
+
+    @Test
+    void fastPreviewFallsBackToSimpleAssignmentWhenOptimizedAssignmentIsIncomplete() {
+        SolverParameters params = testParams();
+        params.setUseOptimizedAssignment(true);
+        PatternCandidate pattern = new PatternCandidate(linkedPattern(1000, 1, 1200, 1), 2200);
+        Map<PatternCandidate, Integer> solution = Map.of(pattern, 3);
+        List<SolverOrderItem> items = orderItems();
+        FastFallbackInstructionConverter converter =
+                new FastFallbackInstructionConverter(params);
+
+        InstructionConverter.ConversionResult result = converter.convertFastPreview(
+                solution, "group-a", items, Map.of(1000, 3, 1200, 3));
+
+        assertEquals(List.of(true, false), converter.assignmentAttempts);
+        assertEquals("fast-simple", result.selectedName());
+        assertEquals(1, result.instructions().size());
         assertEquals(Map.of("A", 2L, "B", 1L),
                 messageCounts(result.instructions().get(0), 1000));
         assertEquals(Map.of("X", 3L),
@@ -389,6 +412,29 @@ class InstructionConverterTest {
 
             hintCollected = true;
             return hintRolls;
+        }
+    }
+
+    private static final class FastFallbackInstructionConverter extends InstructionConverter {
+
+        private final List<Boolean> assignmentAttempts = new ArrayList<>();
+
+        private FastFallbackInstructionConverter(SolverParameters params) {
+            super(params);
+        }
+
+        @Override
+        protected List<CuttingInstruction> buildFastPreviewAssignments(
+                Map<PatternCandidate, Integer> solution,
+                String groupKey,
+                List<SolverOrderItem> groupItems,
+                boolean optimizedAssignment) {
+            assignmentAttempts.add(optimizedAssignment);
+            if (optimizedAssignment) {
+                return List.of();
+            }
+            return super.buildFastPreviewAssignments(
+                    solution, groupKey, groupItems, false);
         }
     }
 }

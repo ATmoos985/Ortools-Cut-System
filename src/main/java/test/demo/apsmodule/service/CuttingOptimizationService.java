@@ -32,6 +32,10 @@ public class CuttingOptimizationService {
 
         List<SolverOrderItem> solverItems = normalizer.normalize(orderItems);
         List<CuttingInstruction> instructions = unifiedSolver.solve(solverItems, config, orderItems);
+        if (!orderItems.isEmpty() && instructions.isEmpty()) {
+            throw new IllegalStateException(
+                    "No usable cutting plan was produced for the submitted orders");
+        }
 
         CuttingOptimizationResult result = new CuttingOptimizationResult();
         result.setCuttingInstructions(convertToLegacyInstructions(instructions));
