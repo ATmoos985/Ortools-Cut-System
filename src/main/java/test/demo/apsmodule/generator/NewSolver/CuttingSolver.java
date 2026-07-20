@@ -148,83 +148,89 @@ public class CuttingSolver implements CuttingSolverAlgorithm {
                 List<Map<Integer, Integer>> demandOrders = buildDemandOrders(demands);
                 double[] alignmentLambdas = aLayerAlignmentLambdas();
                 int nestedWidthCap = nestedWidthCandidateCap(params);
-                for (int orderIdx = 0; orderIdx < demandOrders.size(); orderIdx++) {
-                    Map<Integer, Integer> orderedDemands = demandOrders.get(orderIdx);
-                    // Every order: cheap primary (legacy) only, swept over a small set of
-                    // A-layer SCIP seeds. The seed deterministically steers the selection
-                    // MIP onto a different 花型集 among tie-degenerate optima — the multi-start
-                    // dimension that finds lower-group sets. The expensive diverse generation
-                    // was removed: across every measured run its candidates never won (always
-                    // 85-103, beaten by a legacy primary), so it was ~half the runtime for no
-                    // gain. Distinct 花型集 are deduped by signature so the B-layer assignment
-                    // runs once per genuinely different set, not once per (order, seed).
-                    List<ALayerTask> orderTasks = new ArrayList<>();
-                    double[] parityPenalties = aLayerParityPenalties();
-                    for (int seed : A_LAYER_SEEDS) {
-                        for (double alignmentLambda : alignmentLambdas) {
-                            for (double parityPenalty : parityPenalties) {
-                                // parity 经系统属性注入（LegacyOrderPatternSelectionSolver
-                                // 的 parityPenalty() 读取），调用后立即还原
-                                // Scoped runtime override; do not leak A-layer experiment flags
-                                // through JVM-wide system properties.
-                                orderTasks.add(new ALayerTask(
-                                        "o" + orderIdx + "-s" + seed + "-a"
-                                                + formatLambda(alignmentLambda)
-                                                + "-p" + formatLambda(parityPenalty) + "-",
-                                        patterns,
-                                        orderedDemands,
-                                        allowOverSet,
-                                        seed,
-                                        alignmentLambda,
-                                        parityPenalty,
-                                        alignmentContext,
-                                        false));
+                if (!fastPreviewMode()) {
+                    for (int orderIdx = 0; orderIdx < demandOrders.size(); orderIdx++) {
+                        Map<Integer, Integer> orderedDemands = demandOrders.get(orderIdx);
+                        // Every order: cheap primary (legacy) only, swept over a small set of
+                        // A-layer SCIP seeds. The seed deterministically steers the selection
+                        // MIP onto a different 花型集 among tie-degenerate optima — the multi-start
+                        // dimension that finds lower-group sets. The expensive diverse generation
+                        // was removed: across every measured run its candidates never won (always
+                        // 85-103, beaten by a legacy primary), so it was ~half the runtime for no
+                        // gain. Distinct 花型集 are deduped by signature so the B-layer assignment
+                        // runs once per genuinely different set, not once per (order, seed).
+                        List<ALayerTask> orderTasks = new ArrayList<>();
+                        double[] parityPenalties = aLayerParityPenalties();
+                        for (int seed : A_LAYER_SEEDS) {
+                            for (double alignmentLambda : alignmentLambdas) {
+                                for (double parityPenalty : parityPenalties) {
+                                    // parity 经系统属性注入（LegacyOrderPatternSelectionSolver
+                                    // 的 parityPenalty() 读取），调用后立即还原
+                                    // Scoped runtime override; do not leak A-layer experiment flags
+                                    // through JVM-wide system properties.
+                                    orderTasks.add(new ALayerTask(
+                                            "o" + orderIdx + "-s" + seed + "-a"
+                                                    + formatLambda(alignmentLambda)
+                                                    + "-p" + formatLambda(parityPenalty) + "-",
+                                            patterns,
+                                            orderedDemands,
+                                            allowOverSet,
+                                            seed,
+                                            alignmentLambda,
+                                            parityPenalty,
+                                            alignmentContext,
+                                            false));
+                                }
                             }
                         }
+                        aLayerTasks.addAll(orderTasks);
                     }
-                    aLayerTasks.addAll(orderTasks);
-                }
-                if (nestedWidthCap >= params.getMinRollWidth()) {
-                    List<PatternCandidate> nestedPatterns = patterns.stream()
-                            .filter(pattern -> pattern.getRollWidth() <= nestedWidthCap)
-                            .toList();
-                    if (!nestedPatterns.isEmpty()) {
-                        double[] parityPenalties = aLayerParityPenalties();
-                        double nestedParity = parityPenalties[parityPenalties.length - 1];
-                        aLayerTasks.add(new ALayerTask(
-                                "nested-w" + nestedWidthCap + "-p"
-                                        + formatLambda(nestedParity) + "-",
-                                nestedPatterns,
-                                demandOrders.get(0),
-                                allowOverSet,
-                                A_LAYER_SEEDS[0],
-                                0.0,
-                                nestedParity,
-                                alignmentContext,
-                                false));
+                    if (nestedWidthCap >= params.getMinRollWidth()) {
+                        List<PatternCandidate> nestedPatterns = patterns.stream()
+                                .filter(pattern -> pattern.getRollWidth() <= nestedWidthCap)
+                                .toList();
+                        if (!nestedPatterns.isEmpty()) {
+                            double[] parityPenalties = aLayerParityPenalties();
+                            double nestedParity = parityPenalties[parityPenalties.length - 1];
+                            aLayerTasks.add(new ALayerTask(
+                                    "nested-w" + nestedWidthCap + "-p"
+                                            + formatLambda(nestedParity) + "-",
+                                    nestedPatterns,
+                                    demandOrders.get(0),
+                                    allowOverSet,
+                                    A_LAYER_SEEDS[0],
+                                    0.0,
+                                    nestedParity,
+                                    alignmentContext,
+                                    false));
+                        }
                     }
                 }
-                if (qualityMode()) {
-                    aLayerTasks.add(new ALayerTask(
-                            "fast-baseline-",
-                            patterns,
-                            demandOrders.get(0),
-                            allowOverSet,
-                            A_LAYER_SEEDS[0],
-                            0.0,
-                            0.0,
-                            alignmentContext,
-                            true));
+
+                List<MultiStageMIPSolver.SolveCandidate> rawCandidates = new ArrayList<>();
+                if (fastPreviewMode() || qualityMode()) {
+                    ALayerTask baselineTask = new ALayerTask(
+                            "fast-baseline-", patterns, demandOrders.get(0), allowOverSet,
+                            A_LAYER_SEEDS[0], 0.0, 0.0, alignmentContext, true);
+                    MultiStageMIPSolver.SolveCandidate baseline =
+                            solveALayerTask(baselineTask, params, aLayerDeadlineMs);
+                    if (baseline != null) {
+                        rawCandidates.add(baseline);
+                        log.info("FAST baseline established before quality search: {}", baseline.name());
+                    } else {
+                        log.warn("FAST baseline could not be established; quality candidates continue");
+                    }
                 }
-                List<MultiStageMIPSolver.SolveCandidate> rawCandidates;
-                try (SolverTaskExecutor executor = createTaskExecutor(
-                        "a-layer", "cutting.parallel.aLayer.enabled",
-                        "cutting.parallel.aLayer.threads", aLayerTasks.size())) {
-                    logParallelStage("A-layer", executor, aLayerTasks.size());
-                    rawCandidates = executor.mapOrdered(aLayerTasks,
-                                    task -> solveALayerTask(task, params, aLayerDeadlineMs)).stream()
-                            .filter(Objects::nonNull)
-                            .toList();
+                if (!aLayerTasks.isEmpty()) {
+                    try (SolverTaskExecutor executor = createTaskExecutor(
+                            "a-layer", "cutting.parallel.aLayer.enabled",
+                            "cutting.parallel.aLayer.threads", aLayerTasks.size())) {
+                        logParallelStage("A-layer quality search", executor, aLayerTasks.size());
+                        rawCandidates.addAll(executor.mapOrdered(aLayerTasks,
+                                        task -> solveALayerTask(task, params, aLayerDeadlineMs)).stream()
+                                .filter(Objects::nonNull)
+                                .toList());
+                    }
                 }
                 for (MultiStageMIPSolver.SolveCandidate candidate : rawCandidates) {
                     String sig = solutionSignature(candidate.result().getSolution());
@@ -517,8 +523,11 @@ public class CuttingSolver implements CuttingSolverAlgorithm {
                             Map.of("cutting.spr.parallel", "false"),
                             () -> converter.refineWithSetPartition(evaluation.conversion()))
                     : converter.refineWithSetPartition(evaluation.conversion());
+            InstructionConverter.ConversionResult selected = selectQualityOrFastBaseline(
+                    evaluation.candidate().result(), refined,
+                    evaluation.conversion(), evaluation.order());
             return new CandidateEvaluation(
-                    evaluation.order(), evaluation.candidate(), refined);
+                    evaluation.order(), evaluation.candidate(), selected);
         } catch (RuntimeException e) {
             log.warn("SPR candidate {} failed; base result remains active",
                     evaluation.candidate().name(), e);

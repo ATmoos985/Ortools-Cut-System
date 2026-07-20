@@ -11,7 +11,6 @@ import test.demo.apsmodule.generator.NewSolver.config.SolverRuntimeProperties;
 import test.demo.apsmodule.generator.NewSolver.model.PatternCandidate;
 
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
@@ -152,11 +151,15 @@ class LegacyOrderPatternSelectionSolver {
             int repaired = repairPatterns(patterns, seen, demands, workingAllowOverSet);
             log.info("Legacy-order repair added {} patterns", repaired);
             boolean movedToNextAllowOverTier = false;
-            if (workingAllowOverSet.equals(baseAllowOverSet) && !expandedAllowOverSet.equals(baseAllowOverSet)) {
+            if (params.getTotalOverCap() > 0
+                    && workingAllowOverSet.equals(baseAllowOverSet)
+                    && !expandedAllowOverSet.equals(baseAllowOverSet)) {
                 workingAllowOverSet = expandedAllowOverSet;
                 movedToNextAllowOverTier = true;
                 log.info("Legacy-order expanded allowOverSet to {}", workingAllowOverSet.size());
-            } else if (workingAllowOverSet.equals(expandedAllowOverSet) && !relaxedAllowOverSet.equals(expandedAllowOverSet)) {
+            } else if (params.getTotalOverCap() > 0
+                    && workingAllowOverSet.equals(expandedAllowOverSet)
+                    && !relaxedAllowOverSet.equals(expandedAllowOverSet)) {
                 workingAllowOverSet = relaxedAllowOverSet;
                 movedToNextAllowOverTier = true;
                 log.warn("Legacy-order entering emergency relaxed-over fallback on all demand widths");
@@ -181,20 +184,31 @@ class LegacyOrderPatternSelectionSolver {
         long stage1Time = fastPreview
                 ? Math.max(500, remaining * 25 / 100)
                 : Math.max(5000, remaining / 6);
-        int[] stage1Result = solveMIPStage1(patterns, demands, allowOverSet, stage1Time);
+        Stage1Result stage1Result = solveMIPStage1(patterns, demands, allowOverSet, stage1Time);
         if (stage1Result == null) {
             return Collections.emptyMap();
         }
 
-        int optimalOver = Arrays.stream(stage1Result).sum();
-        log.info("Legacy Stage1 completed: optimalOver={}", optimalOver);
+        int optimalUnder = stage1Result.totalUnder();
+        int optimalOver = stage1Result.totalOver();
+        Map<PatternCandidate, Integer> completeBaseline = isFeasible(stage1Result.solution(), demands)
+                ? stage1Result.solution()
+                : Collections.emptyMap();
+        log.info("Legacy Stage1 completed: under={}, over={}, completeBaseline={}, rolls={}",
+                optimalUnder, optimalOver, !completeBaseline.isEmpty(),
+                stage1Result.solution().values().stream().mapToInt(Integer::intValue).sum());
         remaining = Math.max(fastPreview ? 750 : 5000, deadlineMs - System.currentTimeMillis());
         long stage2Time = fastPreview
                 ? Math.max(750, remaining * 60 / 100)
                 : Math.max(5000, remaining * 55 / 100);
         Map<PatternCandidate, Integer> stage2Solution = solveMIPStage2(
-                patterns, demands, allowOverSet, optimalOver, stage2Time);
-        if (stage2Solution == null || stage2Solution.isEmpty()) {
+                patterns, demands, allowOverSet, optimalUnder, optimalOver,
+                stage1Result.solution(), stage2Time);
+        if (!isFeasible(stage2Solution, demands)) {
+            if (!completeBaseline.isEmpty()) {
+                log.warn("Legacy Stage2 did not preserve complete demand coverage; using Stage1 baseline");
+                return completeBaseline;
+            }
             return Collections.emptyMap();
         }
 
@@ -274,7 +288,7 @@ class LegacyOrderPatternSelectionSolver {
         return expandedSet;
     }
 
-    private int[] solveMIPStage1(List<PatternCandidate> patterns,
+    private Stage1Result solveMIPStage1(List<PatternCandidate> patterns,
             Map<Integer, Integer> demands,
             Set<Integer> allowOverSet,
             long timeLimitMs) {
@@ -336,11 +350,14 @@ class LegacyOrderPatternSelectionSolver {
                 return null;
             }
 
-            int[] overValues = new int[widthList.size()];
+            int totalUnder = 0;
+            int totalOver = 0;
             for (int i = 0; i < widthList.size(); i++) {
-                overValues[i] = (int) Math.round(overVars.get(widthList.get(i)).solutionValue());
+                int width = widthList.get(i);
+                totalUnder += (int) Math.round(underVars.get(width).solutionValue());
+                totalOver += (int) Math.round(overVars.get(width).solutionValue());
             }
-            return overValues;
+            return new Stage1Result(extractSolution(patterns, xVars), totalUnder, totalOver);
         } catch (Exception e) {
             log.error("Legacy-order Stage1 failed", e);
             return null;
@@ -350,7 +367,9 @@ class LegacyOrderPatternSelectionSolver {
     private Map<PatternCandidate, Integer> solveMIPStage2(List<PatternCandidate> patterns,
             Map<Integer, Integer> demands,
             Set<Integer> allowOverSet,
+            int maxTotalUnder,
             int maxTotalOver,
+            Map<PatternCandidate, Integer> incumbent,
             long timeLimitMs) {
         try {
             MPSolver solver = createMIPSolver();
@@ -393,6 +412,11 @@ class LegacyOrderPatternSelectionSolver {
                 overCap.setCoefficient(overVar, 1);
             }
 
+            MPConstraint underCap = solver.makeConstraint(0, maxTotalUnder, "underCap");
+            for (MPVariable underVar : underVars.values()) {
+                underCap.setCoefficient(underVar, 1);
+            }
+
             MPObjective objective = solver.objective();
             for (MPVariable underVar : underVars.values()) {
                 objective.setCoefficient(underVar, params.getUnderPenalty());
@@ -401,6 +425,15 @@ class LegacyOrderPatternSelectionSolver {
                 objective.setCoefficient(xVar, 1);
             }
             objective.setMinimization();
+
+            if (incumbent != null && !incumbent.isEmpty()) {
+                MPVariable[] hintVars = xVars.toArray(new MPVariable[0]);
+                double[] hintValues = new double[hintVars.length];
+                for (int i = 0; i < patterns.size(); i++) {
+                    hintValues[i] = incumbent.getOrDefault(patterns.get(i), 0);
+                }
+                solver.setHint(hintVars, hintValues);
+            }
 
             solver.setTimeLimit(Math.max(1000, timeLimitMs));
             long startedAt = System.currentTimeMillis();
@@ -682,6 +715,16 @@ class LegacyOrderPatternSelectionSolver {
             }
         }
         return true;
+    }
+
+    private record Stage1Result(
+            Map<PatternCandidate, Integer> solution,
+            int totalUnder,
+            int totalOver) {
+
+        private Stage1Result {
+            solution = Collections.unmodifiableMap(new LinkedHashMap<>(solution));
+        }
     }
 
     private Set<Integer> mergeForcedAllowOverWidths(Set<Integer> allowOverSet) {
