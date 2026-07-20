@@ -3,6 +3,7 @@ package test.demo.apsmodule.solver.kernel.execution;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
+import java.util.Arrays;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
@@ -46,6 +47,17 @@ class BoundedSolverTaskExecutorTest {
         }
 
         assertTrue(executor.isTerminated());
+    }
+
+    @Test
+    void preservesNullResultsForCallersThatFilterOptionalTasks() {
+        try (BoundedSolverTaskExecutor executor = BoundedSolverTaskExecutor.forTesting(
+                "nullable", 2, new Semaphore(2))) {
+            List<String> results = executor.mapOrdered(List.of(1, 2, 3), value ->
+                    value == 2 ? null : "result-" + value);
+
+            assertEquals(Arrays.asList("result-1", null, "result-3"), results);
+        }
     }
 
     @Test

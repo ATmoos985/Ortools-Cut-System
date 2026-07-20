@@ -1,6 +1,7 @@
 package test.demo.apsmodule.solver.kernel.execution;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.Objects;
 import java.util.function.Function;
@@ -18,7 +19,7 @@ public final class DirectSolverTaskExecutor implements SolverTaskExecutor {
         for (T input : inputs) {
             results.add(mapper.apply(input));
         }
-        return List.copyOf(results);
+        return Collections.unmodifiableList(results);
     }
 
     @Override

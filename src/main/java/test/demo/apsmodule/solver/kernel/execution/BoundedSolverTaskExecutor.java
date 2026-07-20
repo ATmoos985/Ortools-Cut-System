@@ -1,6 +1,7 @@
 package test.demo.apsmodule.solver.kernel.execution;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.Callable;
@@ -82,7 +83,7 @@ public final class BoundedSolverTaskExecutor implements SolverTaskExecutor {
                 results.add(withSlot(() -> SolverExecutionContext.callWith(
                         capturedContext, () -> mapper.apply(input))));
             }
-            return List.copyOf(results);
+            return Collections.unmodifiableList(results);
         }
 
         ensureExecutor();
@@ -97,7 +98,7 @@ public final class BoundedSolverTaskExecutor implements SolverTaskExecutor {
             for (Future<R> future : futures) {
                 results.add(future.get());
             }
-            return List.copyOf(results);
+            return Collections.unmodifiableList(results);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             throw new IllegalStateException(scope + " solver tasks interrupted", e);

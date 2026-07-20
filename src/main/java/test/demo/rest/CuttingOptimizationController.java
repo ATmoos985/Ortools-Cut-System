@@ -78,12 +78,15 @@ public class CuttingOptimizationController {
             response.put("cacheReady", true);
             return ResponseEntity.ok(response);
         } catch (Exception e) {
-            optimizationContext.failJob(jobId, e.getMessage());
+            String errorMessage = e.getMessage() == null || e.getMessage().isBlank()
+                    ? e.getClass().getSimpleName()
+                    : e.getMessage();
+            optimizationContext.failJob(jobId, errorMessage);
             log.error("Cutting optimization failed", e);
 
             Map<String, Object> errorResult = new HashMap<>();
             errorResult.put("success", false);
-            errorResult.put("message", "Cutting optimization failed: " + e.getMessage());
+            errorResult.put("message", "Cutting optimization failed: " + errorMessage);
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(errorResult);
         }
     }
