@@ -15,6 +15,7 @@ import test.demo.apsmodule.generator.NewSolver.output.InstructionConverter;
 import test.demo.apsmodule.generator.NewSolver.output.SequenceGroupPostProcessor;
 import test.demo.apsmodule.generator.NewSolver.output.SetPartitionRefiner;
 import test.demo.apsmodule.generator.NewSolver.output.SolverRunColumnArchive;
+import test.demo.apsmodule.generator.NewSolver.pattern.CompletePatternEnumerator;
 import test.demo.apsmodule.generator.NewSolver.pattern.PatternGenerator;
 import test.demo.apsmodule.generator.NewSolver.report.SolveReportWriter;
 import test.demo.apsmodule.service.CuttingInstruction;
@@ -136,6 +137,8 @@ public class CuttingSolver implements CuttingSolverAlgorithm {
 
                 List<PatternCandidate> patterns = patternGenerator.generate(demands);
                 patterns = colGenSolver.solve(patterns, demands, allowOverSet);
+                List<PatternCandidate> qualityPatterns = buildQualityPatternPool(
+                        patterns, demands, params);
 
                 // Multi-start over deterministic demand orders. Each order makes the
                 // selection MIP build variables in a different order -> a different
@@ -208,12 +211,12 @@ public class CuttingSolver implements CuttingSolverAlgorithm {
                 }
 
                 List<MultiStageMIPSolver.SolveCandidate> rawCandidates = new ArrayList<>();
+                MultiStageMIPSolver.SolveCandidate baseline = null;
                 if (fastPreviewMode() || qualityMode()) {
                     ALayerTask baselineTask = new ALayerTask(
                             "fast-baseline-", patterns, demandOrders.get(0), allowOverSet,
                             A_LAYER_SEEDS[0], 0.0, 0.0, alignmentContext, true);
-                    MultiStageMIPSolver.SolveCandidate baseline =
-                            solveALayerTask(baselineTask, params, aLayerDeadlineMs);
+                    baseline = solveALayerTask(baselineTask, params, aLayerDeadlineMs);
                     if (baseline != null) {
                         rawCandidates.add(baseline);
                         log.info("FAST baseline established before quality search: {}", baseline.name());
@@ -230,6 +233,21 @@ public class CuttingSolver implements CuttingSolverAlgorithm {
                                         task -> solveALayerTask(task, params, aLayerDeadlineMs)).stream()
                                 .filter(Objects::nonNull)
                                 .toList());
+                    }
+                }
+                if (completePatternQualityEnabled() && baseline != null) {
+                    MultiStageMIPSolver.SolveCandidate completeRefinement =
+                            solveCompletePatternRefinement(
+                                    qualityPatterns,
+                                    demands,
+                                    allowOverSet,
+                                    baseline,
+                                    params,
+                                    alignmentContext);
+                    if (completeRefinement != null) {
+                        rawCandidates.add(completeRefinement);
+                    } else {
+                        log.warn("Complete-pattern Stage4 refinement unavailable; keeping baseline candidates");
                     }
                 }
                 for (MultiStageMIPSolver.SolveCandidate candidate : rawCandidates) {
@@ -384,6 +402,33 @@ public class CuttingSolver implements CuttingSolverAlgorithm {
         } catch (RuntimeException e) {
             log.warn("A-layer task {} failed; remaining candidates continue",
                     task.namePrefix(), e);
+            return null;
+        }
+    }
+
+    private MultiStageMIPSolver.SolveCandidate solveCompletePatternRefinement(
+            List<PatternCandidate> patterns,
+            Map<Integer, Integer> demands,
+            Set<Integer> allowOverSet,
+            MultiStageMIPSolver.SolveCandidate baseline,
+            SolverParameters params,
+            PatternAlignmentContext alignmentContext) {
+        try {
+            SolverParameters taskParams = params.copy();
+            double[] parityPenalties = aLayerParityPenalties();
+            double parityPenalty = parityPenalties[parityPenalties.length - 1];
+            return SolverRuntimeProperties.withOverrides(
+                    Map.of("cutting.aLayerParityPenalty", Double.toString(parityPenalty)),
+                    () -> new MultiStageMIPSolver(taskParams).refinePrimaryWithPatterns(
+                            new ArrayList<>(patterns),
+                            demands,
+                            allowOverSet,
+                            baseline.result().getSolution(),
+                            A_LAYER_SEEDS[0],
+                            0.0,
+                            alignmentContext));
+        } catch (RuntimeException e) {
+            log.warn("Complete-pattern Stage4 refinement failed; keeping baseline candidates", e);
             return null;
         }
     }
@@ -622,6 +667,43 @@ public class CuttingSolver implements CuttingSolverAlgorithm {
      */
     public static boolean qualityMode() {
         return SolverRuntimeProperties.getBoolean("cutting.quality", false);
+    }
+
+    static boolean completePatternQualityEnabled() {
+        return qualityMode() && SolverRuntimeProperties.getBoolean(
+                "cutting.completePatterns.enabled", false);
+    }
+
+    static int completePatternMaxDistinctWidths() {
+        return Math.max(1, SolverRuntimeProperties.getInt(
+                "cutting.completePatterns.maxDistinctWidths", 5));
+    }
+
+    private List<PatternCandidate> buildQualityPatternPool(
+            List<PatternCandidate> baselinePatterns,
+            Map<Integer, Integer> demands,
+            SolverParameters params) {
+        if (!completePatternQualityEnabled()) {
+            return baselinePatterns;
+        }
+
+        long startedAt = System.currentTimeMillis();
+        List<PatternCandidate> completePatterns = new CompletePatternEnumerator(
+                params, completePatternMaxDistinctWidths()).generate(demands);
+        Map<String, PatternCandidate> merged = new TreeMap<>();
+        for (PatternCandidate pattern : baselinePatterns) {
+            merged.putIfAbsent(pattern.signature(), pattern);
+        }
+        for (PatternCandidate pattern : completePatterns) {
+            merged.putIfAbsent(pattern.signature(), pattern);
+        }
+        List<PatternCandidate> qualityPatterns = new ArrayList<>(merged.values());
+        log.info("Complete-pattern quality pool enabled: baseline={}, complete={}, merged={}, elapsedMs={}",
+                baselinePatterns.size(),
+                completePatterns.size(),
+                qualityPatterns.size(),
+                System.currentTimeMillis() - startedAt);
+        return qualityPatterns;
     }
 
     public static boolean fastPreviewMode() {

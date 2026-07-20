@@ -20,6 +20,34 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class CuttingSolverTest {
 
     @Test
+    void completePatternPoolRequiresQualityModeAndExplicitOptIn() {
+        String previousQuality = System.getProperty("cutting.quality");
+        String previousComplete = System.getProperty("cutting.completePatterns.enabled");
+        String previousDistinct = System.getProperty(
+                "cutting.completePatterns.maxDistinctWidths");
+        try {
+            System.clearProperty("cutting.quality");
+            System.clearProperty("cutting.completePatterns.enabled");
+            System.clearProperty("cutting.completePatterns.maxDistinctWidths");
+            assertFalse(CuttingSolver.completePatternQualityEnabled());
+            assertEquals(5, CuttingSolver.completePatternMaxDistinctWidths());
+
+            System.setProperty("cutting.completePatterns.enabled", "true");
+            assertFalse(CuttingSolver.completePatternQualityEnabled());
+
+            System.setProperty("cutting.quality", "true");
+            assertTrue(CuttingSolver.completePatternQualityEnabled());
+
+            System.setProperty("cutting.completePatterns.maxDistinctWidths", "4");
+            assertEquals(4, CuttingSolver.completePatternMaxDistinctWidths());
+        } finally {
+            restore("cutting.quality", previousQuality);
+            restore("cutting.completePatterns.enabled", previousComplete);
+            restore("cutting.completePatterns.maxDistinctWidths", previousDistinct);
+        }
+    }
+
+    @Test
     void paritySweepDefaultsToOffAndExpandsInQualityMode() {
         String prevQuality = System.getProperty("cutting.quality");
         String prevList = System.getProperty("cutting.aLayerParityPenalties");

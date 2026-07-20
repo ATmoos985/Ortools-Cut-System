@@ -70,6 +70,37 @@ public class MultiStageMIPSolver {
         return new SolveCandidate(results.get(0).name(), new SolverResult(sol, rolls, waste, over, 0L));
     }
 
+    public SolveCandidate refinePrimaryWithPatterns(
+            List<PatternCandidate> patterns,
+            Map<Integer, Integer> demands,
+            Set<Integer> allowOverSet,
+            Map<PatternCandidate, Integer> baselineSolution,
+            int seed,
+            double alignmentLambda,
+            PatternAlignmentContext alignmentContext) {
+        SolverParameters seededParams = params.copy();
+        seededParams.setALayerScipSeed(seed);
+        seededParams.setALayerAlignmentLambda(alignmentLambda);
+        seededParams.sanitize();
+        LegacyOrderPatternSelectionSolver legacySolver = new LegacyOrderPatternSelectionSolver(
+                seededParams, alignmentContext);
+        Map<PatternCandidate, Integer> solution = legacySolver.refineStage4FromBaseline(
+                patterns,
+                demands,
+                allowOverSet,
+                baselineSolution,
+                System.currentTimeMillis() + seededParams.getTimeoutMs());
+        if (solution == null || solution.isEmpty()) {
+            return null;
+        }
+        int rolls = solution.values().stream().mapToInt(Integer::intValue).sum();
+        int waste = calculateTotalWaste(solution);
+        int over = calculateTotalOver(solution, demands);
+        return new SolveCandidate(
+                "complete-stage4",
+                new SolverResult(solution, rolls, waste, over, 0L));
+    }
+
     private int calculateTotalWaste(Map<PatternCandidate, Integer> solution) {
         return solution.entrySet().stream()
                 .mapToInt(entry -> entry.getKey().getRealWaste(params.getTotalWidth()) * entry.getValue())

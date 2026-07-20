@@ -172,6 +172,41 @@ class LegacyOrderPatternSelectionSolver {
         return Collections.emptyList();
     }
 
+    Map<PatternCandidate, Integer> refineStage4FromBaseline(
+            List<PatternCandidate> patterns,
+            Map<Integer, Integer> demands,
+            Set<Integer> allowOverSet,
+            Map<PatternCandidate, Integer> baseline,
+            long deadlineMs) {
+        if (!isFeasible(baseline, demands)) {
+            log.warn("Complete-pool Stage4 skipped: baseline is not demand-feasible");
+            return null;
+        }
+
+        int maxTotalOver = calculateTotalOver(baseline, demands);
+        int maxTotalRolls = baseline.values().stream().mapToInt(Integer::intValue).sum();
+        int maxTotalWaste = calculateTotalWaste(baseline);
+        long remainingMs = Math.max(2_000L, deadlineMs - System.currentTimeMillis());
+        log.info("Complete-pool Stage4 baseline constraints: patterns={}, maxOver={}, "
+                        + "maxRolls={}, maxWaste={}mm, remainingMs={}",
+                patterns.size(), maxTotalOver, maxTotalRolls, maxTotalWaste, remainingMs);
+
+        Map<PatternCandidate, Integer> refined = solveMIPStage4(
+                patterns,
+                demands,
+                mergeForcedAllowOverWidths(allowOverSet),
+                maxTotalOver,
+                maxTotalRolls,
+                maxTotalWaste,
+                remainingMs,
+                baseline);
+        if (!isFeasible(refined, demands)) {
+            log.warn("Complete-pool Stage4 returned no demand-feasible refinement");
+            return null;
+        }
+        return refined;
+    }
+
     private Map<PatternCandidate, Integer> solveFinalMIP(List<PatternCandidate> patterns,
             Map<Integer, Integer> demands,
             Set<Integer> allowOverSet,
@@ -531,6 +566,18 @@ class LegacyOrderPatternSelectionSolver {
             int maxTotalRolls,
             int maxTotalWaste,
             long timeLimitMs) {
+        return solveMIPStage4(patterns, demands, allowOverSet, maxTotalOver,
+                maxTotalRolls, maxTotalWaste, timeLimitMs, Collections.emptyMap());
+    }
+
+    private Map<PatternCandidate, Integer> solveMIPStage4(List<PatternCandidate> patterns,
+            Map<Integer, Integer> demands,
+            Set<Integer> allowOverSet,
+            int maxTotalOver,
+            int maxTotalRolls,
+            int maxTotalWaste,
+            long timeLimitMs,
+            Map<PatternCandidate, Integer> warmStart) {
         try {
             MPSolver solver = createMIPSolver();
             if (solver == null) {
@@ -604,6 +651,7 @@ class LegacyOrderPatternSelectionSolver {
             // 惩罚，在车数/废边/花型数平局的最优解中偏好偶 usage 的花型集，把下界往
             // 理论极限（总车数奇偶性决定，本数据集=每分组1）压。
             double parityPenalty = parityPenalty();
+            List<MPVariable> hVars = new ArrayList<>();
             List<MPVariable> oVars = new ArrayList<>();
             if (parityPenalty > 0.0) {
                 for (int i = 0; i < patterns.size(); i++) {
@@ -613,6 +661,7 @@ class LegacyOrderPatternSelectionSolver {
                     parity.setCoefficient(xVars.get(i), 1);
                     parity.setCoefficient(hVar, -2);
                     parity.setCoefficient(oVar, -1);
+                    hVars.add(hVar);
                     oVars.add(oVar);
                 }
             }
@@ -657,7 +706,9 @@ class LegacyOrderPatternSelectionSolver {
                         scipParams() + "limits/nodes = " + nodeLimit + "\n");
             }
             long stage4TimeLimit = stage4WallLimitMs(timeLimitMs, nodeLimit);
-            solver.setHint(new MPVariable[] {}, new double[] {});
+            applyStage4WarmStart(
+                    solver, patterns, demands, warmStart,
+                    xVars, yVars, sVars, hVars, oVars, overVars);
             solver.setTimeLimit(stage4TimeLimit);
 
             long stage4StartedAt = System.currentTimeMillis();
@@ -686,6 +737,51 @@ class LegacyOrderPatternSelectionSolver {
             log.error("Legacy-order Stage4 failed", e);
             return null;
         }
+    }
+
+    private void applyStage4WarmStart(
+            MPSolver solver,
+            List<PatternCandidate> patterns,
+            Map<Integer, Integer> demands,
+            Map<PatternCandidate, Integer> warmStart,
+            List<MPVariable> xVars,
+            List<MPVariable> yVars,
+            List<MPVariable> sVars,
+            List<MPVariable> hVars,
+            List<MPVariable> oVars,
+            Map<Integer, MPVariable> overVars) {
+        if (warmStart == null || warmStart.isEmpty()) {
+            return;
+        }
+        List<MPVariable> hintVars = new ArrayList<>();
+        List<Double> hintValues = new ArrayList<>();
+        for (int i = 0; i < patterns.size(); i++) {
+            int usage = warmStart.getOrDefault(patterns.get(i), 0);
+            hintVars.add(xVars.get(i));
+            hintValues.add((double) usage);
+            hintVars.add(yVars.get(i));
+            hintValues.add(usage > 0 ? 1.0 : 0.0);
+            hintVars.add(sVars.get(i));
+            hintValues.add(usage > 0 ? (double) Math.max(0, MIN_USAGE_THRESHOLD - usage) : 0.0);
+            if (!oVars.isEmpty()) {
+                hintVars.add(hVars.get(i));
+                hintValues.add((double) (usage / 2));
+                hintVars.add(oVars.get(i));
+                hintValues.add((double) (usage & 1));
+            }
+        }
+        Map<Integer, Integer> production = calculateProduction(warmStart);
+        for (Map.Entry<Integer, MPVariable> entry : overVars.entrySet()) {
+            int over = Math.max(0,
+                    production.getOrDefault(entry.getKey(), 0)
+                            - demands.getOrDefault(entry.getKey(), 0));
+            hintVars.add(entry.getValue());
+            hintValues.add((double) over);
+        }
+        double[] values = hintValues.stream().mapToDouble(Double::doubleValue).toArray();
+        solver.setHint(hintVars.toArray(MPVariable[]::new), values);
+        log.info("Legacy Stage4 warm start applied: baselinePatterns={}, hintedVars={}",
+                warmStart.size(), hintVars.size());
     }
 
     private static int solutionSignatureHash(Map<PatternCandidate, Integer> solution) {
@@ -812,6 +908,15 @@ class LegacyOrderPatternSelectionSolver {
     private int calculateTotalWaste(Map<PatternCandidate, Integer> solution) {
         return solution.entrySet().stream()
                 .mapToInt(entry -> entry.getKey().getRealWaste(params.getTotalWidth()) * entry.getValue())
+                .sum();
+    }
+
+    private int calculateTotalOver(Map<PatternCandidate, Integer> solution,
+            Map<Integer, Integer> demands) {
+        Map<Integer, Integer> production = calculateProduction(solution);
+        return demands.entrySet().stream()
+                .mapToInt(entry -> Math.max(
+                        0, production.getOrDefault(entry.getKey(), 0) - entry.getValue()))
                 .sum();
     }
 
