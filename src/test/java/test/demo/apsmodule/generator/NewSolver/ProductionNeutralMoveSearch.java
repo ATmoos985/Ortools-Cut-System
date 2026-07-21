@@ -558,11 +558,21 @@ final class ProductionNeutralMoveSearch {
             Neighbor neighbor,
             List<SolverOrderItem> orderItems,
             SolverParameters parameters) {
+        return fastUpperBound(neighbor.solution(), orderItems, parameters);
+    }
+
+    static FastUpperBound fastUpperBound(
+            Map<PatternCandidate, Integer> solution,
+            List<SolverOrderItem> orderItems,
+            SolverParameters parameters) {
+        Objects.requireNonNull(solution, "solution");
+        Objects.requireNonNull(orderItems, "orderItems");
+        Objects.requireNonNull(parameters, "parameters");
         long startedAt = System.currentTimeMillis();
         try {
             Phase2SequenceGroupSolver.SolveResult result =
                     new Phase2SequenceGroupSolver(parameters)
-                            .solveWithSolution(neighbor.solution(), orderItems);
+                            .solveWithSolution(solution, orderItems);
             if (result == null || result.assignments() == null) {
                 return new FastUpperBound(
                         FastStatus.NO_SOLUTION, -1, -1, -1,
@@ -585,7 +595,7 @@ final class ProductionNeutralMoveSearch {
                         one++;
                     }
                 }
-                if (assignedCars != neighbor.solution()
+                if (assignedCars != solution
                         .getOrDefault(entry.getKey(), 0)) {
                     return new FastUpperBound(
                             FastStatus.INVALID, groups, odd, one,
@@ -596,7 +606,7 @@ final class ProductionNeutralMoveSearch {
                     .flatMap(List::stream)
                     .mapToInt(AssignmentMIPSolver.AssignmentBlock::getCount)
                     .sum();
-            FastStatus status = totalAssigned == totalCars(neighbor.solution())
+            FastStatus status = totalAssigned == totalCars(solution)
                     ? FastStatus.FEASIBLE : FastStatus.INVALID;
             return new FastUpperBound(
                     status, groups, odd, one,
