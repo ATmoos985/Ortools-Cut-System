@@ -19,6 +19,7 @@ import java.util.Map;
 import java.util.TreeMap;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class OrderCompatibilityKernelAnalyzerTest {
@@ -141,6 +142,48 @@ class OrderCompatibilityKernelAnalyzerTest {
         printBenchmark("T42", analysis);
     }
 
+    @Test
+    void usageParityDoesNotGuaranteeConfigurationGroupShape() {
+        PatternCandidate pattern = new PatternCandidate(Map.of(1000, 1), 1000);
+        Map<PatternCandidate, Integer> solution = Map.of(pattern, 3);
+        List<SolverOrderItem> items = List.of(
+                order("A", 1000, 1),
+                order("B", 1000, 2));
+        OrderCompatibilityKernelAnalyzer.Options options =
+                new OrderCompatibilityKernelAnalyzer.Options(
+                        10_000L, 0L, 100L, -1L, false);
+
+        OrderCompatibilityKernelAnalyzer.ThresholdAnalysis actualShape =
+                OrderCompatibilityKernelAnalyzer.checkThreshold(
+                        solution, items, 2, 1, 1, options);
+        assertTrue(actualShape.feasible());
+        assertEquals(2, actualShape.feasibleGroups());
+        assertEquals(1, actualShape.feasibleOddGroups());
+        assertEquals(1, actualShape.feasibleOneGroups());
+
+        OrderCompatibilityKernelAnalyzer.ThresholdAnalysis forbiddenSingle =
+                OrderCompatibilityKernelAnalyzer.checkThreshold(
+                        solution, items, 2, 1, 0, options);
+        assertFalse(forbiddenSingle.feasible());
+        assertEquals(OrderCompatibilityKernelAnalyzer.ThresholdStatus.INFEASIBLE,
+                forbiddenSingle.status());
+        assertEquals(MPSolver.ResultStatus.INFEASIBLE,
+                forbiddenSingle.solverStatus());
+    }
+
+    @Test
+    void thresholdStatusKeepsUnsolvedDistinctFromInfeasible() {
+        assertEquals(OrderCompatibilityKernelAnalyzer.ThresholdStatus.FEASIBLE,
+                OrderCompatibilityKernelAnalyzer.mapThresholdStatus(
+                        MPSolver.ResultStatus.FEASIBLE));
+        assertEquals(OrderCompatibilityKernelAnalyzer.ThresholdStatus.INFEASIBLE,
+                OrderCompatibilityKernelAnalyzer.mapThresholdStatus(
+                        MPSolver.ResultStatus.INFEASIBLE));
+        assertEquals(OrderCompatibilityKernelAnalyzer.ThresholdStatus.UNKNOWN,
+                OrderCompatibilityKernelAnalyzer.mapThresholdStatus(
+                        MPSolver.ResultStatus.NOT_SOLVED));
+    }
+
     private static void assertOptimal(
             String name,
             OrderCompatibilityKernelAnalyzer.Analysis analysis,
@@ -229,6 +272,14 @@ class OrderCompatibilityKernelAnalyzerTest {
             }
         }
         return items;
+    }
+
+    private static SolverOrderItem order(String message, int width, int demand) {
+        SolverOrderItem item = new SolverOrderItem();
+        item.setMessageText(message);
+        item.setWidth(width);
+        item.setDemand(demand);
+        return item;
     }
 
     private static Map<PatternCandidate, Integer> loadSolution(String resource)

@@ -195,6 +195,101 @@ final class OrderCompatibilityKernelAnalyzer {
                 splitWitnesses(data, best));
     }
 
+    /**
+     * Checks a final configuration-group threshold without conflating it with
+     * pattern-usage parity.
+     *
+     * <p>A feasible result is an existence proof. A timeout without a solution
+     * remains unknown and must never be interpreted as infeasible.</p>
+     */
+    static ThresholdAnalysis checkThreshold(
+            Map<PatternCandidate, Integer> solution,
+            List<SolverOrderItem> orderItems,
+            int maxGroups,
+            int exactOddGroups,
+            int exactOneGroups,
+            Options options) {
+        Objects.requireNonNull(options, "options");
+        if (maxGroups <= 0) {
+            throw new IllegalArgumentException("maxGroups must be positive");
+        }
+        if (exactOddGroups < 0 || exactOneGroups < 0) {
+            throw new IllegalArgumentException(
+                    "exactOddGroups and exactOneGroups must not be negative");
+        }
+
+        long startedAt = System.currentTimeMillis();
+        ModelData data;
+        try {
+            data = prepare(solution, orderItems, options.maxConfigurations());
+        } catch (ConfigurationLimitExceeded limit) {
+            return emptyThresholdAnalysis(
+                    ThresholdStatus.ENUMERATION_LIMIT,
+                    MPSolver.ResultStatus.NOT_SOLVED,
+                    limit.patternCount(),
+                    limit.configurationCount(),
+                    maxGroups,
+                    exactOddGroups,
+                    exactOneGroups,
+                    System.currentTimeMillis() - startedAt);
+        }
+
+        long enumerationMs = System.currentTimeMillis() - startedAt;
+        SolverChoice choice = createSolver(options);
+        if (choice == null) {
+            return emptyThresholdAnalysis(
+                    ThresholdStatus.SOLVER_UNAVAILABLE,
+                    MPSolver.ResultStatus.NOT_SOLVED,
+                    data.patterns().size(),
+                    data.columns().size(),
+                    maxGroups,
+                    exactOddGroups,
+                    exactOneGroups,
+                    enumerationMs);
+        }
+
+        Model model = buildModel(
+                choice, data, Level.ONE, null, null, null, options);
+        MPConstraint groupLimit = model.solver().makeConstraint(
+                0, maxGroups, "threshold_groups");
+        for (MPVariable variable : model.active()) {
+            groupLimit.setCoefficient(variable, 1);
+        }
+        MPConstraint oddTarget = model.solver().makeConstraint(
+                exactOddGroups, exactOddGroups, "threshold_odd");
+        for (MPVariable variable : model.odd()) {
+            oddTarget.setCoefficient(variable, 1);
+        }
+        MPConstraint oneTarget = model.solver().makeConstraint(
+                exactOneGroups, exactOneGroups, "threshold_one");
+        for (MPVariable variable : model.one()) {
+            oneTarget.setCoefficient(variable, 1);
+        }
+
+        StageResult stage = solve(model, options.groupTimeLimitMs());
+        Snapshot snapshot = stage.snapshot();
+        ThresholdStatus status = mapThresholdStatus(stage.status());
+        return new ThresholdAnalysis(
+                status,
+                choice.name(),
+                stage.status(),
+                maxGroups,
+                exactOddGroups,
+                exactOneGroups,
+                data.patterns().size(),
+                snapshot == null ? -1 : snapshot.groups(),
+                snapshot == null ? -1 : snapshot.oddGroups(),
+                snapshot == null ? -1 : snapshot.oneGroups(),
+                data.columns().size(),
+                model.solver().numVariables(),
+                model.solver().numConstraints(),
+                stage.nodes(),
+                enumerationMs,
+                stage.elapsedMs(),
+                System.currentTimeMillis() - startedAt,
+                snapshot == null ? List.of() : splitWitnesses(data, snapshot));
+    }
+
     private static ModelData prepare(
             Map<PatternCandidate, Integer> solution,
             List<SolverOrderItem> orderItems,
@@ -777,6 +872,36 @@ final class OrderCompatibilityKernelAnalyzer {
                 List.of());
     }
 
+    private static ThresholdAnalysis emptyThresholdAnalysis(
+            ThresholdStatus status,
+            MPSolver.ResultStatus solverStatus,
+            int patternCount,
+            long configurationCount,
+            int maxGroups,
+            int exactOddGroups,
+            int exactOneGroups,
+            long elapsedMs) {
+        return new ThresholdAnalysis(
+                status,
+                "",
+                solverStatus,
+                maxGroups,
+                exactOddGroups,
+                exactOneGroups,
+                patternCount,
+                -1,
+                -1,
+                -1,
+                configurationCount,
+                0,
+                0,
+                -1L,
+                elapsedMs,
+                0L,
+                elapsedMs,
+                List.of());
+    }
+
     private static Map<Integer, List<String>> deepCopyConfig(
             Map<Integer, List<String>> source) {
         Map<Integer, List<String>> copy = new LinkedHashMap<>();
@@ -867,11 +992,30 @@ final class OrderCompatibilityKernelAnalyzer {
         };
     }
 
+    static ThresholdStatus mapThresholdStatus(MPSolver.ResultStatus status) {
+        Objects.requireNonNull(status, "status");
+        return switch (status) {
+            case OPTIMAL, FEASIBLE -> ThresholdStatus.FEASIBLE;
+            case INFEASIBLE -> ThresholdStatus.INFEASIBLE;
+            case NOT_SOLVED -> ThresholdStatus.UNKNOWN;
+            default -> ThresholdStatus.ABNORMAL;
+        };
+    }
+
     enum Status {
         OPTIMAL,
         FEASIBLE,
         INFEASIBLE,
         NOT_SOLVED,
+        ABNORMAL,
+        ENUMERATION_LIMIT,
+        SOLVER_UNAVAILABLE
+    }
+
+    enum ThresholdStatus {
+        FEASIBLE,
+        INFEASIBLE,
+        UNKNOWN,
         ABNORMAL,
         ENUMERATION_LIMIT,
         SOLVER_UNAVAILABLE
@@ -970,6 +1114,38 @@ final class OrderCompatibilityKernelAnalyzer {
             oddSolverStatus = Objects.requireNonNull(oddSolverStatus);
             oneSolverStatus = Objects.requireNonNull(oneSolverStatus);
             splitWitnesses = List.copyOf(splitWitnesses);
+        }
+    }
+
+    record ThresholdAnalysis(
+            ThresholdStatus status,
+            String solverName,
+            MPSolver.ResultStatus solverStatus,
+            int maxGroups,
+            int exactOddGroups,
+            int exactOneGroups,
+            int patternCount,
+            int feasibleGroups,
+            int feasibleOddGroups,
+            int feasibleOneGroups,
+            long configurationCount,
+            int variableCount,
+            int constraintCount,
+            long nodes,
+            long enumerationMs,
+            long solveMs,
+            long totalElapsedMs,
+            List<PatternSplit> splitWitnesses) {
+
+        ThresholdAnalysis {
+            status = Objects.requireNonNull(status);
+            solverName = Objects.requireNonNull(solverName);
+            solverStatus = Objects.requireNonNull(solverStatus);
+            splitWitnesses = List.copyOf(splitWitnesses);
+        }
+
+        boolean feasible() {
+            return status == ThresholdStatus.FEASIBLE;
         }
     }
 
