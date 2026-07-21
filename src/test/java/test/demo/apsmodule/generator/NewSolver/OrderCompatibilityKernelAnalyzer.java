@@ -480,12 +480,15 @@ final class OrderCompatibilityKernelAnalyzer {
             upper.setCoefficient(count[columnIndex], 1);
             upper.setCoefficient(active[columnIndex], -usage);
 
-            if (level.includesOdd()) {
-                MPConstraint lower = solver.makeConstraint(
-                        -MPSolver.infinity(), 0, "lower_" + columnIndex);
-                lower.setCoefficient(active[columnIndex], 1);
-                lower.setCoefficient(count[columnIndex], -1);
+            // Keep activation linkage identical in every lexicographic stage.
+            // This strengthens the GROUPS relaxation without changing the
+            // optimal integer configuration or objective semantics.
+            MPConstraint lower = solver.makeConstraint(
+                    -MPSolver.infinity(), 0, "lower_" + columnIndex);
+            lower.setCoefficient(active[columnIndex], 1);
+            lower.setCoefficient(count[columnIndex], -1);
 
+            if (level.includesOdd()) {
                 half[columnIndex] = solver.makeIntVar(
                         0, usage / 2, "half_" + columnIndex);
                 odd[columnIndex] = solver.makeBoolVar("odd_" + columnIndex);

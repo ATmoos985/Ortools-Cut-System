@@ -59,6 +59,52 @@ class OrderCompatibilityKernelAnalyzerTest {
     }
 
     @Test
+    void djx188Intermediate25SetProvesOneStructuralExtraGroup() throws Exception {
+        List<SolverOrderItem> items = Djx188ManualBaselineFixture.loadItems();
+        Map<PatternCandidate, Integer> solution = loadSolution(
+                "/djx188-order-compatibility-intermediate25.csv");
+
+        assertEquals(25, solution.size());
+        assertEquals(169, totalCars(solution));
+        assertEquals(36_870, totalWaste(solution, 4600));
+
+        OrderCompatibilityKernelAnalyzer.Analysis analysis =
+                OrderCompatibilityKernelAnalyzer.analyze(solution, items, OPTIONS);
+
+        assertOptimal("DJX188-mid25", analysis, 26, 1, 1, 0);
+        assertEquals(712L, analysis.configurationCount());
+        assertEquals(1, analysis.splitWitnesses().size());
+        assertEquals(1, analysis.splitWitnesses().stream()
+                .mapToInt(split -> split.configurations().size() - 1)
+                .sum());
+        printBenchmark("DJX188-mid25", analysis);
+        printSplits(analysis);
+    }
+
+    @Test
+    void djx188Intermediate24SetProvesThreeStructuralExtraGroups() throws Exception {
+        List<SolverOrderItem> items = Djx188ManualBaselineFixture.loadItems();
+        Map<PatternCandidate, Integer> solution = loadSolution(
+                "/djx188-order-compatibility-intermediate24.csv");
+
+        assertEquals(24, solution.size());
+        assertEquals(169, totalCars(solution));
+        assertEquals(36_870, totalWaste(solution, 4600));
+
+        OrderCompatibilityKernelAnalyzer.Analysis analysis =
+                OrderCompatibilityKernelAnalyzer.analyze(solution, items, OPTIONS);
+
+        printBenchmark("DJX188-mid24", analysis);
+        printSplits(analysis);
+        assertOptimal("DJX188-mid24", analysis, 27, 3, 1, 0);
+        assertEquals(566L, analysis.configurationCount());
+        assertEquals(3, analysis.splitWitnesses().size());
+        assertEquals(3, analysis.splitWitnesses().stream()
+                .mapToInt(split -> split.configurations().size() - 1)
+                .sum());
+    }
+
+    @Test
     void djx188ManualSetNeedsNoCompatibilitySplits() throws Exception {
         List<SolverOrderItem> items = Djx188ManualBaselineFixture.loadItems();
         Map<PatternCandidate, Integer> solution =
@@ -106,6 +152,10 @@ class OrderCompatibilityKernelAnalyzerTest {
                 analysis.status(), name + " group status");
         assertEquals(MPSolver.ResultStatus.OPTIMAL,
                 analysis.groupSolverStatus(), name + " solver status");
+        assertEquals(MPSolver.ResultStatus.OPTIMAL,
+                analysis.oddSolverStatus(), name + " odd solver status");
+        assertEquals(MPSolver.ResultStatus.OPTIMAL,
+                analysis.oneSolverStatus(), name + " one solver status");
         assertTrue(analysis.groupOptimal(), name + " must prove the group optimum");
         assertTrue(analysis.shapeOptimal(), name + " must prove odd/one shape optimum");
         assertEquals(expectedGroups, analysis.feasibleGroups());
@@ -144,6 +194,16 @@ class OrderCompatibilityKernelAnalyzerTest {
                 analysis.groupSolveMs(),
                 analysis.shapeSolveMs(),
                 analysis.totalElapsedMs());
+    }
+
+    private static void printSplits(
+            OrderCompatibilityKernelAnalyzer.Analysis analysis) {
+        analysis.splitWitnesses().forEach(split -> System.out.printf(
+                "  SPLIT pattern=%s usage=%d groups=%d varyingWidths=%s%n",
+                split.patternSignature(),
+                split.patternUsage(),
+                split.configurations().size(),
+                split.varyingWidths()));
     }
 
     private static List<SolverOrderItem> loadItems(String resource) throws IOException {

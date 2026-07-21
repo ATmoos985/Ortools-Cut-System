@@ -175,10 +175,10 @@ min Σ |x[p] - manualUsage[p]|
 修改：
 
 - `src/test/java/test/demo/apsmodule/generator/NewSolver/OrderCompatibilityKernelAnalyzerTest.java`，增加两个回归方法。
+- 经 24 花型失败回归和正式变更确认，允许修改研究侧 `OrderCompatibilityKernelAnalyzer`：在组数最小化阶段补齐后续奇数/单车阶段已有的 `y <= n` 激活联动。该修复只收紧 MIP 松弛和改善最优性证明性能，不改变最优整数配置、目标顺序或结果数值语义。
 
 明确不修改：
 
-- `OrderCompatibilityKernelAnalyzer` 实现；
 - `src/main/java` 下的任何生产代码；
 - bundle、列生成、Stage4、Stage5、Phase2、LNS；
 - 页面、接口、Excel 和打包配置。
@@ -238,6 +238,6 @@ min Σ |x[p] - manualUsage[p]|
 - 文档明确区分诊断性人工插值和通用 kernel 方法；
 - 文档明确 23 不可行只成立于固定池受限空间；
 - 不把当前阶梯解释为通用线性、连续或数学凸性规律；
-- 不修改分析器和生产代码；
+- 除上述 `GROUPS` 阶段激活联动 bugfix 外，不改变分析器判定语义，且不修改生产代码；
 - 五个回归真实执行并全部通过；
 - 设计提交和实现提交相互独立。
