@@ -80,6 +80,7 @@
 所有运行共享：
 
 - DJX188 需求与 automatic22 基线；
+- 已由精确兼容性核验证并持久化的 automatic22 六个拆分见证 fixture；
 - 7717 个完整花型宇宙；
 - WITNESS_DIRECT 121 个花型；
 - NEUTRAL_CLOSURE 370 个花型；
@@ -108,6 +109,7 @@
 ```text
 读取固定 316/26 快照并校验哈希
   -> 加载 DJX188、automatic22 与 7717 完整宇宙
+  -> 读取并校验 automatic22 固定拆分见证（不调用兼容性核）
   -> 精确重建 121/370/1050 三层局部宇宙
   -> 构造单位 2 换 2 排除状态及兼容性见证优先集合
   -> 按 20x3、60x2、180x2 依次运行三层稀疏支持搜索
@@ -121,6 +123,9 @@
 
 探针不得调用 `ProductionNeutralMoveSearch.fastUpperBound`、
 `OrderCompatibilityKernelAnalyzer.checkThreshold/analyze` 或任何生产 Stage5 入口。
+拆分见证 fixture 的首次建立和独立回归允许在探针运行之外调用一次既有兼容性核，
+用于证明 fixture 与已发布的 automatic22 精确锚点一致；该调用不属于7次平台化运行，
+也不得由平台化 CREATE/REPLAY/VERIFY 入口隐式触发。
 
 ## 7. 持久化格式
 
@@ -236,7 +241,17 @@ Jaccard 不低于 0.90，且支持数相对极差 `(max-min)/max` 不超过 0.10
 - 默认拒绝覆盖已有结果；
 - 不调用任何求解器。
 
-### 9.2 `Djx188SupportGenerationPlateauExperimentTest`
+### 9.2 `Djx188Automatic22CompatibilityFixture`
+
+职责：
+
+- 保存 automatic22 已验证的六个拆分见证及完整配置签名；
+- 提供规范化 fixture 哈希；
+- 重建仅供三层构造使用的只读 `Analysis`；
+- 通过独立回归与实时兼容性核结果逐字段比较；
+- 平台化实验只允许读取，不允许自动重建或覆盖 fixture。
+
+### 9.3 `Djx188SupportGenerationPlateauExperimentTest`
 
 职责：
 
@@ -247,7 +262,7 @@ Jaccard 不低于 0.90，且支持数相对极差 `(max-min)/max` 不超过 0.10
 - 创建平台化结果并立即回读；
 - 输出每档统计和最终判定。
 
-### 9.3 不修改现有快照实验
+### 9.4 不修改现有快照实验
 
 `Djx188SupportCandidateSnapshotExperimentTest` 继续只负责 316/26 快照及 Top-N 精确侧车。
 平台化探针不在其中增加 `PROBE` 或隐式覆盖模式，避免两个证据文件生命周期耦合。
@@ -264,12 +279,19 @@ Jaccard 不低于 0.90，且支持数相对极差 `(max-min)/max` 不超过 0.10
 - 统计中的交集、并集、差集和 Jaccard 与手工小样本一致；
 - 四种平台判定状态均有独立测试。
 
-### 10.2 默认测试行为
+### 10.2 固定见证回归
+
+- fixture 的规范化拆分签名与实时 automatic22 精确核结果一致；
+- 六个见证的花型、使用次数、配置车数、配置签名、变化宽幅和消息逐项一致；
+- fixture 每个花型的配置车数之和等于该花型使用次数；
+- 平台化实验使用可注入的调用计数断言精确核调用次数为0。
+
+### 10.3 默认测试行为
 
 真实探针必须由系统属性显式开启；普通测试运行时只跳过，不消耗长求解预算。
 报告必须区分实际成功、失败和按设计跳过的测试数。
 
-### 10.3 真实实验验收
+### 10.4 真实实验验收
 
 - 实际生成 7 次三层运行；
 - 每档重复次数与计划一致；
