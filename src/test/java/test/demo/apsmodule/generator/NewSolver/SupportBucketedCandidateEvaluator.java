@@ -40,6 +40,10 @@ final class SupportBucketedCandidateEvaluator {
     private SupportBucketedCandidateEvaluator() {
     }
 
+    static Comparator<ScoredCandidate> scoreOrder() {
+        return SCORE_ORDER;
+    }
+
     static Snapshot freeze(
             Map<StructuredLocalPatternUniverseBuilder.UniverseScope,
                     SparseProductionNeutralMoveEnumerator.Result> sparseRuns,
