@@ -231,15 +231,17 @@ final class SupportBucketedCandidateEvaluator {
                 .map(SupportBucket::representative)
                 .sorted(SCORE_ORDER)
                 .toList();
+        int effectiveExactCandidateLimit = Math.min(
+                exactCandidateLimit, supportRepresentatives.size());
         SelectionPlan globalStatePlan = selectionPlan(
                 Strategy.GLOBAL_STATE,
                 globalOrder,
-                exactCandidateLimit,
+                effectiveExactCandidateLimit,
                 snapshot.supportDenominator());
         SelectionPlan supportBucketPlan = selectionPlan(
                 Strategy.SUPPORT_BUCKET,
                 supportRepresentatives,
-                exactCandidateLimit,
+                effectiveExactCandidateLimit,
                 snapshot.supportDenominator());
 
         return new Evaluation(

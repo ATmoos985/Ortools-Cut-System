@@ -146,6 +146,29 @@ class SupportBucketedCandidateEvaluatorTest {
     }
 
     @Test
+    void capsExactBudgetAtAvailableSupportRepresentatives() {
+        Fixture fixture = fixture();
+        SupportBucketedCandidateEvaluator.Snapshot snapshot =
+                SupportBucketedCandidateEvaluator.freeze(
+                        fixture.runs(), 7);
+
+        SupportBucketedCandidateEvaluator.Evaluation evaluation =
+                SupportBucketedCandidateEvaluator.evaluate(
+                        snapshot,
+                        fixture.scores(),
+                        2,
+                        24);
+
+        assertEquals(5, snapshot.supportDenominator());
+        assertEquals(5,
+                evaluation.globalStatePlan().finalists().size());
+        assertEquals(5,
+                evaluation.supportBucketPlan().finalists().size());
+        assertEquals(5,
+                evaluation.supportBucketPlan().distinctSupports());
+    }
+
+    @Test
     void ranksAllFeasibleResultsBeforeInvalidOrMissingSolutions() {
         Fixture fixture = fixture();
         SupportBucketedCandidateEvaluator.Evaluation evaluation =
