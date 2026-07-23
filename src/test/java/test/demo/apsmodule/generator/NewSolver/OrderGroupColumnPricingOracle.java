@@ -1,5 +1,9 @@
 package test.demo.apsmodule.generator.NewSolver;
 
+import test.demo.apsmodule.generator.NewSolver.OrderGroupColumnCandidateGenerator.BeamExpansion;
+import test.demo.apsmodule.generator.NewSolver.OrderGroupColumnCandidateGenerator.BeamState;
+import test.demo.apsmodule.generator.NewSolver.OrderGroupColumnCandidateGenerator.LocalOption;
+import test.demo.apsmodule.generator.NewSolver.OrderGroupColumnCandidateGenerator.LocalOptionSelection;
 import test.demo.apsmodule.generator.NewSolver.OrderGroupColumnPricingPrototype.ColumnPool;
 import test.demo.apsmodule.generator.NewSolver.OrderGroupColumnPricingPrototype.ColumnRole;
 import test.demo.apsmodule.generator.NewSolver.OrderGroupColumnPricingPrototype.DemandKey;
@@ -12,10 +16,8 @@ import test.demo.apsmodule.generator.NewSolver.model.PatternCandidate;
 
 import java.util.ArrayList;
 import java.util.Collection;
-import java.util.Collections;
 import java.util.Comparator;
 import java.util.EnumMap;
-import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -24,7 +26,6 @@ import java.util.Objects;
 import java.util.PriorityQueue;
 import java.util.Set;
 import java.util.TreeMap;
-import java.util.TreeSet;
 
 /**
  * Finite pricing oracle: scans every available cutting-pattern skeleton but
@@ -32,17 +33,15 @@ import java.util.TreeSet;
  */
 final class OrderGroupColumnPricingOracle {
 
-    private static final List<Integer> PREFERRED_CARS = List.of(10, 8, 6, 4, 3, 2);
-
     private final Input input;
     private final Options options;
-    private final Map<LocalCacheKey, List<LocalStructure>> localStructureCache =
-            new HashMap<>();
-    private final Map<String, List<Integer>> carCandidateCache = new HashMap<>();
+    private final OrderGroupColumnCandidateGenerator candidateGenerator;
 
     OrderGroupColumnPricingOracle(Input input, Options options) {
         this.input = Objects.requireNonNull(input, "input");
         this.options = Objects.requireNonNull(options, "options");
+        this.candidateGenerator =
+                new OrderGroupColumnCandidateGenerator(input, options);
     }
 
     PricingResult price(
@@ -51,6 +50,36 @@ final class OrderGroupColumnPricingOracle {
             DualVector stableDual,
             ColumnPool pool,
             long deadlineMs) {
+        return price(phase, rawDual, stableDual, pool, deadlineMs, null);
+    }
+
+    OrderGroupColumnCandidateAuditTracker.Replay auditTargets(
+            Collection<GroupColumn> targets,
+            DualVector rawDual,
+            ColumnPool pool,
+            long deadlineMs) {
+        OrderGroupColumnCandidateAuditTracker tracker =
+                new OrderGroupColumnCandidateAuditTracker(targets, pool);
+        PricingResult replay = price(
+                Phase.OPTIMIZATION,
+                rawDual,
+                rawDual,
+                pool,
+                deadlineMs,
+                tracker);
+        return tracker.freeze(
+                replay.diagnostics().deadlineReached(),
+                options.reducedCostEpsilon(),
+                replay.diagnostics());
+    }
+
+    private PricingResult price(
+            Phase phase,
+            DualVector rawDual,
+            DualVector stableDual,
+            ColumnPool pool,
+            long deadlineMs,
+            OrderGroupColumnCandidateAuditTracker tracker) {
         int retainedPerRole = Math.max(40, options.maxAddedPerIteration() * 20);
         BoundedCollector collector = new BoundedCollector(retainedPerRole);
         MutableDiagnostics diagnostics = new MutableDiagnostics();
@@ -64,6 +93,9 @@ final class OrderGroupColumnPricingOracle {
             diagnostics.scannedPatterns++;
 
             List<Integer> cars = candidateCars(pattern);
+            if (tracker != null) {
+                tracker.observePattern(pattern);
+            }
             diagnostics.carCandidates += cars.size();
             List<ScoredColumn> patternCandidates = new ArrayList<>();
             for (int carCount : cars) {
@@ -73,22 +105,50 @@ final class OrderGroupColumnPricingOracle {
                 if (input.exactOddGroups() == 0 && carCount % 2 != 0) {
                     continue;
                 }
+                List<GroupColumn> watched = tracker == null
+                        ? List.of()
+                        : tracker.targetsFor(pattern, carCount);
+                if (tracker != null) {
+                    tracker.observeCar(pattern, carCount);
+                }
 
                 List<BeamState> beam = List.of(BeamState.empty());
+                Set<Integer> processedWidths = new LinkedHashSet<>();
                 boolean feasible = true;
                 for (Map.Entry<Integer, Integer> cut : pattern.getPattern().entrySet()) {
-                    List<LocalOption> localOptions = localOptions(
-                            cut.getKey(),
-                            cut.getValue(),
-                            carCount,
-                            rawDual,
-                            stableDual);
+                    LocalOptionSelection localSelection =
+                            candidateGenerator.localOptionSelection(
+                                    cut.getKey(),
+                                    cut.getValue(),
+                                    carCount,
+                                    rawDual,
+                                    stableDual);
+                    List<LocalOption> localOptions = localSelection.selected();
+                    if (tracker != null && !watched.isEmpty()) {
+                        observeLocalTargets(
+                                tracker,
+                                watched,
+                                cut.getKey(),
+                                localSelection);
+                    }
                     diagnostics.localConfigurations += localOptions.size();
                     if (localOptions.isEmpty()) {
                         feasible = false;
                         break;
                     }
-                    beam = extendBeam(beam, cut.getKey(), localOptions);
+                    BeamExpansion beamExpansion =
+                            candidateGenerator.extendBeamDetailed(
+                                    beam, cut.getKey(), localOptions);
+                    processedWidths.add(cut.getKey());
+                    if (tracker != null && !watched.isEmpty()) {
+                        observeBeamTargets(
+                                tracker,
+                                watched,
+                                cut.getKey(),
+                                processedWidths,
+                                beamExpansion);
+                    }
+                    beam = beamExpansion.selected();
                     if (beam.isEmpty()) {
                         feasible = false;
                         break;
@@ -109,13 +169,16 @@ final class OrderGroupColumnPricingOracle {
                         continue;
                     }
                     diagnostics.pricedCandidates++;
+                    double rawReducedCost =
+                            OrderGroupColumnPricingPrototype.rawReducedCost(
+                                    column, rawDual, phase);
+                    if (tracker != null) {
+                        tracker.observeMaterialized(column, rawReducedCost);
+                    }
                     if (pool.contains(column.signature())) {
                         diagnostics.duplicateSignatures++;
                         continue;
                     }
-                    double rawReducedCost =
-                            OrderGroupColumnPricingPrototype.rawReducedCost(
-                                    column, rawDual, phase);
                     if (rawReducedCost >= -options.reducedCostEpsilon()) {
                         continue;
                     }
@@ -131,6 +194,14 @@ final class OrderGroupColumnPricingOracle {
             patternCandidates.sort(ScoredColumn.STABLE_ORDER);
             int patternLimit = Math.min(
                     options.maxColumnsPerPattern(), patternCandidates.size());
+            if (tracker != null) {
+                tracker.observePatternRanking(
+                        pattern,
+                        patternCandidates.stream()
+                                .map(scored -> scored.column().signature())
+                                .toList(),
+                        patternLimit);
+            }
             for (int index = 0; index < patternLimit; index++) {
                 ScoredColumn scored = patternCandidates.get(index);
                 collector.offer(scored);
@@ -141,12 +212,18 @@ final class OrderGroupColumnPricingOracle {
         List<GroupColumn> retained = collector.values().stream()
                 .map(ScoredColumn::column)
                 .toList();
+        if (tracker != null) {
+            tracker.observeGlobalRetained(retained);
+        }
         List<GroupColumn> selected =
                 OrderGroupColumnPricingPrototype.roleDiverseSelection(
                         retained,
                         options.maxAddedPerIteration(),
                         options.maxPerPatternPerIteration(),
                         rawReducedCosts);
+        if (tracker != null) {
+            tracker.observeReturned(selected);
+        }
         diagnostics.retainedCandidates = retained.size();
         diagnostics.returnedColumns = selected.size();
         return new PricingResult(selected, diagnostics.freeze());
@@ -183,18 +260,20 @@ final class OrderGroupColumnPricingOracle {
                 List<BeamState> beam = List.of(BeamState.empty());
                 boolean feasible = true;
                 for (Map.Entry<Integer, Integer> cut : pattern.getPattern().entrySet()) {
-                    List<LocalOption> localOptions = localOptions(
-                            cut.getKey(),
-                            cut.getValue(),
-                            carCount,
-                            referenceDual,
-                            referenceDual);
+                    List<LocalOption> localOptions =
+                            candidateGenerator.localOptionSelection(
+                                    cut.getKey(),
+                                    cut.getValue(),
+                                    carCount,
+                                    referenceDual,
+                                    referenceDual).selected();
                     diagnostics.localConfigurations += localOptions.size();
                     if (localOptions.isEmpty()) {
                         feasible = false;
                         break;
                     }
-                    beam = extendBeam(beam, cut.getKey(), localOptions);
+                    beam = candidateGenerator.extendBeam(
+                            beam, cut.getKey(), localOptions);
                     if (beam.isEmpty()) {
                         feasible = false;
                         break;
@@ -306,318 +385,75 @@ final class OrderGroupColumnPricingOracle {
     }
 
     List<Integer> candidateCars(PatternCandidate pattern) {
-        return carCandidateCache.computeIfAbsent(
-                pattern.signature(), ignored -> buildCandidateCars(pattern));
+        return candidateGenerator.candidateCars(pattern);
     }
 
-    private List<Integer> buildCandidateCars(PatternCandidate pattern) {
-        TreeSet<Integer> candidates = new TreeSet<>();
-        int globalMax = input.exactCars();
-        for (int width : pattern.getPattern().keySet()) {
-            int widthMax = input.ordersByWidth().get(width).stream()
-                    .mapToInt(key -> input.demand().get(key))
-                    .max()
-                    .orElse(0);
-            globalMax = Math.min(globalMax, widthMax);
-        }
-        if (input.exactOneCarGroups() > 0) {
-            candidates.add(1);
-        }
-        for (int preferred : PREFERRED_CARS) {
-            addCandidate(candidates, preferred, globalMax);
-        }
-
-        for (Map.Entry<Integer, Integer> cut : pattern.getPattern().entrySet()) {
-            int slots = cut.getValue();
-            for (DemandKey order : input.ordersByWidth().get(cut.getKey())) {
-                int demand = input.demand().get(order);
-                for (int multiplicity = 1; multiplicity <= slots; multiplicity++) {
-                    int quotient = demand / multiplicity;
-                    addNeighborhood(candidates, quotient, globalMax);
-                    if (demand % multiplicity == 0) {
-                        addNeighborhood(candidates, demand / multiplicity, globalMax);
-                    }
-                }
-            }
-        }
-        addNeighborhood(candidates, globalMax, globalMax);
-        if (input.exactOneCarGroups() == 0) {
-            candidates.remove(1);
-        }
-        if (input.exactOddGroups() == 0) {
-            candidates.removeIf(cars -> cars % 2 != 0);
-        }
-
-        if (candidates.size() <= options.maxCarCandidatesPerPattern()) {
-            return List.copyOf(candidates);
-        }
-
-        List<Integer> ranked = candidates.stream()
-                .sorted(Comparator
-                        .comparingInt((Integer cars) ->
-                                -closurePotential(pattern, cars))
-                        .thenComparingInt(cars -> preferredRank(cars))
-                        .thenComparingInt(cars -> cars % 2)
-                        .thenComparing(Comparator.reverseOrder()))
-                .limit(options.maxCarCandidatesPerPattern())
-                .sorted()
-                .toList();
-        return List.copyOf(ranked);
-    }
-
-    private int closurePotential(PatternCandidate pattern, int cars) {
-        int potential = 0;
-        for (Map.Entry<Integer, Integer> cut : pattern.getPattern().entrySet()) {
-            for (DemandKey key : input.ordersByWidth().get(cut.getKey())) {
-                int demand = input.demand().get(key);
-                for (int multiplicity = 1; multiplicity <= cut.getValue(); multiplicity++) {
-                    if (multiplicity * cars == demand) {
-                        potential++;
-                    }
-                }
-            }
-        }
-        return potential;
-    }
-
-    private static int preferredRank(int cars) {
-        int index = PREFERRED_CARS.indexOf(cars);
-        return index < 0 ? PREFERRED_CARS.size() : index;
-    }
-
-    private static void addNeighborhood(
-            Set<Integer> candidates, int value, int max) {
-        addCandidate(candidates, value, max);
-        addCandidate(candidates, value - 1, max);
-        addCandidate(candidates, value + 1, max);
-        if (value % 2 == 0) {
-            addCandidate(candidates, value, max);
-        } else {
-            addCandidate(candidates, value - 1, max);
-            addCandidate(candidates, value + 1, max);
-        }
-    }
-
-    private static void addCandidate(Set<Integer> candidates, int value, int max) {
-        if (value >= 1 && value <= max) {
-            candidates.add(value);
-        }
-    }
-
-    private List<LocalOption> localOptions(
+    private void observeLocalTargets(
+            OrderGroupColumnCandidateAuditTracker tracker,
+            List<GroupColumn> targets,
             int width,
-            int slots,
-            int cars,
-            DualVector rawDual,
-            DualVector stableDual) {
-        List<LocalStructure> structures = localStructureCache.computeIfAbsent(
-                new LocalCacheKey(width, slots, cars),
-                ignored -> enumerateLocalStructures(width, slots, cars));
-        if (structures.isEmpty()) {
-            return List.of();
-        }
-
-        List<LocalOption> scored = new ArrayList<>(structures.size());
-        for (LocalStructure structure : structures) {
-            double rawScore = 0.0;
-            double stableScore = 0.0;
-            for (Map.Entry<DemandKey, Integer> entry : structure.multiplicity().entrySet()) {
-                int coverage = Math.multiplyExact(entry.getValue(), cars);
-                rawScore += rawDual.demand().getOrDefault(entry.getKey(), 0.0) * coverage;
-                stableScore += stableDual.demand().getOrDefault(entry.getKey(), 0.0)
-                        * coverage;
-            }
-            scored.add(new LocalOption(
-                    structure.messages(),
-                    rawScore,
-                    stableScore,
-                    structure.closureCount(),
-                    structure.distinctMessages(),
-                    structure.signature()));
-        }
-
-        Comparator<LocalOption> stableOrder = Comparator
-                .comparingDouble(LocalOption::stableScore).reversed()
-                .thenComparing(Comparator.comparingInt(
-                        LocalOption::closureCount).reversed())
-                .thenComparingInt(LocalOption::distinctMessages)
-                .thenComparing(LocalOption::signature);
-        Comparator<LocalOption> rawOrder = Comparator
-                .comparingDouble(LocalOption::rawScore).reversed()
-                .thenComparing(stableOrder);
-        Comparator<LocalOption> closureOrder = Comparator
-                .comparingInt(LocalOption::closureCount).reversed()
-                .thenComparing(stableOrder);
-
-        LinkedHashMap<String, LocalOption> selected = new LinkedHashMap<>();
-        addFirst(selected, scored.stream().sorted(rawOrder).toList());
-        addFirst(selected, scored.stream().sorted(closureOrder).toList());
-        addFirst(selected, scored.stream()
-                .filter(option -> option.distinctMessages() == 1)
-                .sorted(stableOrder)
-                .toList());
-        for (LocalOption option : scored.stream().sorted(stableOrder).toList()) {
-            selected.putIfAbsent(option.signature(), option);
-            if (selected.size() >= options.maxLocalConfigsPerWidth()) {
-                break;
-            }
-        }
-        return selected.values().stream()
-                .limit(options.maxLocalConfigsPerWidth())
-                .sorted(stableOrder)
-                .toList();
-    }
-
-    private static void addFirst(
-            Map<String, LocalOption> selected, List<LocalOption> ordered) {
-        if (!ordered.isEmpty()) {
-            LocalOption first = ordered.get(0);
-            selected.putIfAbsent(first.signature(), first);
-        }
-    }
-
-    private List<LocalStructure> enumerateLocalStructures(
-            int width, int slots, int cars) {
-        List<DemandKey> orders = input.ordersByWidth().getOrDefault(width, List.of());
-        if (orders.isEmpty()) {
-            return List.of();
-        }
-        List<LocalStructure> result = new ArrayList<>();
-        int[] counts = new int[orders.size()];
-        enumerateCounts(orders, cars, 0, slots, counts, result);
-        result.sort(Comparator.comparing(LocalStructure::signature));
-        return List.copyOf(result);
-    }
-
-    private void enumerateCounts(
-            List<DemandKey> orders,
-            int cars,
-            int orderIndex,
-            int remainingSlots,
-            int[] counts,
-            List<LocalStructure> result) {
-        if (orderIndex == orders.size() - 1) {
-            counts[orderIndex] = remainingSlots;
-            addLocalStructureIfFeasible(orders, cars, counts, result);
-            counts[orderIndex] = 0;
-            return;
-        }
-        DemandKey key = orders.get(orderIndex);
-        int maxByDemand = input.demand().get(key) / cars;
-        int max = Math.min(remainingSlots, maxByDemand);
-        for (int count = 0; count <= max; count++) {
-            counts[orderIndex] = count;
-            enumerateCounts(
-                    orders,
-                    cars,
-                    orderIndex + 1,
-                    remainingSlots - count,
-                    counts,
-                    result);
-        }
-        counts[orderIndex] = 0;
-    }
-
-    private void addLocalStructureIfFeasible(
-            List<DemandKey> orders,
-            int cars,
-            int[] counts,
-            List<LocalStructure> result) {
-        Map<DemandKey, Integer> multiplicity = new TreeMap<>();
-        List<String> messages = new ArrayList<>();
-        int closureCount = 0;
-        for (int index = 0; index < orders.size(); index++) {
-            int count = counts[index];
-            if (count <= 0) {
+            LocalOptionSelection selection) {
+        for (GroupColumn target : targets) {
+            List<String> messages = target.stationConfig().get(width);
+            if (messages == null) {
                 continue;
             }
-            DemandKey key = orders.get(index);
-            int coverage = Math.multiplyExact(count, cars);
-            if (coverage > input.demand().get(key)) {
-                return;
-            }
-            multiplicity.put(key, count);
-            if (coverage == input.demand().get(key)) {
-                closureCount++;
-            }
-            for (int occurrence = 0; occurrence < count; occurrence++) {
-                messages.add(key.messageText());
-            }
+            String signature = String.join("\u001f", messages);
+            int fullIndex = indexOfLocal(selection.allStableOrdered(), signature);
+            boolean retained = indexOfLocal(selection.selected(), signature) >= 0;
+            tracker.observeLocal(
+                    target,
+                    width,
+                    fullIndex >= 0,
+                    fullIndex < 0 ? 0 : fullIndex + 1,
+                    retained,
+                    options.maxLocalConfigsPerWidth());
         }
-        if (messages.isEmpty()) {
-            return;
-        }
-        messages.sort(String::compareTo);
-        String signature = String.join("\u001f", messages);
-        result.add(new LocalStructure(
-                List.copyOf(messages),
-                Collections.unmodifiableMap(multiplicity),
-                closureCount,
-                multiplicity.size(),
-                signature));
     }
 
-    private List<BeamState> extendBeam(
-            List<BeamState> current,
+    private static int indexOfLocal(
+            List<LocalOption> options, String signature) {
+        for (int index = 0; index < options.size(); index++) {
+            if (options.get(index).signature().equals(signature)) {
+                return index;
+            }
+        }
+        return -1;
+    }
+
+    private void observeBeamTargets(
+            OrderGroupColumnCandidateAuditTracker tracker,
+            List<GroupColumn> targets,
             int width,
-            List<LocalOption> localOptions) {
-        List<BeamState> expanded = new ArrayList<>(
-                current.size() * localOptions.size());
-        for (BeamState state : current) {
-            for (LocalOption option : localOptions) {
-                Map<Integer, List<String>> config =
-                        new TreeMap<>(state.stationConfig());
-                config.put(width, option.messages());
-                expanded.add(new BeamState(
-                        Collections.unmodifiableMap(config),
-                        state.rawScore() + option.rawScore(),
-                        state.stableScore() + option.stableScore(),
-                        state.closureCount() + option.closureCount(),
-                        state.signature() + "|" + width + "=" + option.signature()));
+            Set<Integer> processedWidths,
+            BeamExpansion expansion) {
+        for (GroupColumn target : targets) {
+            Map<Integer, List<String>> expected = new TreeMap<>();
+            target.stationConfig().forEach((candidateWidth, messages) -> {
+                if (processedWidths.contains(candidateWidth)) {
+                    expected.put(candidateWidth, messages);
+                }
+            });
+            int fullIndex = indexOfBeam(expansion.allOrdered(), expected);
+            boolean retained = indexOfBeam(expansion.selected(), expected) >= 0;
+            tracker.observeBeam(
+                    target,
+                    width,
+                    fullIndex < 0 ? 0 : fullIndex + 1,
+                    retained,
+                    options.beamWidth());
+        }
+    }
+
+    private static int indexOfBeam(
+            List<BeamState> states,
+            Map<Integer, List<String>> expected) {
+        for (int index = 0; index < states.size(); index++) {
+            if (states.get(index).stationConfig().equals(expected)) {
+                return index;
             }
         }
-        return expanded.stream()
-                .sorted(BeamState.ORDER)
-                .limit(options.beamWidth())
-                .toList();
-    }
-
-    private record LocalCacheKey(int width, int slots, int cars) {
-    }
-
-    private record LocalStructure(
-            List<String> messages,
-            Map<DemandKey, Integer> multiplicity,
-            int closureCount,
-            int distinctMessages,
-            String signature) {
-    }
-
-    private record LocalOption(
-            List<String> messages,
-            double rawScore,
-            double stableScore,
-            int closureCount,
-            int distinctMessages,
-            String signature) {
-    }
-
-    private record BeamState(
-            Map<Integer, List<String>> stationConfig,
-            double rawScore,
-            double stableScore,
-            int closureCount,
-            String signature) {
-
-        private static final Comparator<BeamState> ORDER = Comparator
-                .comparingDouble(BeamState::stableScore).reversed()
-                .thenComparing(Comparator.comparingInt(
-                        BeamState::closureCount).reversed())
-                .thenComparing(BeamState::signature);
-
-        static BeamState empty() {
-            return new BeamState(Map.of(), 0.0, 0.0, 0, "");
-        }
+        return -1;
     }
 
     private record ScoredColumn(

@@ -385,6 +385,8 @@ docs/superpowers/specs/
   2026-07-23-djx188-order-group-missing-column-audit-design.md
 
 src/test/java/test/demo/apsmodule/generator/NewSolver/
+  OrderGroupColumnCandidateAuditTracker.java
+  OrderGroupColumnCandidateGenerator.java
   OrderGroupMissingColumnAudit.java
   OrderGroupColumnPricingOracle.java
   OrderGroupMissingColumnAuditTest.java
@@ -413,3 +415,60 @@ test：实现订单级组列缺列审计
 - 所有实际测试数量和耗时如实报告；
 - 不修改生产代码；
 - 文档和实现独立提交。
+
+## 13. 实施结果（2026-07-23）
+
+### 13.1 真实 DJX188 审计
+
+完整7717花型自主路径与独立 automatic22 见证均重新求解，结果为：
+
+| 项目 | 自主路径 | 独立见证 |
+|---|---:|---:|
+| 序号组 | 31 | 29 |
+| 奇数组 | 1 | 1 |
+| 单车组 | 0 | 0 |
+| 总车数 | 169 | 169 |
+| 总废料 | 36,870 | 36,870 |
+
+审计状态为 `COMPLETE`，优化 LP 目标为 `31.001800`。29条见证列全部得到唯一分类：
+
+| 首要阶段 | 数量 |
+|---|---:|
+| `PRESENT_IN_AUTONOMOUS_POOL` | 1 |
+| `LOCAL_CONFIGURATION_PRUNED` | 1 |
+| `MATERIALIZED_NONNEGATIVE` | 14 |
+| `NEGATIVE_GLOBAL_SELECTION_PRUNED` | 13 |
+
+其中局部配置截断发生在宽幅830：目标配置稳定排序第9，而现行上限为8。
+13条列已经具有负 reduced cost，但在有界角色收集或全局列选择中被淘汰。
+14条见证列在自主最终优化对偶下单列 reduced cost 非负；完整31↔29交换中共有15条
+新增列为非负，其中1条已经存在于自主列池但未被整数主问题选中。
+
+31↔29对称差交换满足逐订单需求、总车数、总废料、奇数组和单车组全部守恒，
+`groupDelta=-2`。因此已严格证明：单列 reduced cost 门槛会漏掉一个真实的整数联合改进，
+但当前缺口同时还包含局部候选截断和负列选择预算，不能归结为单一原因。
+
+本次独立审计耗时2.743秒，其中优化 LP 重解4毫秒、全宇宙诊断重放2.728秒；
+完整 opt-in 测试体耗时49.75秒。审计未触发时间上限。
+
+### 13.2 结论边界
+
+本轮推荐为 `MIXED_EARLIEST_STAGE_FIRST`：
+
+1. 只扩大局部配置上限不足以恢复29组见证，因为仍有13条负列选择损失和14条单列非负列；
+2. 只改负列分桶同样不足以覆盖完整联合交换；
+3. 非负新增列与严格改善的守恒交换同时存在，构成设计残量列束定价的直接证据；
+4. 下一轮必须继续做单变量实验，不得同时修改候选枚举、负列保留和列束接受策略；
+5. 本结论只适用于当前DJX188快照，不宣称已经形成通用生产规则。
+
+候选生成逻辑已抽取到独立测试侧组件，审计钩子与正常定价复用同一条候选链路，
+不读取人工签名，不改变正常 `price()` 的候选结果。
+
+### 13.3 回归结果
+
+- 快速单元与原型回归：24/24通过，0失败，0错误，0跳过；
+- DJX188真实审计：1/1通过，0失败，0错误，0跳过；
+- T42跨数据集回归：1/1通过，保持
+  `10组/奇数1/单车0/45车/废料10,820`，算法总耗时10.502秒。
+
+最终验证合计26个测试，26个成功，0失败，0错误，0跳过。
