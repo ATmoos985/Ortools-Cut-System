@@ -445,6 +445,11 @@ AssignmentMIPSolver.AssignmentBlock.fromStationConfig(
 ```text
 src/test/java/test/demo/apsmodule/generator/NewSolver/
   OrderGroupColumnPricingPrototype.java
+  OrderGroupColumnPricingEngine.java
+  OrderGroupColumnPricingOracle.java
+  OrderGroupColumnRoleSelector.java
+  OrderGroupRestrictedMaster.java
+  OrderGroupColumnIncumbentSeeder.java
   OrderGroupColumnPricingPrototypeTest.java
   Djx188OrderGroupColumnPricingExperimentTest.java
 ```
@@ -454,12 +459,31 @@ src/test/java/test/demo/apsmodule/generator/NewSolver/
 - `OrderGroupColumnPricingPrototype`
   - 数据规范化；
   - 组列模型；
-  - 初始 RMP；
-  - LP 对偶提取；
-  - 7717 花型 oracle；
-  - 去重、支配、分桶；
-  - 受限整数主问题；
+  - 去重和支配；
   - 指标与终止状态。
+- `OrderGroupColumnPricingEngine`
+  - 闭环编排；
+  - LP 动态工作集和整数档案协调；
+  - 自动 incumbent 回退；
+  - 输出还原与语义一致性校验。
+- `OrderGroupColumnPricingOracle`
+  - 7717 或受控骨架池扫描；
+  - 订单配置 beam；
+  - 真实 reduced cost 复算；
+  - completion 候选。
+- `OrderGroupColumnRoleSelector`
+  - reduced cost 稳定排序；
+  - 列角色分桶；
+  - 单花型入池上限。
+- `OrderGroupRestrictedMaster`
+  - 两阶段 LP RMP；
+  - LP 对偶提取；
+  - 受限整数主问题；
+  - 历史列档案精确复核。
+- `OrderGroupColumnIncumbentSeeder`
+  - 不读取人工信息的精确生产支持；
+  - 使用次数奇偶与激活联动；
+  - 支持内完整订单组列可行 incumbent。
 - `OrderGroupColumnPricingPrototypeTest`
   - 小型确定性单元测试；
   - 约束、签名、支配、对偶和终止语义验证。
@@ -535,3 +559,93 @@ test：实现订单级组列生成研究原型
 - 多次运行结果签名和核心指标稳定；
 - 输出转换与精确 kernel 语义一致；
 - 生产接入有独立开关、回退路径和新的用户确认。
+
+## 15. 实现后修订与实验证据
+
+### 15.1 LP 可行不等于整数 RMP 可行
+
+实现验证出一个原设计未显式写出的边界：人工变量归零只证明根 LP
+在当前组列上连续可行，不能保证同一列池存在整数可行组合。
+
+因此研究原型补充了一个不读取人工签名的自动 incumbent：
+
+1. 在生产生成器给出的受控花型骨架池上，求解精确宽幅产需、车数、
+   废料、使用次数奇偶和激活联动；
+2. 禁止花型只使用一次；
+3. 只在该自动支持内运行相同的订单级组列模型；
+4. 将得到的完整订单组列作为最终整数主问题的可行基线；
+5. 全宇宙定价池与 incumbent 分离，定价未收敛时仍可如实返回已证明
+   的可行方案。
+
+该机制不是人工 warm start，也不是生产最终架构；它是根节点原型在
+没有完整 branch-and-price 时保证整数可行性的研究侧 primal heuristic。
+
+### 15.2 动态工作集与整数档案必须分离
+
+500 列上限被实现为 LP 动态工作集，而不是永久删除证明：
+
+- 工作集达到上限后保留 LP 活动列和本轮新列；
+- 被移出的列允许后续重新生成；
+- 历史生成列进入独立、有界的整数档案；
+- 最终只对整数档案做一次精确复核；
+- 工作集淘汰、定价穷尽和整数评价穷尽分别报告，不得混用。
+
+这项修订来自真实反例：只保留当前 LP 工作集时，LP 可行但整数主问题
+可能不可行；加入可行 incumbent 后可以稳定返回方案，但历史列是否能
+改善 incumbent 仍需单独评价。
+
+### 15.3 family 行必须从首列开始存在
+
+同一花型与订单配置的不同车数变体受 `family <= 1` 约束。若只在第二个
+变体出现后才动态创建该行，定价前后的主问题行集合不同，入池前计算的
+负 reduced cost 不再具有预测意义。
+
+实现已改为 family 首列出现时即创建稳定行，并新增“负 reduced cost
+确实降低受限主问题目标”的独立单元测试。该修复不改变整数可行域。
+
+### 15.4 当前真实结果
+
+截至本轮实现：
+
+- DJX188 完整 7717 骨架路径：
+  - 自动 incumbent 为 `31 组 / 奇数 1 / 单车 0`；
+  - 精确满足 `169 车 / 36,870 mm 废料 / 0 超产`；
+  - 10 秒全宇宙定价未把整数结果降到 29；
+  - 输出转换前后指标一致；
+  - 两次完整复跑总算法耗时分别为 `40.831 秒` 和 `39.796 秒`；
+    后一次自动 incumbent `17.890 秒`、定价 `12.158 秒`、整数复核
+    `9.731 秒`；
+  - 定价终止状态为 `TIME_LIMIT`，精确整数结果由自动 incumbent
+    保底，不得表述为全宇宙定价已收敛。
+- DJX188 生产受控 800 骨架池：
+  - 根 LP 在 10 秒内降到约 `17.78` 组的连续下界；
+  - 当前默认复跑产生 4,660 个历史与 completion 组列，10 秒精确
+    复核状态为 `NOT_SOLVED`，保留 31 组 incumbent，总算法耗时
+    `37.142 秒`；
+  - 将复核扩大到 30 秒后仍为 `NOT_SOLVED`，总算法耗时约
+    `59.8 秒`，结果仍为 31 组。
+- automatic22 固定支持仅作为诊断消融，不进入完整搜索：
+  - 相同组列主模型得到 `29/1/0`；
+  - 当前复跑耗时 `6.767 秒`；
+  - 证明主问题与输出语义能表达更好结果，缺口在自动定价生成。
+- T42：
+  - 自动 incumbent 从 11 组被相同组列流程改善到
+    `10 组 / 奇数 1 / 单车 0`；
+  - 精确满足 `45 车 / 10,820 mm 废料`；
+  - 当前复跑总算法耗时 `11.529 秒`；
+  - 无数据集专用花型白名单。
+
+### 15.5 当前结论
+
+“把花型、完整订单配置和连续车数联合定义为列”的建模方向得到验证，
+但当前有限 oracle 尚未达到生产验收：
+
+- 连续 LP 下界与整数结果之间存在显著间隙；
+- 负 reduced-cost 列能改善 LP，却没有生成足够的联合结构把 DJX188
+  从 31 降到目标 29；
+- completion 扩充和更长整数预算仍未给出 29 组见证；
+- 因此当前代码只能作为研究原型，不能接入生产。
+
+下一步若继续，不应再扩大 7717 全扫描或增加后处理，而应改造定价子问题，
+使它直接生成“能共同闭合订单残量的列束”，或进入真正具有节点级定价的
+branch-and-price；在达到 `DJX188 <=29/1/0` 前，生产接入门禁保持关闭。
