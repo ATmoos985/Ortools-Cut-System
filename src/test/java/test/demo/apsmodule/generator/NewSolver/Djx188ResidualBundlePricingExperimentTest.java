@@ -49,6 +49,19 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * the 26-group manual plan — scanning 10,994 bundles with zero candidate
  * truncation before the 480 s budget ran out, so 25 is a budget floor, not a
  * proven local optimum.</p>
+ *
+ * <p>Replications with the proven-failure memo (same knobs): 360 s reached
+ * the identical 25-group solution scanning 5,697 bundles with 4,208 memo
+ * skips; 480 s scanned 6,991 with 5,174 skips and still exhausted the budget
+ * before completing the final size-2..6 verification sweep. All three runs
+ * produced a byte-identical six-swap sequence. T42 cross-dataset
+ * (-Dcutting.test.residualBundle.t42=true): baseline 10 groups, 807/837
+ * bundles scanned in 120 s, zero swaps, conservation held — the 10-group
+ * incumbent is near-locally-optimal at bundle sizes up to 6. On slow
+ * machines pass -Dcutting.test.orderGroupPricing.pricingMs=20000: the
+ * incumbent seeder's group RMP inherits pricingTimeLimitMs, and its
+ * time-truncated pattern support can otherwise come out integer-infeasible
+ * (observed GROUP_COLUMN_RMP_FAILED with a converged 23-pattern support).</p>
  */
 class Djx188ResidualBundlePricingExperimentTest {
 
