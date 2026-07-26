@@ -15,6 +15,11 @@ import test.demo.apsmodule.generator.NewSolver.output.SequenceGroupPostProcessor
 import test.demo.apsmodule.generator.NewSolver.pattern.CompletePatternEnumerator;
 import test.demo.apsmodule.service.SolverOrderItem;
 
+import java.io.BufferedReader;
+import java.io.InputStream;
+import java.io.InputStreamReader;
+import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.TreeMap;
@@ -51,6 +56,8 @@ class Djx188ResidualBundlePricingExperimentTest {
             "cutting.test.residualBundlePricing";
     private static final String CAP_PROPERTY =
             "cutting.test.localConfigCapAudit";
+    private static final String T42_PROPERTY =
+            "cutting.test.residualBundle.t42";
 
     @Test
     void residualBundlePricingOnAutonomousIncumbent() throws Exception {
@@ -87,8 +94,9 @@ class Djx188ResidualBundlePricingExperimentTest {
 
         System.out.printf(
                 "DJX188 RESIDUAL_BUNDLE: baseline=31 groups=%d odd=%d one=%d "
-                        + "cars=%d waste=%d swaps=%d scanned=%d truncated=%d "
-                        + "budgetExhausted=%s elapsedMs=%d options=%s%n",
+                        + "cars=%d waste=%d swaps=%d scanned=%d skipped=%d "
+                        + "truncated=%d budgetExhausted=%s elapsedMs=%d "
+                        + "options=%s%n",
                 improved.metrics().groups(),
                 improved.metrics().oddGroups(),
                 improved.metrics().oneCarGroups(),
@@ -96,6 +104,7 @@ class Djx188ResidualBundlePricingExperimentTest {
                 improved.metrics().waste(),
                 improved.swapsApplied(),
                 improved.bundlesScanned(),
+                improved.bundlesSkipped(),
                 improved.bundlesTruncated(),
                 improved.budgetExhausted(),
                 improved.elapsedMs(),
@@ -182,6 +191,76 @@ class Djx188ResidualBundlePricingExperimentTest {
         assertTrue(setup.autonomous().directMetrics().groups() <= 31);
     }
 
+    @Test
+    void t42ResidualBundlePricingCrossDataset() throws Exception {
+        Assumptions.assumeTrue(
+                Boolean.getBoolean(T42_PROPERTY),
+                "enable with -D" + T42_PROPERTY + "=true");
+
+        List<SolverOrderItem> items = loadT42Items();
+        SolverParameters params = t42Parameters();
+        List<PatternCandidate> universe =
+                new CompletePatternEnumerator(params, 5)
+                        .generate(aggregateWidthDemand(items));
+        Input input = new Input(items, universe, params, 45, 10_820, 1, 0);
+        Result autonomous = OrderGroupColumnPricingPrototype.solve(
+                input, options(Options.defaults().maxLocalConfigsPerWidth(), true));
+        assertTrue(autonomous.feasible(), () ->
+                "T42 autonomous status=" + autonomous.status());
+        verifyExact(input, autonomous.selectedColumns());
+        int baseline = autonomous.directMetrics().groups();
+        assertEquals(10, baseline, "T42 baseline drifted");
+
+        OrderGroupResidualBundlePricer.Result improved =
+                OrderGroupResidualBundlePricer.improve(
+                        input,
+                        autonomous.selectedColumns(),
+                        new OrderGroupResidualBundlePricer.Options(
+                                2,
+                                Integer.getInteger(
+                                        "cutting.test.residualBundle.maxSize", 6),
+                                1_000,
+                                20_000,
+                                3_000L,
+                                Long.getLong(
+                                        "cutting.test.residualBundle.budgetMs",
+                                        120_000L),
+                                16));
+
+        System.out.printf(
+                "T42 RESIDUAL_BUNDLE: baseline=%d groups=%d odd=%d one=%d "
+                        + "cars=%d waste=%d swaps=%d scanned=%d skipped=%d "
+                        + "truncated=%d budgetExhausted=%s elapsedMs=%d%n",
+                baseline,
+                improved.metrics().groups(),
+                improved.metrics().oddGroups(),
+                improved.metrics().oneCarGroups(),
+                improved.metrics().cars(),
+                improved.metrics().waste(),
+                improved.swapsApplied(),
+                improved.bundlesScanned(),
+                improved.bundlesSkipped(),
+                improved.bundlesTruncated(),
+                improved.budgetExhausted(),
+                improved.elapsedMs());
+        for (OrderGroupResidualBundlePricer.SwapRecord swap : improved.swaps()) {
+            System.out.printf("  swap delta=%d%n", swap.groupDelta());
+            swap.removedSignatures().forEach(signature ->
+                    System.out.printf("    - %s%n", signature));
+            swap.addedSignatures().forEach(signature ->
+                    System.out.printf("    + %s%n", signature));
+        }
+
+        verifyExact(input, improved.columns());
+        ConvertedOutput converted = OrderGroupColumnPricingEngine.convertSelected(
+                input, improved.columns());
+        SequenceGroupPostProcessor.GroupStats displayed =
+                SequenceGroupPostProcessor.computeGroupStats(
+                        converted.instructions());
+        assertEquals(improved.metrics().groups(), displayed.groups());
+        assertTrue(improved.metrics().groups() <= baseline);
+    }
+
     private record Setup(
             List<SolverOrderItem> items,
             SolverParameters params,
@@ -199,19 +278,71 @@ class Djx188ResidualBundlePricingExperimentTest {
                         .generate(aggregateWidthDemand(items));
         assertEquals(7_717, universe.size(), "complete universe drifted");
 
-        Options autonomousOptions = options(localConfigsPerWidth, true);
         Input input = new Input(items, universe, params, 169, 36_870, 1, 0);
-        Result autonomous =
-                OrderGroupColumnPricingPrototype.solve(input, autonomousOptions);
-        assertTrue(autonomous.feasible(), () ->
-                "autonomous status=" + autonomous.status()
-                        + ", pricing=" + autonomous.pricingTermination());
+        // The incumbent seeder's pattern-support MIP is a wall-clock lottery:
+        // a time-truncated support can be integer-infeasible for the group
+        // RMP (observed 2026-07-26: 23-pattern support, pricing converged,
+        // INTEGER_MASTER_INFEASIBLE). Deterministically reroll with escalating
+        // seed budgets instead of failing on the first draw.
+        long firstSeedBudget = Long.getLong(
+                "cutting.test.orderGroupPricing.patternSeedMs",
+                Options.defaults().patternSeedTimeLimitMs());
+        long[] seedBudgets = {firstSeedBudget, 20_000L, 40_000L};
+        Options autonomousOptions = null;
+        Result autonomous = null;
+        for (long seedBudget : seedBudgets) {
+            autonomousOptions = options(
+                    localConfigsPerWidth, true, seedBudget);
+            autonomous = OrderGroupColumnPricingPrototype.solve(
+                    input, autonomousOptions);
+            System.out.printf(
+                    "DJX188 AUTONOMOUS attempt(seedMsBudget=%d): status=%s "
+                            + "pricing=%s groups=%d seed=%s seedPatterns=%d "
+                            + "seedGroups=%d seedMs=%d seedDetail=%s "
+                            + "lpMs=%d pricingMs=%d integerMs=%d totalMs=%d%n",
+                    seedBudget,
+                    autonomous.status(),
+                    autonomous.pricingTermination(),
+                    autonomous.directMetrics().groups(),
+                    autonomous.seed().status(),
+                    autonomous.seed().supportPatterns(),
+                    autonomous.seed().groups(),
+                    autonomous.seed().totalMs(),
+                    autonomous.seed().detail(),
+                    autonomous.lpMs(),
+                    autonomous.pricingMs(),
+                    autonomous.integerMs(),
+                    autonomous.totalMs());
+            if (autonomous.feasible()) {
+                break;
+            }
+        }
+        Result finalAutonomous = autonomous;
+        assertTrue(finalAutonomous.feasible(), () ->
+                "autonomous failed on all seed budgets, last: status="
+                        + finalAutonomous.status()
+                        + ", pricing=" + finalAutonomous.pricingTermination()
+                        + ", seed=" + finalAutonomous.seed().status()
+                        + ", seedDetail=" + finalAutonomous.seed().detail());
         verifyExact(input, autonomous.selectedColumns());
         return new Setup(items, params, input, autonomousOptions, autonomous);
     }
 
     private static Options options(
             int localConfigsPerWidth, boolean automaticIncumbentSeed) {
+        return options(
+                localConfigsPerWidth,
+                automaticIncumbentSeed,
+                Long.getLong(
+                        "cutting.test.orderGroupPricing.patternSeedMs",
+                        Options.defaults().patternSeedTimeLimitMs()));
+    }
+
+    /** Same property names as the missing-column audit test. */
+    private static Options options(
+            int localConfigsPerWidth,
+            boolean automaticIncumbentSeed,
+            long patternSeedTimeLimitMs) {
         Options defaults = Options.defaults();
         return new Options(
                 defaults.maxIterations(),
@@ -222,18 +353,22 @@ class Djx188ResidualBundlePricingExperimentTest {
                 defaults.beamWidth(),
                 defaults.maxColumnsPerPattern(),
                 defaults.maxCarCandidatesPerPattern(),
-                defaults.pricingTimeLimitMs(),
+                Long.getLong(
+                        "cutting.test.orderGroupPricing.pricingMs",
+                        defaults.pricingTimeLimitMs()),
                 defaults.integerCompletionTimeLimitMs(),
                 defaults.integerRepairCandidates(),
                 defaults.integerRepairTimeLimitMs(),
                 defaults.lpTimeLimitMs(),
-                defaults.integerTimeLimitMs(),
+                Long.getLong(
+                        "cutting.test.orderGroupPricing.integerMs",
+                        defaults.integerTimeLimitMs()),
                 defaults.dualAlpha(),
                 defaults.reducedCostEpsilon(),
                 defaults.artificialEpsilon(),
                 defaults.noColumnPatience(),
                 automaticIncumbentSeed,
-                defaults.patternSeedTimeLimitMs());
+                patternSeedTimeLimitMs);
     }
 
     private static void verifyExact(Input input, List<GroupColumn> columns) {
@@ -260,5 +395,50 @@ class Djx188ResidualBundlePricingExperimentTest {
             demand.merge(item.getWidth(), item.getDemand(), Math::addExact);
         }
         return demand;
+    }
+
+    /** Mirrors the T42 setup of the order-group pricing experiment. */
+    private static SolverParameters t42Parameters() {
+        SolverParameters params = SolverParameters.createDefault();
+        params.setMinRollWidth(4300);
+        params.setMaxRollWidth(4400);
+        params.setStepSize(10);
+        params.setTotalWidth(4600);
+        params.setTotalOverCap(0);
+        params.setMaxPatterns(800);
+        params.setMaxDistinctWidths(5);
+        params.setUseOptimizedAssignment(true);
+        params.sanitize();
+        return params;
+    }
+
+    private static List<SolverOrderItem> loadT42Items() throws Exception {
+        InputStream input = Djx188ResidualBundlePricingExperimentTest.class
+                .getResourceAsStream("/t42djx250.csv");
+        if (input == null) {
+            throw new IllegalStateException(
+                    "t42djx250.csv not found on test classpath");
+        }
+        List<SolverOrderItem> items = new ArrayList<>();
+        try (BufferedReader reader = new BufferedReader(
+                new InputStreamReader(input, StandardCharsets.UTF_8))) {
+            reader.readLine();
+            String line;
+            while ((line = reader.readLine()) != null) {
+                if (line.isBlank()) {
+                    continue;
+                }
+                String[] fields = line.split(",", -1);
+                SolverOrderItem item = new SolverOrderItem();
+                item.setMessageText(fields[0]);
+                item.setWidth(Integer.parseInt(fields[1]));
+                item.setDemand(Integer.parseInt(fields[2]));
+                item.setLength(Integer.parseInt(fields[3]));
+                item.setSurfaceTreatment(fields[4]);
+                item.setGroupKey(fields[3] + "m+" + fields[4]);
+                items.add(item);
+            }
+        }
+        return items;
     }
 }

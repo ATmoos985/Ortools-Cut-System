@@ -82,6 +82,7 @@ final class OrderGroupResidualBundlePricer {
             List<GroupColumn> columns,
             Metrics metrics,
             int bundlesScanned,
+            int bundlesSkipped,
             int bundlesTruncated,
             int swapsApplied,
             boolean budgetExhausted,
@@ -94,10 +95,14 @@ final class OrderGroupResidualBundlePricer {
         }
     }
 
-    record CandidateSet(List<GroupColumn> columns, boolean truncated) {
+    record CandidateSet(
+            List<GroupColumn> columns,
+            boolean truncated,
+            Set<String> blockedFamilies) {
 
         CandidateSet {
             columns = List.copyOf(columns);
+            blockedFamilies = Set.copyOf(blockedFamilies);
         }
     }
 
@@ -114,8 +119,14 @@ final class OrderGroupResidualBundlePricer {
 
         List<SwapRecord> swaps = new ArrayList<>();
         int scanned = 0;
+        int skipped = 0;
         int truncatedBundles = 0;
         boolean budgetExhausted = false;
+        // Bundles whose replacement MIP was PROVEN infeasible under a complete
+        // (untruncated) candidate enumeration. The proof is only reusable while
+        // every family that blocked a candidate back then is still present in
+        // the kept set, so the blocked-family set is stored alongside the key.
+        Map<String, Set<String>> provenFailed = new java.util.HashMap<>();
 
         boolean improved = true;
         restart:
@@ -128,7 +139,6 @@ final class OrderGroupResidualBundlePricer {
                         budgetExhausted = true;
                         break restart;
                     }
-                    scanned++;
                     List<GroupColumn> removed = new ArrayList<>(bundle.length);
                     for (int index : bundle) {
                         removed.add(current.get(index));
@@ -143,12 +153,33 @@ final class OrderGroupResidualBundlePricer {
                             kept.add(current.get(index));
                         }
                     }
+                    Set<String> keptFamilies = new LinkedHashSet<>();
+                    for (GroupColumn column : kept) {
+                        keptFamilies.add(column.familySignature());
+                    }
 
-                    Attempt attempt = tryBundle(input, kept, removed, options, deadline);
+                    String bundleKey = removed.stream()
+                            .map(GroupColumn::signature)
+                            .sorted()
+                            .reduce((left, right) -> left + "\u001f" + right)
+                            .orElseThrow();
+                    Set<String> blockedThen = provenFailed.get(bundleKey);
+                    if (blockedThen != null && keptFamilies.containsAll(blockedThen)) {
+                        skipped++;
+                        continue;
+                    }
+
+                    scanned++;
+                    Attempt attempt = tryBundle(
+                            input, keptFamilies, removed, options, deadline);
                     if (attempt.candidateTruncated()) {
                         truncatedBundles++;
                     }
                     if (attempt.replacement() == null) {
+                        if (attempt.provenNoImprovement()
+                                && !attempt.candidateTruncated()) {
+                            provenFailed.put(bundleKey, attempt.blockedFamilies());
+                        }
                         continue;
                     }
 
@@ -172,6 +203,7 @@ final class OrderGroupResidualBundlePricer {
                 current,
                 Metrics.fromColumns(current),
                 scanned,
+                skipped,
                 truncatedBundles,
                 swaps.size(),
                 budgetExhausted,
@@ -247,12 +279,16 @@ final class OrderGroupResidualBundlePricer {
         }
     }
 
-    private record Attempt(List<GroupColumn> replacement, boolean candidateTruncated) {
+    private record Attempt(
+            List<GroupColumn> replacement,
+            boolean candidateTruncated,
+            boolean provenNoImprovement,
+            Set<String> blockedFamilies) {
     }
 
     private static Attempt tryBundle(
             Input input,
-            List<GroupColumn> kept,
+            Set<String> keptFamilies,
             List<GroupColumn> removed,
             Options options,
             long deadline) {
@@ -269,10 +305,6 @@ final class OrderGroupResidualBundlePricer {
             residualOdd += column.odd() ? 1 : 0;
             residualOne += column.oneCar() ? 1 : 0;
         }
-        Set<String> keptFamilies = new LinkedHashSet<>();
-        for (GroupColumn column : kept) {
-            keptFamilies.add(column.familySignature());
-        }
 
         CandidateSet candidates = enumerateResidualColumns(
                 input,
@@ -286,14 +318,18 @@ final class OrderGroupResidualBundlePricer {
                 options.maxCandidateColumns(),
                 deadline);
         if (candidates.columns().size() < 2) {
-            return new Attempt(null, candidates.truncated());
+            return new Attempt(
+                    null, candidates.truncated(), false,
+                    candidates.blockedFamilies());
         }
 
         long remaining = deadline - System.currentTimeMillis();
         if (remaining <= 0) {
-            return new Attempt(null, candidates.truncated());
+            return new Attempt(
+                    null, candidates.truncated(), false,
+                    candidates.blockedFamilies());
         }
-        List<GroupColumn> replacement = solveBundleMip(
+        MipOutcome outcome = solveBundleMip(
                 residual,
                 residualCars,
                 residualWaste,
@@ -302,7 +338,11 @@ final class OrderGroupResidualBundlePricer {
                 candidates.columns(),
                 removed.size(),
                 Math.min(options.perBundleMipMs(), remaining));
-        return new Attempt(replacement, candidates.truncated());
+        return new Attempt(
+                outcome.replacement(),
+                candidates.truncated(),
+                outcome.provenNoImprovement(),
+                candidates.blockedFamilies());
     }
 
     /**
@@ -328,6 +368,7 @@ final class OrderGroupResidualBundlePricer {
             int maxCandidateColumns,
             long deadline) {
         Map<String, GroupColumn> bySignature = new TreeMap<>();
+        Set<String> blockedFamilies = new java.util.TreeSet<>();
         boolean truncated = false;
 
         Map<Integer, List<DemandKey>> residualByWidth = new TreeMap<>();
@@ -404,6 +445,7 @@ final class OrderGroupResidualBundlePricer {
                         config,
                         keptFamilies,
                         bySignature,
+                        blockedFamilies,
                         maxCandidateColumns)) {
                     truncated = true;
                     break patterns;
@@ -415,7 +457,8 @@ final class OrderGroupResidualBundlePricer {
                 bySignature.values().stream()
                         .sorted(Comparator.comparing(GroupColumn::signature))
                         .toList(),
-                truncated);
+                truncated,
+                blockedFamilies);
     }
 
     /** Returns false when the candidate cap stops materialization. */
@@ -429,6 +472,7 @@ final class OrderGroupResidualBundlePricer {
             Map<Integer, List<String>> config,
             Set<String> keptFamilies,
             Map<String, GroupColumn> bySignature,
+            Set<String> blockedFamilies,
             int maxCandidateColumns) {
         if (bySignature.size() >= maxCandidateColumns) {
             return false;
@@ -436,7 +480,9 @@ final class OrderGroupResidualBundlePricer {
         if (widthIndex == widths.size()) {
             GroupColumn column = GroupColumn.create(
                     input, pattern, new TreeMap<>(config), cars);
-            if (!keptFamilies.contains(column.familySignature())) {
+            if (keptFamilies.contains(column.familySignature())) {
+                blockedFamilies.add(column.familySignature());
+            } else {
                 bySignature.putIfAbsent(column.signature(), column);
             }
             return true;
@@ -453,6 +499,7 @@ final class OrderGroupResidualBundlePricer {
                     config,
                     keptFamilies,
                     bySignature,
+                    blockedFamilies,
                     maxCandidateColumns);
             config.remove(widths.get(widthIndex));
             if (!keepGoing) {
@@ -516,7 +563,16 @@ final class OrderGroupResidualBundlePricer {
         }
     }
 
-    private static List<GroupColumn> solveBundleMip(
+    /**
+     * {@code provenNoImprovement} is true only when the solver PROVED the
+     * bundle admits no strictly smaller conserved replacement over the given
+     * candidates; timeouts and solver failures stay unproven.
+     */
+    private record MipOutcome(
+            List<GroupColumn> replacement, boolean provenNoImprovement) {
+    }
+
+    private static MipOutcome solveBundleMip(
             Map<DemandKey, Integer> residual,
             int residualCars,
             int residualWaste,
@@ -531,7 +587,7 @@ final class OrderGroupResidualBundlePricer {
         }
         MPSolver solver = scip != null ? scip : MPSolver.createSolver("CBC");
         if (solver == null) {
-            return null;
+            return new MipOutcome(null, false);
         }
         solver.setTimeLimit(Math.max(1L, timeLimitMs));
 
@@ -588,9 +644,12 @@ final class OrderGroupResidualBundlePricer {
         objective.setMinimization();
 
         MPSolver.ResultStatus status = solver.solve();
+        if (status == MPSolver.ResultStatus.INFEASIBLE) {
+            return new MipOutcome(null, true);
+        }
         if (status != MPSolver.ResultStatus.OPTIMAL
                 && status != MPSolver.ResultStatus.FEASIBLE) {
-            return null;
+            return new MipOutcome(null, false);
         }
         List<GroupColumn> selected = new ArrayList<>();
         for (int index = 0; index < candidates.size(); index++) {
@@ -601,11 +660,13 @@ final class OrderGroupResidualBundlePricer {
         if (selected.size() >= bundleSize
                 || !conserves(selected, residual, residualCars,
                         residualWaste, residualOdd, residualOne)) {
-            return null;
+            return new MipOutcome(null, false);
         }
-        return selected.stream()
-                .sorted(Comparator.comparing(GroupColumn::signature))
-                .toList();
+        return new MipOutcome(
+                selected.stream()
+                        .sorted(Comparator.comparing(GroupColumn::signature))
+                        .toList(),
+                false);
     }
 
     private static boolean conserves(
