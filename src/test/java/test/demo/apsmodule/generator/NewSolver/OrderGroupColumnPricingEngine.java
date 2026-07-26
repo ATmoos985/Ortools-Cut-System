@@ -422,7 +422,7 @@ final class OrderGroupColumnPricingEngine {
                 seed);
     }
 
-    private static ConvertedOutput convertSelected(Input input, List<GroupColumn> selected) {
+    static ConvertedOutput convertSelected(Input input, List<GroupColumn> selected) {
         Map<PatternCandidate, Integer> solution = new LinkedHashMap<>();
         Map<PatternCandidate, List<AssignmentMIPSolver.AssignmentBlock>> assignments =
                 new LinkedHashMap<>();
