@@ -135,6 +135,39 @@ class OrderGroupResidualBundlePricerTest {
         assertEquals(300, result.metrics().waste());
     }
 
+    @Test
+    void signatureRoundTripRebuildsIdenticalColumn() {
+        SolverParameters params = SolverParameters.createDefault();
+        params.setMinRollWidth(100);
+        params.setMaxRollWidth(200);
+        params.setStepSize(10);
+        params.setTotalWidth(200);
+        params.setTotalOverCap(0);
+        params.setMaxDistinctWidths(4);
+        params.sanitize();
+        PatternCandidate pattern = new PatternCandidate(
+                Map.of(40, 2, 60, 1), 150);
+        Input input = new Input(
+                List.of(item("A", 40, 4), item("B", 40, 4), item("C", 60, 2)),
+                List.of(pattern),
+                params,
+                2,
+                120,
+                0,
+                0);
+        GroupColumn original = GroupColumn.create(
+                input, pattern,
+                Map.of(40, List.of("A", "A"), 60, List.of("C")), 2);
+
+        GroupColumn parsed = OrderGroupResidualBundlePricer.parseColumn(
+                input, original.signature());
+
+        assertEquals(original.signature(), parsed.signature());
+        assertEquals(original.resourceSignature(), parsed.resourceSignature());
+        assertEquals(original.familySignature(), parsed.familySignature());
+        assertEquals(original.coverage(), parsed.coverage());
+    }
+
     private static OrderGroupResidualBundlePricer.Options unitOptions() {
         return new OrderGroupResidualBundlePricer.Options(
                 2, 3, 50, 1_000, 2_000L, 20_000L, 8);

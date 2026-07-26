@@ -106,6 +106,50 @@ final class OrderGroupResidualBundlePricer {
         }
     }
 
+    /**
+     * Rebuilds a group column from its full signature
+     * ({@code rollWidth|w1xc1,...|w1=[m1, m2];...|cars=k}) so an improved
+     * incumbent can be persisted as plain text and resumed in a later run.
+     * Self-validating: throws when the rebuilt column does not round-trip to
+     * the exact input signature. Assumes order messages contain none of
+     * {@code | ; , [ ]} (true for PSR order codes).
+     */
+    static GroupColumn parseColumn(Input input, String signature) {
+        String[] parts = signature.split("\\|");
+        if (parts.length != 4 || !parts[3].startsWith("cars=")) {
+            throw new IllegalArgumentException(
+                    "not a group-column signature: " + signature);
+        }
+        int rollWidth = Integer.parseInt(parts[0]);
+        Map<Integer, Integer> cuts = new TreeMap<>();
+        for (String cut : parts[1].split(",")) {
+            int split = cut.indexOf('x');
+            cuts.put(
+                    Integer.parseInt(cut.substring(0, split)),
+                    Integer.parseInt(cut.substring(split + 1)));
+        }
+        Map<Integer, List<String>> config = new TreeMap<>();
+        for (String entry : parts[2].split(";")) {
+            int equals = entry.indexOf('=');
+            int width = Integer.parseInt(entry.substring(0, equals));
+            String body = entry.substring(equals + 1);
+            if (!body.startsWith("[") || !body.endsWith("]")) {
+                throw new IllegalArgumentException(
+                        "bad station config in signature: " + signature);
+            }
+            config.put(width, List.of(
+                    body.substring(1, body.length() - 1).split(", ", -1)));
+        }
+        int cars = Integer.parseInt(parts[3].substring("cars=".length()));
+        GroupColumn column = GroupColumn.create(
+                input, new PatternCandidate(cuts, rollWidth), config, cars);
+        if (!column.signature().equals(signature)) {
+            throw new IllegalStateException("signature round-trip mismatch: "
+                    + signature + " -> " + column.signature());
+        }
+        return column;
+    }
+
     static Result improve(Input input, List<GroupColumn> incumbent, Options options) {
         Objects.requireNonNull(input, "input");
         Objects.requireNonNull(options, "options");

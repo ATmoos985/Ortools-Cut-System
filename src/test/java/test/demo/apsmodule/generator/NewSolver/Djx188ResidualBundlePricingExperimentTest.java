@@ -1,6 +1,8 @@
 package test.demo.apsmodule.generator.NewSolver;
 
+import com.google.ortools.Loader;
 import org.junit.jupiter.api.Assumptions;
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import test.demo.apsmodule.generator.NewSolver.OrderGroupColumnCandidateAuditTracker.LossStage;
 import test.demo.apsmodule.generator.NewSolver.OrderGroupColumnPricingPrototype.ConvertedOutput;
@@ -72,15 +74,45 @@ class Djx188ResidualBundlePricingExperimentTest {
     private static final String T42_PROPERTY =
             "cutting.test.residualBundle.t42";
 
+    @BeforeAll
+    static void loadNativeLibraries() {
+        Loader.loadNativeLibraries();
+    }
+
     @Test
     void residualBundlePricingOnAutonomousIncumbent() throws Exception {
         Assumptions.assumeTrue(
                 Boolean.getBoolean(BUNDLE_PROPERTY),
                 "enable with -D" + BUNDLE_PROPERTY + "=true");
 
-        Setup setup = autonomousSetup(Options.defaults().maxLocalConfigsPerWidth());
-        assertEquals(31, setup.autonomous().directMetrics().groups(),
-                "autonomous baseline drifted");
+        Input input;
+        List<GroupColumn> incumbent;
+        int baseline;
+        String resumePath =
+                System.getProperty("cutting.test.residualBundle.resume");
+        if (resumePath == null) {
+            Setup setup = autonomousSetup(
+                    Options.defaults().maxLocalConfigsPerWidth());
+            assertEquals(31, setup.autonomous().directMetrics().groups(),
+                    "autonomous baseline drifted");
+            input = setup.input();
+            incumbent = setup.autonomous().selectedColumns();
+            baseline = 31;
+        } else {
+            input = buildInput();
+            incumbent = java.nio.file.Files
+                    .readAllLines(java.nio.file.Path.of(resumePath),
+                            StandardCharsets.UTF_8)
+                    .stream()
+                    .filter(line -> !line.isBlank())
+                    .map(line -> OrderGroupResidualBundlePricer
+                            .parseColumn(input, line.trim()))
+                    .toList();
+            baseline = incumbent.size();
+            System.out.printf(
+                    "DJX188 RESUME: loaded %d columns from %s%n",
+                    baseline, resumePath);
+        }
 
         OrderGroupResidualBundlePricer.Options bundleOptions =
                 new OrderGroupResidualBundlePricer.Options(
@@ -101,12 +133,11 @@ class Djx188ResidualBundlePricingExperimentTest {
 
         OrderGroupResidualBundlePricer.Result improved =
                 OrderGroupResidualBundlePricer.improve(
-                        setup.input(),
-                        setup.autonomous().selectedColumns(),
-                        bundleOptions);
+                        input, incumbent, bundleOptions);
 
         System.out.printf(
-                "DJX188 RESIDUAL_BUNDLE: baseline=31 groups=%d odd=%d one=%d "
+                "DJX188 RESIDUAL_BUNDLE: baseline=" + baseline
+                        + " groups=%d odd=%d one=%d "
                         + "cars=%d waste=%d swaps=%d scanned=%d skipped=%d "
                         + "truncated=%d budgetExhausted=%s elapsedMs=%d "
                         + "options=%s%n",
@@ -130,9 +161,9 @@ class Djx188ResidualBundlePricingExperimentTest {
                     System.out.printf("    + %s%n", signature));
         }
 
-        verifyExact(setup.input(), improved.columns());
+        verifyExact(input, improved.columns());
         ConvertedOutput converted = OrderGroupColumnPricingEngine.convertSelected(
-                setup.input(), improved.columns());
+                input, improved.columns());
         SequenceGroupPostProcessor.GroupStats displayed =
                 SequenceGroupPostProcessor.computeGroupStats(
                         converted.instructions());
@@ -140,9 +171,23 @@ class Djx188ResidualBundlePricingExperimentTest {
         assertEquals(improved.metrics().oddGroups(), displayed.oddCarGroups());
         assertEquals(improved.metrics().oneCarGroups(), displayed.oneCarGroups());
 
-        assertTrue(improved.metrics().groups() <= 31);
+        java.nio.file.Path saveTo = java.nio.file.Path.of(System.getProperty(
+                "cutting.test.residualBundle.saveTo",
+                "target/djx188-residual-bundle-incumbent.txt"));
+        java.nio.file.Files.createDirectories(
+                saveTo.toAbsolutePath().getParent());
+        java.nio.file.Files.write(
+                saveTo,
+                improved.columns().stream()
+                        .map(GroupColumn::signature)
+                        .toList(),
+                StandardCharsets.UTF_8);
+        System.out.println(
+                "DJX188 RESIDUAL_BUNDLE saved -> " + saveTo.toAbsolutePath());
+
+        assertTrue(improved.metrics().groups() <= baseline);
         if (improved.swapsApplied() > 0) {
-            assertTrue(improved.metrics().groups() < 31,
+            assertTrue(improved.metrics().groups() < baseline,
                     "swaps were applied but groups did not decrease");
         }
     }
@@ -282,16 +327,21 @@ class Djx188ResidualBundlePricingExperimentTest {
             Result autonomous) {
     }
 
-    private static Setup autonomousSetup(int localConfigsPerWidth)
-            throws Exception {
+    private static Input buildInput() throws Exception {
         List<SolverOrderItem> items = Djx188ManualBaselineFixture.loadItems();
         SolverParameters params = Djx188ManualBaselineFixture.parameters();
         List<PatternCandidate> universe =
                 new CompletePatternEnumerator(params, 5)
                         .generate(aggregateWidthDemand(items));
         assertEquals(7_717, universe.size(), "complete universe drifted");
+        return new Input(items, universe, params, 169, 36_870, 1, 0);
+    }
 
-        Input input = new Input(items, universe, params, 169, 36_870, 1, 0);
+    private static Setup autonomousSetup(int localConfigsPerWidth)
+            throws Exception {
+        Input input = buildInput();
+        List<SolverOrderItem> items = input.items();
+        SolverParameters params = input.params();
         // The incumbent seeder's pattern-support MIP is a wall-clock lottery:
         // a time-truncated support can be integer-infeasible for the group
         // RMP (observed 2026-07-26: 23-pattern support, pricing converged,
