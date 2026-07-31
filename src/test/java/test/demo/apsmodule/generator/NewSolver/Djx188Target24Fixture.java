@@ -3,6 +3,8 @@ package test.demo.apsmodule.generator.NewSolver;
 import test.demo.apsmodule.generator.NewSolver.OrderGroupColumnPricingPrototype.DemandKey;
 import test.demo.apsmodule.generator.NewSolver.OrderGroupColumnPricingPrototype.GroupColumn;
 import test.demo.apsmodule.generator.NewSolver.OrderGroupColumnPricingPrototype.Input;
+import test.demo.apsmodule.generator.NewSolver.OrderGroupColumnPricingPrototype.Options;
+import test.demo.apsmodule.generator.NewSolver.OrderGroupColumnPricingPrototype.Result;
 import test.demo.apsmodule.generator.NewSolver.config.SolverParameters;
 import test.demo.apsmodule.generator.NewSolver.model.PatternCandidate;
 import test.demo.apsmodule.generator.NewSolver.pattern.CompletePatternEnumerator;
@@ -38,13 +40,7 @@ final class Djx188Target24Fixture {
     }
 
     static Baseline load() throws IOException {
-        List<SolverOrderItem> items = Djx188ManualBaselineFixture.loadItems();
-        SolverParameters params = Djx188ManualBaselineFixture.parameters();
-        List<PatternCandidate> universe =
-                new CompletePatternEnumerator(params, 5)
-                        .generate(aggregateWidthDemand(items));
-        Input input = new Input(items, universe, params, 169, 36_870, 1, 0);
-
+        Input input = buildInput();
         List<String> signatures = readLines(BASE + ".txt");
         List<GroupColumn> columns = signatures.stream()
                 .map(signature ->
@@ -57,6 +53,50 @@ final class Djx188Target24Fixture {
             properties.load(stream);
         }
         return new Baseline(input, columns, signatures, properties);
+    }
+
+    static Input buildInput() throws IOException {
+        List<SolverOrderItem> items = Djx188ManualBaselineFixture.loadItems();
+        SolverParameters params = Djx188ManualBaselineFixture.parameters();
+        List<PatternCandidate> universe =
+                new CompletePatternEnumerator(params, 5)
+                        .generate(aggregateWidthDemand(items));
+        return new Input(items, universe, params, 169, 36_870, 1, 0);
+    }
+
+    static AutonomousIncumbent loadAutonomousIncumbent()
+            throws IOException {
+        Input input = buildInput();
+        Options defaults = Options.defaults();
+        long firstSeedBudget = Long.getLong(
+                "cutting.test.orderGroupPricing.patternSeedMs",
+                defaults.patternSeedTimeLimitMs());
+        long[] seedBudgets = {firstSeedBudget, 20_000L, 40_000L};
+        Result last = null;
+        long usedSeedBudget = firstSeedBudget;
+        for (long seedBudget : seedBudgets) {
+            usedSeedBudget = seedBudget;
+            last = OrderGroupColumnPricingPrototype.solve(
+                    input, autonomousOptions(defaults, seedBudget));
+            if (last.feasible()) {
+                break;
+            }
+        }
+        if (last == null || !last.feasible()) {
+            throw new IllegalStateException(
+                    "autonomous incumbent failed after seed budget "
+                            + usedSeedBudget + " ms: "
+                            + (last == null ? "no result" : last.status()));
+        }
+        if (!ResidualTargetSolver.conserves(
+                last.selectedColumns(), input.demand(),
+                input.exactCars(), input.exactWaste(),
+                input.exactOddGroups(), input.exactOneCarGroups())) {
+            throw new IllegalStateException(
+                    "autonomous incumbent is not exact");
+        }
+        return new AutonomousIncumbent(
+                input, last, usedSeedBudget);
     }
 
     static String resourceSha256(String resourceName) throws IOException {
@@ -112,6 +152,36 @@ final class Djx188Target24Fixture {
         return demand;
     }
 
+    private static Options autonomousOptions(
+            Options defaults,
+            long patternSeedTimeLimitMs) {
+        return new Options(
+                defaults.maxIterations(),
+                defaults.maxColumns(),
+                defaults.maxAddedPerIteration(),
+                defaults.maxPerPatternPerIteration(),
+                defaults.maxLocalConfigsPerWidth(),
+                defaults.beamWidth(),
+                defaults.maxColumnsPerPattern(),
+                defaults.maxCarCandidatesPerPattern(),
+                Long.getLong(
+                        "cutting.test.orderGroupPricing.pricingMs",
+                        defaults.pricingTimeLimitMs()),
+                defaults.integerCompletionTimeLimitMs(),
+                defaults.integerRepairCandidates(),
+                defaults.integerRepairTimeLimitMs(),
+                defaults.lpTimeLimitMs(),
+                Long.getLong(
+                        "cutting.test.orderGroupPricing.integerMs",
+                        defaults.integerTimeLimitMs()),
+                defaults.dualAlpha(),
+                defaults.reducedCostEpsilon(),
+                defaults.artificialEpsilon(),
+                defaults.noColumnPatience(),
+                true,
+                patternSeedTimeLimitMs);
+    }
+
     private static InputStream resource(String name) {
         InputStream stream =
                 Djx188Target24Fixture.class.getResourceAsStream(name);
@@ -141,5 +211,11 @@ final class Djx188Target24Fixture {
             columns = List.copyOf(columns);
             signatures = List.copyOf(signatures);
         }
+    }
+
+    record AutonomousIncumbent(
+            Input input,
+            Result result,
+            long seedBudgetMs) {
     }
 }
