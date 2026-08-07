@@ -8,6 +8,7 @@ import test.demo.apsmodule.generator.NewSolver.OrderGroupColumnPricingPrototype.
 import test.demo.apsmodule.generator.NewSolver.OrderGroupColumnPricingPrototype.GroupColumn;
 import test.demo.apsmodule.generator.NewSolver.OrderGroupColumnPricingPrototype.Input;
 import test.demo.apsmodule.generator.NewSolver.OrderGroupColumnPricingPrototype.Metrics;
+import test.demo.apsmodule.generator.NewSolver.OrderGroupColumnPricingPrototype.Phase;
 import test.demo.apsmodule.generator.NewSolver.model.PatternCandidate;
 
 import java.util.ArrayList;
@@ -105,6 +106,12 @@ final class OrderGroupResidualBundlePricer {
             columns = List.copyOf(columns);
             blockedFamilies = Set.copyOf(blockedFamilies);
         }
+    }
+
+    record LpScreen(
+            boolean provenNoImprovement,
+            boolean inconclusive,
+            double lowerBound) {
     }
 
     /**
@@ -257,7 +264,7 @@ final class OrderGroupResidualBundlePricer {
     }
 
     /** Bundles ordered by pairwise order-support overlap, then index order. */
-    private static List<int[]> rankedBundles(
+    static List<int[]> rankedBundles(
             List<GroupColumn> columns, int size, int limit) {
         int count = columns.size();
         long[][] overlap = new long[count][count];
@@ -381,6 +388,29 @@ final class OrderGroupResidualBundlePricer {
                     null, candidates.truncated(), false,
                     candidates.blockedFamilies());
         }
+        LpScreen lp = candidates.truncated()
+                ? new LpScreen(false, true, Double.NaN)
+                : screenWithLp(
+                        input,
+                        residual,
+                        residualCars,
+                        residualWaste,
+                        residualOdd,
+                        residualOne,
+                        candidates.columns(),
+                        removed.size(),
+                        remaining);
+        if (lp.provenNoImprovement()) {
+            return new Attempt(
+                    null, false, true, candidates.blockedFamilies());
+        }
+
+        remaining = deadline - System.currentTimeMillis();
+        if (remaining <= 0) {
+            return new Attempt(
+                    null, candidates.truncated(), false,
+                    candidates.blockedFamilies());
+        }
         MipOutcome outcome = solveBundleMip(
                 residual,
                 residualCars,
@@ -395,6 +425,55 @@ final class OrderGroupResidualBundlePricer {
                 candidates.truncated(),
                 outcome.provenNoImprovement(),
                 candidates.blockedFamilies());
+    }
+
+    static LpScreen screenWithLp(
+            Input input,
+            Map<DemandKey, Integer> residual,
+            int residualCars,
+            int residualWaste,
+            int residualOdd,
+            int residualOne,
+            List<GroupColumn> candidates,
+            int bundleSize,
+            long timeLimitMs) {
+        Map<String, PatternCandidate> patterns = new TreeMap<>();
+        candidates.forEach(column ->
+                patterns.putIfAbsent(column.pattern().signature(), column.pattern()));
+        Map<Integer, List<DemandKey>> ordersByWidth = new TreeMap<>();
+        residual.keySet().forEach(key ->
+                ordersByWidth.computeIfAbsent(key.width(), ignored -> new ArrayList<>())
+                        .add(key));
+        Input residualInput = new Input(
+                input.items(),
+                List.copyOf(patterns.values()),
+                input.params(),
+                residualCars,
+                residualWaste,
+                residualOdd,
+                residualOne,
+                residual,
+                ordersByWidth);
+        OrderGroupRestrictedMaster.LpResult lp = OrderGroupRestrictedMaster.solveLp(
+                residualInput,
+                candidates,
+                Phase.OPTIMIZATION,
+                timeLimitMs);
+        if (lp.status() == MPSolver.ResultStatus.INFEASIBLE) {
+            return new LpScreen(true, false, Double.POSITIVE_INFINITY);
+        }
+        if (lp.status() != MPSolver.ResultStatus.OPTIMAL) {
+            return new LpScreen(false, true, Double.NaN);
+        }
+        double maxUnitCost = candidates.stream()
+                .mapToDouble(OrderGroupRestrictedMaster::optimizationCost)
+                .max()
+                .orElseThrow();
+        double groupLowerBound = lp.objectiveValue() / maxUnitCost;
+        return new LpScreen(
+                groupLowerBound > bundleSize - 1 + 1e-7,
+                false,
+                groupLowerBound);
     }
 
     /**

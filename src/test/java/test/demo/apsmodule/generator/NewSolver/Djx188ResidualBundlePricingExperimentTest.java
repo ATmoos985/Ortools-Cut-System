@@ -22,8 +22,11 @@ import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.TreeMap;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -73,6 +76,14 @@ class Djx188ResidualBundlePricingExperimentTest {
             "cutting.test.localConfigCapAudit";
     private static final String T42_PROPERTY =
             "cutting.test.residualBundle.t42";
+    private static final String RANKING_AUDIT_PROPERTY =
+            "cutting.test.residualBundle.rankingAudit";
+    private static final String LP_FILTER_AUDIT_PROPERTY =
+            "cutting.test.residualBundle.lpFilterAudit";
+    private static final String SUCCESSFUL_SWAPS_RESOURCE =
+            "/research-baselines/djx188-residual-bundle-successful-swaps-v1.tsv";
+    private static final String TARGET24_SWAP_RESOURCE =
+            "/research-baselines/djx188-target24-swap-v1.tsv";
 
     @BeforeAll
     static void loadNativeLibraries() {
@@ -319,12 +330,359 @@ class Djx188ResidualBundlePricingExperimentTest {
         assertTrue(improved.metrics().groups() <= baseline);
     }
 
+    @Test
+    void successfulSwapRankingAudit() throws Exception {
+        Assumptions.assumeTrue(
+                Boolean.getBoolean(RANKING_AUDIT_PROPERTY),
+                "enable with -D" + RANKING_AUDIT_PROPERTY + "=true");
+
+        Djx188Target24Fixture.Baseline baseline = Djx188Target24Fixture.load();
+        List<HistoricalSwap> swaps = loadSuccessfulSwaps();
+        List<List<GroupColumn>> states = reconstructStates(
+                baseline.input(), baseline.columns(), swaps);
+
+        for (int step = 0; step < swaps.size(); step++) {
+            List<GroupColumn> state = states.get(step);
+            HistoricalSwap swap = swaps.get(step);
+            int total = combinationCount(state.size(), swap.removed().size());
+            List<int[]> ranked = OrderGroupResidualBundlePricer.rankedBundles(
+                    state, swap.removed().size(), total);
+            int rank = rankOf(state, ranked, swap.removed());
+            assertTrue(rank > 0, "successful bundle missing at step " + (step + 1));
+            System.out.printf(
+                    "DJX188 BUNDLE_RANK step=%d state=%d size=%d "
+                            + "overlap=%d total=%d%n",
+                    step + 1,
+                    state.size(),
+                    swap.removed().size(),
+                    rank,
+                    total);
+        }
+    }
+
+    @Test
+    void successfulSwapLpFilterAudit() throws Exception {
+        Assumptions.assumeTrue(
+                Boolean.getBoolean(LP_FILTER_AUDIT_PROPERTY),
+                "enable with -D" + LP_FILTER_AUDIT_PROPERTY + "=true");
+
+        Djx188Target24Fixture.Baseline baseline = Djx188Target24Fixture.load();
+        Input input = baseline.input();
+        List<HistoricalSwap> swaps = loadSuccessfulSwaps();
+        List<List<GroupColumn>> states = reconstructStates(
+                input, baseline.columns(), swaps);
+
+        for (int step = 0; step < swaps.size(); step++) {
+            List<GroupColumn> state = states.get(step);
+            HistoricalSwap swap = swaps.get(step);
+            int total = combinationCount(state.size(), swap.removed().size());
+            List<int[]> ranked = OrderGroupResidualBundlePricer.rankedBundles(
+                    state, swap.removed().size(), total);
+            int overlapRank = rankOf(state, ranked, swap.removed());
+            int eligibleRank = 0;
+            int ruledOut = 0;
+            int inconclusive = 0;
+            double targetLowerBound = Double.NaN;
+
+            for (int rank = 0; rank < overlapRank; rank++) {
+                LpFilterResult result = lpFilter(input, state, ranked.get(rank));
+                if (result.eligible()) {
+                    eligibleRank++;
+                } else {
+                    ruledOut++;
+                }
+                if (result.inconclusive()) {
+                    inconclusive++;
+                }
+                if (rank + 1 == overlapRank) {
+                    targetLowerBound = result.lowerBound();
+                    assertTrue(result.eligible(),
+                            "LP filter rejected successful bundle at step " + (step + 1));
+                }
+            }
+
+            System.out.printf(
+                    "DJX188 BUNDLE_LP_FILTER step=%d state=%d size=%d "
+                            + "overlapRank=%d eligibleRank=%d ruledOut=%d "
+                            + "inconclusive=%d targetLowerBound=%.6f%n",
+                    step + 1,
+                    state.size(),
+                    swap.removed().size(),
+                    overlapRank,
+                    eligibleRank,
+                    ruledOut,
+                    inconclusive,
+                    targetLowerBound);
+        }
+    }
+
+    @Test
+    void target24SwapLpFilterAudit() throws Exception {
+        Assumptions.assumeTrue(
+                Boolean.getBoolean(LP_FILTER_AUDIT_PROPERTY),
+                "enable with -D" + LP_FILTER_AUDIT_PROPERTY + "=true");
+
+        Djx188Target24Fixture.Baseline baseline = Djx188Target24Fixture.load();
+        Input input = baseline.input();
+        HistoricalSwap swap = loadSwaps(TARGET24_SWAP_RESOURCE, 1).get(0);
+        List<GroupColumn> improved = replace(
+                input, baseline.columns(), swap.removed(), swap.added());
+        verifyExact(input, improved);
+        assertEquals(24, improved.size());
+
+        List<int[]> ranked = OrderGroupResidualBundlePricer.rankedBundles(
+                baseline.columns(), swap.removed().size(), 5_000);
+        int overlapRank = rankOf(baseline.columns(), ranked, swap.removed());
+        int eligibleRank = 0;
+        int ruledOut = 0;
+        for (int rank = 0; rank < overlapRank; rank++) {
+            LpFilterResult result = lpFilter(
+                    input, baseline.columns(), ranked.get(rank));
+            eligibleRank += result.eligible() ? 1 : 0;
+            ruledOut += result.eligible() ? 0 : 1;
+            if (rank + 1 == overlapRank) {
+                assertTrue(result.eligible(), "LP filter rejected 25-to-24 swap");
+                System.out.printf(
+                        "DJX188 TARGET24_LP_FILTER overlapRank=%d eligibleRank=%d "
+                                + "ruledOut=%d targetLowerBound=%.6f%n",
+                        overlapRank, eligibleRank, ruledOut, result.lowerBound());
+            }
+        }
+    }
+
     private record Setup(
             List<SolverOrderItem> items,
             SolverParameters params,
             Input input,
             Options autonomousOptions,
             Result autonomous) {
+    }
+
+    private record HistoricalSwap(
+            List<String> removed,
+            List<String> added) {
+
+        HistoricalSwap {
+            removed = List.copyOf(removed);
+            added = List.copyOf(added);
+        }
+    }
+
+    private record ResidualBundle(
+            Map<DemandKey, Integer> demand,
+            int cars,
+            int waste,
+            int odd,
+            int one,
+            Set<String> keptFamilies,
+            List<GroupColumn> removed) {
+    }
+
+    private record LpFilterResult(
+            boolean eligible,
+            boolean inconclusive,
+            double lowerBound) {
+    }
+
+    private static LpFilterResult lpFilter(
+            Input input,
+            List<GroupColumn> state,
+            int[] removedIndices) {
+        ResidualBundle residual = residualBundle(state, removedIndices);
+        OrderGroupResidualBundlePricer.CandidateSet candidates =
+                OrderGroupResidualBundlePricer.enumerateResidualColumns(
+                        input,
+                        residual.demand(),
+                        residual.cars(),
+                        residual.waste(),
+                        residual.odd(),
+                        residual.one(),
+                        residual.keptFamilies(),
+                        residual.removed(),
+                        20_000,
+                        System.currentTimeMillis() + 2_000L);
+        if (candidates.truncated()) {
+            return new LpFilterResult(true, true, Double.NaN);
+        }
+
+        OrderGroupResidualBundlePricer.LpScreen screen =
+                OrderGroupResidualBundlePricer.screenWithLp(
+                        input,
+                        residual.demand(),
+                        residual.cars(),
+                        residual.waste(),
+                        residual.odd(),
+                        residual.one(),
+                        candidates.columns(),
+                        removedIndices.length,
+                        2_000L);
+        return new LpFilterResult(
+                !screen.provenNoImprovement(),
+                screen.inconclusive(),
+                screen.lowerBound());
+    }
+
+    private static ResidualBundle residualBundle(
+            List<GroupColumn> state,
+            int[] removedIndices) {
+        Set<Integer> removedIndexSet = new HashSet<>();
+        for (int index : removedIndices) {
+            removedIndexSet.add(index);
+        }
+        Map<DemandKey, Integer> demand = new TreeMap<>();
+        List<GroupColumn> removed = new ArrayList<>();
+        Set<String> keptFamilies = new HashSet<>();
+        int cars = 0;
+        int waste = 0;
+        int odd = 0;
+        int one = 0;
+        for (int index = 0; index < state.size(); index++) {
+            GroupColumn column = state.get(index);
+            if (!removedIndexSet.contains(index)) {
+                keptFamilies.add(column.familySignature());
+                continue;
+            }
+            removed.add(column);
+            column.coverage().forEach((key, value) ->
+                    demand.merge(key, value, Math::addExact));
+            cars += column.cars();
+            waste += column.totalWaste();
+            odd += column.odd() ? 1 : 0;
+            one += column.oneCar() ? 1 : 0;
+        }
+        return new ResidualBundle(
+                demand, cars, waste, odd, one, keptFamilies, removed);
+    }
+
+    private static List<HistoricalSwap> loadSuccessfulSwaps() throws Exception {
+        return loadSwaps(SUCCESSFUL_SWAPS_RESOURCE, 6);
+    }
+
+    private static List<HistoricalSwap> loadSwaps(
+            String resource,
+            int expectedSteps) throws Exception {
+        InputStream input = Djx188ResidualBundlePricingExperimentTest.class
+                .getResourceAsStream(resource);
+        if (input == null) {
+            throw new IllegalStateException(
+                    resource + " not found on test classpath");
+        }
+        Map<Integer, List<String>> removed = new TreeMap<>();
+        Map<Integer, List<String>> added = new TreeMap<>();
+        try (BufferedReader reader = new BufferedReader(
+                new InputStreamReader(input, StandardCharsets.UTF_8))) {
+            String line;
+            while ((line = reader.readLine()) != null) {
+                if (line.isBlank() || line.startsWith("#")) {
+                    continue;
+                }
+                String[] fields = line.split("\\t", 3);
+                if (fields.length != 3) {
+                    throw new IllegalStateException("bad swap history row: " + line);
+                }
+                int step = Integer.parseInt(fields[0]);
+                Map<Integer, List<String>> target = switch (fields[1]) {
+                    case "REMOVE" -> removed;
+                    case "ADD" -> added;
+                    default -> throw new IllegalStateException(
+                            "bad swap history action: " + fields[1]);
+                };
+                target.computeIfAbsent(step, ignored -> new ArrayList<>())
+                        .add(fields[2]);
+            }
+        }
+        assertEquals(expectedSteps, removed.size(), "swap history drifted");
+        assertEquals(removed.keySet(), added.keySet());
+        List<HistoricalSwap> swaps = new ArrayList<>();
+        for (int step : removed.keySet()) {
+            swaps.add(new HistoricalSwap(removed.get(step), added.get(step)));
+        }
+        return List.copyOf(swaps);
+    }
+
+    private static List<List<GroupColumn>> reconstructStates(
+            Input input,
+            List<GroupColumn> finalColumns,
+            List<HistoricalSwap> swaps) {
+        List<List<GroupColumn>> states = new ArrayList<>(
+                java.util.Collections.nCopies(swaps.size(), null));
+        List<GroupColumn> current = List.copyOf(finalColumns);
+        for (int step = swaps.size() - 1; step >= 0; step--) {
+            HistoricalSwap swap = swaps.get(step);
+            current = replace(
+                    input, current, swap.added(), swap.removed());
+            verifyExact(input, current);
+            assertEquals(31 - step, current.size(),
+                    "reconstructed state drifted at step " + (step + 1));
+            states.set(step, current);
+        }
+
+        current = states.get(0);
+        for (int step = 0; step < swaps.size(); step++) {
+            HistoricalSwap swap = swaps.get(step);
+            current = replace(
+                    input, current, swap.removed(), swap.added());
+            List<GroupColumn> expected = step + 1 < states.size()
+                    ? states.get(step + 1)
+                    : finalColumns;
+            assertEquals(
+                    expected.stream().map(GroupColumn::signature).sorted().toList(),
+                    current.stream().map(GroupColumn::signature).toList(),
+                    "forward replay drifted at step " + (step + 1));
+        }
+        return List.copyOf(states);
+    }
+
+    private static List<GroupColumn> replace(
+            Input input,
+            List<GroupColumn> columns,
+            List<String> removed,
+            List<String> added) {
+        Map<String, GroupColumn> bySignature = new TreeMap<>();
+        columns.forEach(column -> bySignature.put(
+                column.signature(), column));
+        for (String signature : removed) {
+            if (bySignature.remove(signature) == null) {
+                throw new IllegalStateException(
+                        "swap removes missing column: " + signature);
+            }
+        }
+        for (String signature : added) {
+            GroupColumn column = OrderGroupResidualBundlePricer.parseColumn(
+                    input, signature);
+            if (bySignature.putIfAbsent(signature, column) != null) {
+                throw new IllegalStateException(
+                        "swap adds duplicate column: " + signature);
+            }
+        }
+        return bySignature.values().stream()
+                .sorted(Comparator.comparing(GroupColumn::signature))
+                .toList();
+    }
+
+    private static int rankOf(
+            List<GroupColumn> columns,
+            List<int[]> ranked,
+            List<String> targetSignatures) {
+        Set<String> target = new HashSet<>(targetSignatures);
+        for (int rank = 0; rank < ranked.size(); rank++) {
+            Set<String> candidate = new HashSet<>();
+            for (int index : ranked.get(rank)) {
+                candidate.add(columns.get(index).signature());
+            }
+            if (candidate.equals(target)) {
+                return rank + 1;
+            }
+        }
+        return -1;
+    }
+
+    private static int combinationCount(int count, int size) {
+        long combinations = 1;
+        for (int index = 1; index <= size; index++) {
+            combinations = combinations * (count - size + index) / index;
+        }
+        return Math.toIntExact(combinations);
     }
 
     private static Input buildInput() throws Exception {

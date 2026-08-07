@@ -38,11 +38,19 @@ final class OrderGroupRestrictedMaster {
             Options options,
             List<GroupColumn> columns,
             Phase phase) {
+        return solveLp(input, columns, phase, options.lpTimeLimitMs());
+    }
+
+    static LpResult solveLp(
+            Input input,
+            List<GroupColumn> columns,
+            Phase phase,
+            long timeLimitMs) {
         MPSolver solver = MPSolver.createSolver("GLOP");
         if (solver == null) {
             return LpResult.failed(MPSolver.ResultStatus.NOT_SOLVED);
         }
-        solver.setTimeLimit(options.lpTimeLimitMs());
+        solver.setTimeLimit(Math.max(1L, timeLimitMs));
 
         Model model = buildModel(solver, input, columns, phase, false, true, true);
         MPSolver.ResultStatus status = solver.solve();
