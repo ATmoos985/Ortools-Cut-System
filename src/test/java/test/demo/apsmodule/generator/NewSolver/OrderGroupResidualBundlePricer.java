@@ -18,6 +18,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.PriorityQueue;
 import java.util.Set;
 import java.util.TreeMap;
 
@@ -276,7 +277,11 @@ final class OrderGroupResidualBundlePricer {
 
         record Scored(int[] indices, long score) {
         }
-        List<Scored> scored = new ArrayList<>();
+        Comparator<Scored> bestFirst = Comparator
+                .comparingLong(Scored::score).reversed()
+                .thenComparing(Scored::indices,
+                        OrderGroupResidualBundlePricer::compareIndices);
+        PriorityQueue<Scored> top = new PriorityQueue<>(bestFirst.reversed());
         int[] combo = new int[size];
         enumerateCombinations(count, size, 0, 0, combo, indices -> {
             long score = 0;
@@ -285,13 +290,16 @@ final class OrderGroupResidualBundlePricer {
                     score += overlap[indices[left]][indices[right]];
                 }
             }
-            scored.add(new Scored(indices.clone(), score));
+            Scored candidate = new Scored(indices.clone(), score);
+            if (top.size() < limit) {
+                top.offer(candidate);
+            } else if (bestFirst.compare(candidate, top.peek()) < 0) {
+                top.poll();
+                top.offer(candidate);
+            }
         });
-        scored.sort(Comparator
-                .comparingLong(Scored::score).reversed()
-                .thenComparing(Scored::indices, OrderGroupResidualBundlePricer::compareIndices));
-        return scored.stream()
-                .limit(limit)
+        return top.stream()
+                .sorted(bestFirst)
                 .map(Scored::indices)
                 .toList();
     }
