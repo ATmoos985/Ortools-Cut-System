@@ -217,7 +217,7 @@ class LegacyOrderPatternSelectionSolver {
         long now = System.currentTimeMillis();
         long remaining = Math.max(fastPreview ? 500 : 5000, deadlineMs - now);
         long stage1Time = fastPreview
-                ? Math.max(500, remaining * 25 / 100)
+                ? Math.max(500, remaining * 40 / 100)
                 : Math.max(5000, remaining / 6);
         Stage1Result stage1Result = solveMIPStage1(patterns, demands, allowOverSet, stage1Time);
         if (stage1Result == null) {
@@ -234,7 +234,7 @@ class LegacyOrderPatternSelectionSolver {
                 stage1Result.solution().values().stream().mapToInt(Integer::intValue).sum());
         remaining = Math.max(fastPreview ? 750 : 5000, deadlineMs - System.currentTimeMillis());
         long stage2Time = fastPreview
-                ? Math.max(750, remaining * 60 / 100)
+                ? Math.max(750, remaining * 45 / 100)
                 : Math.max(5000, remaining * 55 / 100);
         Map<PatternCandidate, Integer> stage2Solution = solveMIPStage2(
                 patterns, demands, allowOverSet, optimalUnder, optimalOver,
