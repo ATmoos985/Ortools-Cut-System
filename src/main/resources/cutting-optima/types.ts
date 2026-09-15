@@ -130,12 +130,13 @@ export interface PreviewGroup {
   revisionId?: string;
   sequenceGroupId?: string;
   sequenceNumber: number;
-  comboExpanded: string[];
+  comboExpanded: (number | string)[];
   length: number;
   surfaceTreatment: string;
   rollWidth: number;
   usageCount: number;
   groupKey?: string;
+  motherRollWidth?: number;
   isNewGroup?: boolean;
   rows: PreviewRow[];
 }

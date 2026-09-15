@@ -11,6 +11,7 @@ export const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) =>
   const navItems = [
     { path: '/', label: '智能排版', icon: Scissors },
     { path: '/sequence-groups', label: '搭切明细', icon: TableProperties },
+    { path: '/cutting-visualization', label: '切割可视化', icon: Scissors },
     { path: '/preview', label: '方案预览', icon: FileSpreadsheet },
     { path: '/validation', label: '数据校验', icon: ShieldCheck },
   ];

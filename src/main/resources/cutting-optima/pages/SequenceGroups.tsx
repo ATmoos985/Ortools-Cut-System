@@ -331,6 +331,9 @@ export default function SequenceGroups() {
                     )}
                 </div>
                 <div className="flex items-center gap-3">
+                    <Button variant="secondary" onClick={() => navigate('/cutting-visualization')}>
+                        <Scissors className="w-4 h-4" /> 切割可视化
+                    </Button>
                     {editMode && undoCount > 0 && (
                         <button
                             onClick={handleUndo}
@@ -529,7 +532,7 @@ export default function SequenceGroups() {
                                                 </thead>
                                                 <tbody>
                                                     {cluster.groups.map((group, gIdx) => {
-                                                        const comboWidths = (group.comboExpanded || []).map(s => parseInt(s, 10) || 0);
+                                                        const comboWidths = (group.comboExpanded || []).map(s => parseInt(String(s), 10) || 0);
                                                         const patternStr = (group.comboExpanded || []).join(' + ');
                                                         const totalWidth = comboWidths.reduce((a, b) => a + b, 0);
                                                         const utilization = maxRollWidth > 0 ? (totalWidth / maxRollWidth * 100) : 0;

@@ -5,6 +5,7 @@ import Home from './pages/Home';
 import Preview from './pages/Preview';
 import Validation from './pages/Validation';
 import SequenceGroups from './pages/SequenceGroups';
+import CuttingVisualization from './pages/CuttingVisualization';
 import { AppProvider } from './context/AppContext';
 import { SettingsProvider } from './context/SettingsContext';
 
@@ -17,6 +18,7 @@ const App = () => {
             <Routes>
               <Route path="/" element={<Home />} />
               <Route path="/sequence-groups" element={<SequenceGroups />} />
+              <Route path="/cutting-visualization" element={<CuttingVisualization />} />
               <Route path="/preview" element={<Preview />} />
               <Route path="/validation" element={<Validation />} />
             </Routes>

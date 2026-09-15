@@ -1444,6 +1444,7 @@ public class ExcelExportService {
             group.put("surfaceTreatment", g.getSurfaceTreatment());
             group.put("length", g.getLength());
             group.put("rollWidth", g.getRollWidth());
+            group.put("motherRollWidth", result.getTotalWidth());
             group.put("usageCount", g.getUsageCount());
             group.put("thickness", g.getThickness());
 

@@ -33,6 +33,7 @@ class ExcelExportServiceTest {
     void buildPreviewGroupsMergesAdjacentEquivalentGroupsAcrossInstructionBoundaries() {
         ExcelExportService service = new ExcelExportService();
         CuttingOptimizationResult result = new CuttingOptimizationResult();
+        result.setTotalWidth(3550);
         result.setCuttingInstructions(List.of(
                 instruction("group-a", 3300, Map.of(1100, 3), 1, "78", "alice"),
                 instruction("group-a", 3300, Map.of(1100, 3), 1, "78", "alice")));
@@ -42,6 +43,8 @@ class ExcelExportServiceTest {
         Map<String, Object> firstRow = firstRow(mergedGroup);
 
         assertEquals(1, previewGroups.size());
+        assertEquals(3550, mergedGroup.get("motherRollWidth"));
+        assertEquals(3300, mergedGroup.get("rollWidth"));
         assertEquals(2, ((Number) mergedGroup.get("usageCount")).intValue());
         assertEquals(List.of(0, 1), mergedGroup.get("instructionIndices"));
         assertEquals(6, ((Number) firstRow.get("rolls")).intValue());

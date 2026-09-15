@@ -119,6 +119,9 @@ export default function Preview() {
                     <Button variant="secondary" onClick={() => navigate('/')}>
                         <ArrowLeft className="w-4 h-4" /> 返回修改
                     </Button>
+                    <Button variant="secondary" onClick={() => navigate('/cutting-visualization')}>
+                        切割可视化
+                    </Button>
                     <Button onClick={handleExport} className="shadow-lg shadow-blue-200">
                         <Download className="w-4 h-4" /> 确认导出 Excel
                     </Button>
