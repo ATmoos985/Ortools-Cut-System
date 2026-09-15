@@ -42,9 +42,8 @@ export default function CuttingVisualization() {
                 </div>
             </header>
             <div className="rounded-xl border border-slate-200 bg-white px-5 py-4 text-sm text-slate-600 space-y-2">
-                <p>条带按实际宽度比例绘制；废边集中放在右侧，刀位顺序与左右位置均为示意。</p>
-                <p>固定废边（左 / 右）：<strong>未提供</strong>。灰色区为母卷与方案有效宽度之差，不能据此认定固定废边；琥珀色区为有效区内剩余废边。</p>
-                <p className="text-xs text-slate-500">整卷利用率 = 成品总宽 ÷ 母卷总宽；有效区利用率 = 成品总宽 ÷ 方案有效宽度。当前结果未提供固定扣边后的可切宽度，不能将有效区利用率标作固定扣边后的利用率。</p>
+                <p>灰色废边按区外宽差左右等分，中央为搭切有效区，琥珀色为区内剩余废边。</p>
+                <p className="text-xs text-slate-500">宽度按比例绘制；两侧等分及刀位仅为示意，实际左右固定边宽未提供。整卷 / 有效区利用率分别以母卷总宽 / 方案有效宽度为分母。</p>
             </div>
             {loading ? <p role="status" className="py-12 text-center text-slate-500">正在加载切割方案…</p>
                 : error ? <p role="alert" className="p-5 rounded-xl bg-amber-50 text-amber-800">{error}</p>
@@ -79,19 +78,24 @@ export default function CuttingVisualization() {
                                             <div><p className="text-slate-500 text-xs">总废边</p><p className="font-semibold mt-1">{mm(layout.totalWaste)}</p></div>
                                         </div>
                                         {layout.motherWidth === undefined && <p className="text-xs text-amber-800">母卷总宽未提供：下图仅按方案有效宽度绘制。</p>}
-                                        <div role="img" aria-label={`方案 ${group.sequenceNumber}：逐刀宽度 ${layout.widths.join('、')} 毫米；有效区内余宽 ${layout.remainingWidth} 毫米；区外宽差 ${mm(layout.outsideWidth)}`} className="flex h-20 sm:h-24 overflow-hidden rounded-lg bg-slate-100" style={{ outline: '1px solid #cbd5e1' }}>
+                                        <div className="flex justify-between gap-3 text-xs text-slate-500">
+                                            <span>左废边 {mm(layout.sideEdgeWidth)}（示意）</span>
+                                            <span>右废边 {mm(layout.sideEdgeWidth)}（示意）</span>
+                                        </div>
+                                        <div role="img" aria-label={`方案 ${group.sequenceNumber}：左废边 ${mm(layout.sideEdgeWidth)}；逐刀宽度 ${layout.widths.join('、')} 毫米；有效区内余宽 ${layout.remainingWidth} 毫米；右废边 ${mm(layout.sideEdgeWidth)}；两侧等分示意`} className="flex h-20 sm:h-24 overflow-hidden rounded-lg bg-slate-100" style={{ outline: '1px solid #cbd5e1' }}>
+                                            {!!layout.sideEdgeWidth && <div title={`左废边：${layout.sideEdgeWidth} mm（等分示意）`} className="flex-none" style={{ width: `${layout.sideEdgeWidth / layout.diagramWidth * 100}%`, background: 'repeating-linear-gradient(135deg, #94a3b8 0 4px, #e2e8f0 4px 8px)' }} />}
                                             {layout.widths.map((width, index) => (
                                                 <div key={index} title={`第 ${index + 1} 条：${width} mm`} className="flex-none min-w-0 flex items-center justify-center overflow-hidden text-white text-xs sm:text-sm font-semibold" style={{ width: `${width / layout.diagramWidth * 100}%`, backgroundColor: color(width), boxShadow: 'inset -1px 0 rgba(255,255,255,.65)' }}>
                                                     {width / layout.diagramWidth >= 0.08 && <span className="truncate px-1">{width}</span>}
                                                 </div>
                                             ))}
                                             {layout.remainingWidth > 0 && <div title={`有效区内剩余废边：${layout.remainingWidth} mm`} className="flex-none" style={{ width: `${layout.remainingWidth / layout.diagramWidth * 100}%`, background: 'repeating-linear-gradient(135deg, #fcd34d 0 4px, #fef3c7 4px 8px)' }} />}
-                                            {!!layout.outsideWidth && <div title={`有效区外宽差：${layout.outsideWidth} mm；固定边分配未知`} className="flex-none" style={{ width: `${layout.outsideWidth / layout.diagramWidth * 100}%`, background: 'repeating-linear-gradient(135deg, #94a3b8 0 4px, #e2e8f0 4px 8px)' }} />}
+                                            {!!layout.sideEdgeWidth && <div title={`右废边：${layout.sideEdgeWidth} mm（等分示意）`} className="flex-none" style={{ width: `${layout.sideEdgeWidth / layout.diagramWidth * 100}%`, background: 'repeating-linear-gradient(135deg, #94a3b8 0 4px, #e2e8f0 4px 8px)' }} />}
                                         </div>
                                         <div className="flex flex-wrap gap-x-5 gap-y-2 text-xs text-slate-600">
                                             {distinctWidths.map(width => <span key={width} className="inline-flex items-center gap-2"><span className="w-3 h-3 rounded-sm" style={{ backgroundColor: color(width) }} />{width} mm × {layout.widths.filter(value => value === width).length} 条 / 卷</span>)}
                                             <span className="inline-flex items-center gap-2"><span className="w-3 h-3 bg-amber-300 rounded-sm" />区内剩余废边 {mm(layout.remainingWidth)}</span>
-                                            <span className="inline-flex items-center gap-2"><span className="w-3 h-3 bg-slate-400 rounded-sm" />区外宽差 {mm(layout.outsideWidth)}</span>
+                                            <span className="inline-flex items-center gap-2"><span className="w-3 h-3 bg-slate-400 rounded-sm" />两侧废边合计 {mm(layout.outsideWidth)}（等分示意）</span>
                                         </div>
                                     </>}
                                 </article>

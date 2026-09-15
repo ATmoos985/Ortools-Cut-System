@@ -17,6 +17,7 @@ export function cuttingLayout(group: Pick<PreviewGroup, 'comboExpanded' | 'rollW
         diagramWidth: motherWidth ?? effectiveWidth,
         remainingWidth: effectiveWidth - productWidth,
         outsideWidth: motherWidth === undefined ? null : motherWidth - effectiveWidth,
+        sideEdgeWidth: motherWidth === undefined ? null : (motherWidth - effectiveWidth) / 2,
         totalWaste: motherWidth === undefined ? null : motherWidth - productWidth,
         wholeUtilization: motherWidth === undefined ? null : productWidth / motherWidth * 100,
         effectiveUtilization: productWidth / effectiveWidth * 100,
