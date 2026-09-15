@@ -7,8 +7,10 @@ import { OrderItem, Preset, DiagnosisResult, OptimizationRequestPayload, Optimiz
 import { useNavigate } from 'react-router-dom';
 import { useAppContext } from '../context/AppContext';
 import { useSettings } from '../context/SettingsContext';
+import { summarizeCuttingUtilization } from '../services/cuttingLayout';
 
 const PRESET_KEY = 'flexibleWidthPresets';
+const cumulativeMetres = (width: number) => `${(width / 1000).toLocaleString(undefined, { maximumFractionDigits: 3 })} m`;
 
 export default function Home() {
     const navigate = useNavigate();
@@ -21,6 +23,7 @@ export default function Home() {
         importSource, setImportSource,
         solverProfile, setSolverProfile,
         totalWidth, setTotalWidth,
+        fixedLeftWidth, fixedRightWidth,
         minWidth, setMinWidth,
         maxWidth, setMaxWidth,
         stepSize, setStepSize,
@@ -44,6 +47,7 @@ export default function Home() {
     const [showClearConfirm, setShowClearConfirm] = useState(false);
     const [showRefreshNotification, setShowRefreshNotification] = useState(false);
     const [demandSortOrder, setDemandSortOrder] = useState<'none' | 'asc' | 'desc'>('none');
+    const [showCuttableUtilization, setShowCuttableUtilization] = useState(false);
 
     // 获取设置上下文
     const { cardVisibility } = useSettings();
@@ -244,6 +248,8 @@ export default function Home() {
     // UI Components helpers
     const renderStats = (data: OptimizationResultGroup | OptimizationResult | undefined, groupName?: string | null) => {
         if (!data) return null;
+        const utilization = optimizationResult ? summarizeCuttingUtilization(optimizationResult, fixedLeftWidth, fixedRightWidth, groupName) : null;
+        const displayedUtilization = showCuttableUtilization ? utilization?.cuttableUtilization : data.efficiency;
 
         // 计算超产信息 - 始终从 optimizationResult.demandAnalysis 获取
         let totalOverproduction = 0;
@@ -272,7 +278,7 @@ export default function Home() {
                         </span>
                     </div>
                 )}
-                <div className="grid grid-cols-2 lg:grid-cols-5 gap-4 mb-6">
+                <div className="grid gap-4 mb-6" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))' }}>
                     {/* 总用卷数卡片 */}
                     {cardVisibility.totalRolls && (
                         <div className="bg-gradient-to-br from-blue-500 to-blue-600 p-5 rounded-2xl text-white shadow-lg shadow-blue-500/20">
@@ -285,23 +291,21 @@ export default function Home() {
                     )}
                     {/* 利用率卡片 */}
                     {cardVisibility.efficiency && (
-                        <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm">
+                        <button type="button" aria-pressed={showCuttableUtilization} onClick={() => setShowCuttableUtilization(value => !value)} title="点击或按 Enter / 空格切换整卷与可切区利用率" className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm text-left hover:border-blue-400 focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-600">
                             <div className="flex justify-between items-start mb-2">
-                                <span className="text-slate-500 text-sm font-medium">利用率</span>
+                                <span className="text-slate-500 text-sm font-medium">{showCuttableUtilization ? '可切区利用率' : '整卷利用率'}</span>
                                 <BarChart3 className="w-5 h-5 text-emerald-500" />
                             </div>
-                            <div className="text-3xl font-bold text-slate-800">{(data.efficiency ?? 0).toFixed(2)}<span className="text-lg text-slate-400">%</span></div>
-                        </div>
-                    )}
-                    {/* 总废料卡片 */}
-                    {cardVisibility.totalWaste && (
-                        <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm">
-                            <div className="flex justify-between items-start mb-2">
-                                <span className="text-slate-500 text-sm font-medium">总废料</span>
-                                <Trash2 className="w-5 h-5 text-red-400" />
-                            </div>
-                            <div className="text-3xl font-bold text-slate-800">{data.totalWaste ?? 0} <span className="text-sm text-slate-400 font-normal">mm</span></div>
-                        </div>
+                            <div className="text-3xl font-bold text-slate-800">{displayedUtilization == null ? '—' : displayedUtilization.toFixed(2)}{displayedUtilization != null && <span className="text-lg text-slate-400">%</span>}</div>
+                            <p className="text-xs text-slate-500 mt-2">点击切换 · 固定边左 {Number.isFinite(fixedLeftWidth) ? fixedLeftWidth : '—'} / 右 {Number.isFinite(fixedRightWidth) ? fixedRightWidth : '—'} mm</p>
+                            <p className="text-xs text-slate-500 mt-1">{showCuttableUtilization ? '按使用卷数累计宽度，不含固定边' : '原口径：按长度与卷数累计面积'}</p>
+                            {showCuttableUtilization && utilization && <div className="mt-2 space-y-1 text-xs text-slate-600">
+                                <p>累计可切宽 {cumulativeMetres(utilization.totalCuttableWidth)}</p>
+                                <p>其中成品 {cumulativeMetres(utilization.totalProductWidth)} · {utilization.cuttableUtilization.toFixed(2)}%</p>
+                                <p className="text-amber-700">剩余余边 {cumulativeMetres(utilization.totalRemainingWidth)} · {utilization.remainingShare.toFixed(2)}%</p>
+                            </div>}
+                            {showCuttableUtilization && !utilization && <p className="text-xs text-amber-700 mt-1">请核对结果宽度、卷数及固定边设置</p>}
+                        </button>
                     )}
                     {/* 超产卡片 */}
                     {cardVisibility.overproduction && (

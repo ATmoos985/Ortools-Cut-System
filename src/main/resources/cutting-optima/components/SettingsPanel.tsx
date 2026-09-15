@@ -6,7 +6,6 @@ import { useAppContext } from '../context/AppContext';
 const cardConfigs: { key: keyof CardVisibility; label: string; description: string }[] = [
     { key: 'totalRolls', label: '总用卷数', description: '显示使用的母卷总数' },
     { key: 'efficiency', label: '利用率', description: '显示材料利用率百分比' },
-    { key: 'totalWaste', label: '总废料', description: '显示废料总量(mm)' },
     { key: 'overproduction', label: '超产', description: '显示超产卷数' },
     { key: 'executionTime', label: '计算耗时', description: '显示算法执行时间' },
 ];

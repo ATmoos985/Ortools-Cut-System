@@ -9,6 +9,8 @@ interface ConfigState {
     configVersion: 2;
     solverProfile: SolverProfile;
     totalWidth: number;
+    fixedLeftWidth: number;
+    fixedRightWidth: number;
     minWidth: number;
     maxWidth: number;
     stepSize: number;
@@ -35,6 +37,8 @@ const defaultConfig: ConfigState = {
     configVersion: 2,
     solverProfile: 'FAST',
     totalWidth: 4600,
+    fixedLeftWidth: 100,
+    fixedRightWidth: 100,
     minWidth: 4300,
     maxWidth: 4400,
     stepSize: 10,
@@ -61,6 +65,8 @@ interface AppContextType extends AppState {
     setImportSource: (source: string | null) => void;
     setSolverProfile: (profile: SolverProfile) => void;
     setTotalWidth: (width: number) => void;
+    setFixedLeftWidth: (width: number) => void;
+    setFixedRightWidth: (width: number) => void;
     setMinWidth: (width: number) => void;
     setMaxWidth: (width: number) => void;
     setStepSize: (size: number) => void;
@@ -99,6 +105,8 @@ function loadConfig(): ConfigState {
                 defaultConfig.totalWidth,
             ),
             minWidth: finiteNumber(parsed.minWidth, defaultConfig.minWidth),
+            fixedLeftWidth: finiteNumber(parsed.fixedLeftWidth, defaultConfig.fixedLeftWidth),
+            fixedRightWidth: finiteNumber(parsed.fixedRightWidth, defaultConfig.fixedRightWidth),
             maxWidth: finiteNumber(parsed.maxWidth, defaultConfig.maxWidth),
             stepSize: finiteNumber(parsed.stepSize, defaultConfig.stepSize),
             totalOverCap: finiteNumber(parsed.totalOverCap, defaultConfig.totalOverCap),
@@ -131,6 +139,8 @@ function extractConfig(state: AppState): ConfigState {
         configVersion: 2,
         solverProfile: state.solverProfile,
         totalWidth: state.totalWidth,
+        fixedLeftWidth: state.fixedLeftWidth,
+        fixedRightWidth: state.fixedRightWidth,
         minWidth: state.minWidth,
         maxWidth: state.maxWidth,
         stepSize: state.stepSize,
@@ -159,6 +169,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
     }, [
         state.solverProfile,
         state.totalWidth,
+        state.fixedLeftWidth,
+        state.fixedRightWidth,
         state.minWidth,
         state.maxWidth,
         state.stepSize,
@@ -175,6 +187,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
     const value: AppContextType = {
         ...state,
+        fixedLeftWidth: state.fixedLeftWidth ?? defaultConfig.fixedLeftWidth,
+        fixedRightWidth: state.fixedRightWidth ?? defaultConfig.fixedRightWidth,
         hasShownRefreshAlert,
         markRefreshAlertShown: () => setHasShownRefreshAlert(true),
         setOrderItems: items => update('orderItems', items),
@@ -182,6 +196,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
         setImportSource: source => update('importSource', source),
         setSolverProfile: profile => update('solverProfile', profile),
         setTotalWidth: width => update('totalWidth', width),
+        setFixedLeftWidth: width => update('fixedLeftWidth', width),
+        setFixedRightWidth: width => update('fixedRightWidth', width),
         setMinWidth: width => update('minWidth', width),
         setMaxWidth: width => update('maxWidth', width),
         setStepSize: size => update('stepSize', size),

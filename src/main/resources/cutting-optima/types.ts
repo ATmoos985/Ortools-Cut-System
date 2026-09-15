@@ -90,6 +90,8 @@ export interface OptimizationResultGroup {
 }
 
 export interface OptimizationInstruction {
+  groupKey?: string;
+  length?: number;
   subRolls: Record<string, number>;
   usageCount: number;
   stationAssignments: any[];
@@ -102,6 +104,7 @@ export interface PatternGroup {
 }
 
 export interface OptimizationResult {
+  totalWidth?: number;
   totalRolls: number;
   efficiency: number;
   totalWaste: number;
@@ -109,7 +112,7 @@ export interface OptimizationResult {
   iterations: number;
   groupedResults?: Record<string, OptimizationResultGroup>;
   demandAnalysis: DemandAnalysis;
-  patterns: PatternGroup[];
+  patterns: OptimizationInstruction[];
 }
 
 export interface PreviewRow {

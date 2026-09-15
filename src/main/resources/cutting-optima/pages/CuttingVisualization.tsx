@@ -5,6 +5,7 @@ import { Button } from '../components/ui/Button';
 import { fetchPreview } from '../services/api';
 import { cuttingLayout } from '../services/cuttingLayout';
 import type { PreviewData } from '../types';
+import { useAppContext } from '../context/AppContext';
 
 const colors = ['#2563eb', '#0f766e', '#7c3aed', '#be185d', '#0369a1', '#4d7c0f'];
 const mm = (value: number | null | undefined) => value == null ? '未提供' : `${value.toLocaleString()} mm`;
@@ -14,9 +15,7 @@ export default function CuttingVisualization() {
     const [data, setData] = useState<PreviewData | null>(null);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState('');
-    // 当前业务规定左右各 100 mm，可在本页校准；不改变求解配置。
-    const [fixedLeftWidth, setFixedLeftWidth] = useState(100);
-    const [fixedRightWidth, setFixedRightWidth] = useState(100);
+    const { fixedLeftWidth, setFixedLeftWidth, fixedRightWidth, setFixedRightWidth } = useAppContext();
     const load = async () => {
         setLoading(true);
         setError('');
