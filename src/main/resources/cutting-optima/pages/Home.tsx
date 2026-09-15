@@ -299,14 +299,22 @@ export default function Home() {
                             <div className="text-3xl font-bold text-slate-800">{displayedUtilization == null ? '—' : displayedUtilization.toFixed(2)}{displayedUtilization != null && <span className="text-lg text-slate-400">%</span>}</div>
                             <p className="text-xs text-slate-500 mt-2">点击切换 · 固定边左 {Number.isFinite(fixedLeftWidth) ? fixedLeftWidth : '—'} / 右 {Number.isFinite(fixedRightWidth) ? fixedRightWidth : '—'} mm</p>
                             <p className="text-xs text-slate-500 mt-1">{showCuttableUtilization ? '按使用卷数累计宽度，不含固定边' : '原口径：按长度与卷数累计面积'}</p>
-                            {showCuttableUtilization && utilization && <div className="mt-2 space-y-1 text-xs text-slate-600">
-                                <p>累计可切宽 {cumulativeMetres(utilization.totalCuttableWidth)}</p>
-                                <p>其中成品 {cumulativeMetres(utilization.totalProductWidth)} · {utilization.cuttableUtilization.toFixed(2)}%</p>
-                                <p className="text-amber-700">剩余余边 {cumulativeMetres(utilization.totalRemainingWidth)} · {utilization.remainingShare.toFixed(2)}%</p>
-                            </div>}
                             {showCuttableUtilization && !utilization && <p className="text-xs text-amber-700 mt-1">请核对结果宽度、卷数及固定边设置</p>}
                         </button>
                     )}
+                    <section aria-label="可切区余边" className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm">
+                        <div className="flex justify-between items-start mb-2">
+                            <h3 className="text-slate-500 text-sm font-medium">可切区余边</h3>
+                            <Layers className="w-5 h-5 text-amber-500" />
+                        </div>
+                        <div className="text-3xl font-bold text-amber-700">{utilization ? cumulativeMetres(utilization.totalRemainingWidth) : '—'}</div>
+                        {utilization ? <div className="mt-2 space-y-1 text-xs text-slate-600">
+                            <p className="font-semibold text-amber-700">占总可切宽 {utilization.remainingShare.toFixed(2)}%</p>
+                            <p>累计可切宽 {cumulativeMetres(utilization.totalCuttableWidth)}</p>
+                            <p>成品 {cumulativeMetres(utilization.totalProductWidth)} · {utilization.cuttableUtilization.toFixed(2)}%</p>
+                        </div> : <p className="text-xs text-amber-700 mt-2">请核对结果宽度、卷数及固定边设置</p>}
+                        <p className="text-xs text-slate-500 mt-2">按用卷数累计，不含左右固定边</p>
+                    </section>
                     {/* 超产卡片 */}
                     {cardVisibility.overproduction && (
                         <div className={`p-5 rounded-2xl border shadow-sm ${hasOverproduction ? 'bg-amber-50 border-amber-200' : 'bg-white border-slate-200'}`}>
